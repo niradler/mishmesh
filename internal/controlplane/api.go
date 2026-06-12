@@ -5,40 +5,63 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
 type API struct {
-	data  store.DataStore
-	conns store.ConnectionStore
-	log   *slog.Logger
+	data       store.DataStore
+	conns      store.ConnectionStore
+	log        *slog.Logger
+	adminToken string
 }
 
-func New(data store.DataStore, conns store.ConnectionStore, log *slog.Logger) *API {
+func New(data store.DataStore, conns store.ConnectionStore, adminToken string, log *slog.Logger) *API {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &API{data: data, conns: conns, log: log}
+	return &API{data: data, conns: conns, log: log, adminToken: adminToken}
 }
 
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", a.health)
 	mux.HandleFunc("GET /readyz", a.health)
 
-	mux.HandleFunc("POST /api/v1/orgs", a.createOrgHandler)
-	mux.HandleFunc("GET /api/v1/orgs/{id}", a.getOrgHandler)
+	mux.HandleFunc("POST /api/v1/orgs", a.guard(a.createOrgHandler))
+	mux.HandleFunc("GET /api/v1/orgs/{id}", a.guard(a.getOrgHandler))
 
-	mux.HandleFunc("POST /api/v1/agents", a.createAgentHandler)
-	mux.HandleFunc("GET /api/v1/agents", a.listAgentsHandler)
-	mux.HandleFunc("GET /api/v1/agents/{id}", a.getAgentHandler)
-	mux.HandleFunc("PATCH /api/v1/agents/{id}", a.patchAgentHandler)
-	mux.HandleFunc("DELETE /api/v1/agents/{id}", a.deleteAgentHandler)
-	mux.HandleFunc("POST /api/v1/agents/{id}/rotate", a.rotateTokenHandler)
-	mux.HandleFunc("POST /api/v1/agents/{id}/revoke", a.revokeAgentHandler)
-	mux.HandleFunc("GET /api/v1/agents/{id}/endpoints", a.listEndpointsHandler)
-	mux.HandleFunc("GET /api/v1/agents/{id}/tokens", a.listTokensHandler)
+	mux.HandleFunc("POST /api/v1/agents", a.guard(a.createAgentHandler))
+	mux.HandleFunc("GET /api/v1/agents", a.guard(a.listAgentsHandler))
+	mux.HandleFunc("GET /api/v1/agents/{id}", a.guard(a.getAgentHandler))
+	mux.HandleFunc("PATCH /api/v1/agents/{id}", a.guard(a.patchAgentHandler))
+	mux.HandleFunc("DELETE /api/v1/agents/{id}", a.guard(a.deleteAgentHandler))
+	mux.HandleFunc("POST /api/v1/agents/{id}/rotate", a.guard(a.rotateTokenHandler))
+	mux.HandleFunc("POST /api/v1/agents/{id}/revoke", a.guard(a.revokeAgentHandler))
+	mux.HandleFunc("GET /api/v1/agents/{id}/endpoints", a.guard(a.listEndpointsHandler))
+	mux.HandleFunc("GET /api/v1/agents/{id}/tokens", a.guard(a.listTokensHandler))
+}
+
+func (a *API) guard(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if a.adminToken != "" {
+			if !store.ConstantTimeEqualHash(bearerToken(r), a.adminToken) {
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+		}
+		h(w, r)
+	}
+}
+
+func bearerToken(r *http.Request) string {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if strings.HasPrefix(h, prefix) {
+		return strings.TrimSpace(h[len(prefix):])
+	}
+	return ""
 }
 
 type agentDTO struct {

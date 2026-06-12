@@ -22,7 +22,7 @@ func TestAgentLifecycle(t *testing.T) {
 	t.Cleanup(func() { _ = data.Close() })
 
 	mux := http.NewServeMux()
-	New(data, memory.NewConnStore(), slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
+	New(data, memory.NewConnStore(), "", slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 

@@ -18,7 +18,7 @@ func TestEnsureBootstrapIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = data.Close() })
-	api := New(data, memory.NewConnStore(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	api := New(data, memory.NewConnStore(), "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx := context.Background()
 	const raw = "mm_test_bootstrap_token"
 

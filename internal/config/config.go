@@ -29,6 +29,7 @@ type Server struct {
 	TCPPortMin          int
 	TCPPortMax          int
 	BootstrapToken      string
+	APIAuthToken        string
 	LogLevel            string
 }
 
@@ -63,6 +64,7 @@ func LoadServer() Server {
 		TCPPortMin:          envInt("TCP_PORT_MIN", 10000),
 		TCPPortMax:          envInt("TCP_PORT_MAX", 10100),
 		BootstrapToken:      env("BOOTSTRAP_TOKEN", ""),
+		APIAuthToken:        env("API_AUTH_TOKEN", ""),
 		LogLevel:            env("LOG_LEVEL", "info"),
 	}
 }

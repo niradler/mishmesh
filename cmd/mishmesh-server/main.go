@@ -87,7 +87,7 @@ func serve(_ []string) error {
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
-	cp := controlplane.New(data, conns, log)
+	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
 	cp.Register(apiMux)
 
 	if cfg.BootstrapToken != "" {
