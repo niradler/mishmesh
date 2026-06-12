@@ -9,7 +9,36 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-const defaultOrgID = "org_default"
+const (
+	defaultOrgID     = "org_default"
+	bootstrapAgentID = "ag_bootstrap"
+)
+
+func (a *API) EnsureBootstrap(ctx context.Context, rawToken string) (string, error) {
+	org, err := a.ensureOrg(ctx, defaultOrgID)
+	if err != nil {
+		return "", err
+	}
+	hash := store.HashToken(rawToken)
+	if tok, err := a.data.GetTokenByHash(ctx, hash); err == nil {
+		return tok.AgentID, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return "", err
+	}
+	if _, err := a.data.GetAgent(ctx, bootstrapAgentID); errors.Is(err, store.ErrNotFound) {
+		agent := &store.Agent{ID: bootstrapAgentID, OrgID: org.ID, Name: "bootstrap", Status: store.AgentActive, CreatedAt: time.Now()}
+		if err := a.data.CreateAgent(ctx, agent); err != nil {
+			return "", err
+		}
+	} else if err != nil {
+		return "", err
+	}
+	tok := &store.Token{ID: store.NewID("tok"), OrgID: org.ID, AgentID: bootstrapAgentID, Hash: hash, CreatedAt: time.Now()}
+	if err := a.data.CreateToken(ctx, tok); err != nil {
+		return "", err
+	}
+	return bootstrapAgentID, nil
+}
 
 var (
 	errAgentNotRevoked = errors.New("agent must be revoked before deletion")

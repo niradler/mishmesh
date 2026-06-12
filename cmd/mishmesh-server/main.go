@@ -87,7 +87,15 @@ func serve(_ []string) error {
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
-	controlplane.New(data, conns, log).Register(apiMux)
+	cp := controlplane.New(data, conns, log)
+	cp.Register(apiMux)
+
+	if cfg.BootstrapToken != "" {
+		if _, err := cp.EnsureBootstrap(context.Background(), cfg.BootstrapToken); err != nil {
+			return fmt.Errorf("bootstrap token: %w", err)
+		}
+		log.Info("bootstrap token seeded", "agent_id", "ag_bootstrap")
+	}
 
 	servers := []*http.Server{{Addr: cfg.APIAddr, Handler: apiMux}}
 	log.Info("api listener", "addr", cfg.APIAddr)

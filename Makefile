@@ -72,6 +72,26 @@ run-server: build-server
 .PHONY: check
 check: fmt vet test
 
+## docker: build the server image
+.PHONY: docker
+docker:
+	docker build -t mishmesh-server:$(VERSION) -f Dockerfile .
+
+## docker-agent: build the agent image
+.PHONY: docker-agent
+docker-agent:
+	docker build -t mishmesh-agent:$(VERSION) -f Dockerfile.agent .
+
+## compose-up: run the local demo stack (server + whoami + agent)
+.PHONY: compose-up
+compose-up:
+	docker compose up --build
+
+## compose-down: stop the demo stack
+.PHONY: compose-down
+compose-down:
+	docker compose down -v
+
 ## clean: remove build artifacts
 .PHONY: clean
 clean:

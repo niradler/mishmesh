@@ -1,0 +1,13 @@
+.git
+.gitignore
+bin/
+*.db
+*.db-shm
+*.db-wal
+certs/
+.claude/
+*.log
+.env
+.env.local
+docs/
+README.md

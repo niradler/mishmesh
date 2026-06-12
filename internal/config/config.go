@@ -28,6 +28,7 @@ type Server struct {
 	TCPBindHost         string
 	TCPPortMin          int
 	TCPPortMax          int
+	BootstrapToken      string
 	LogLevel            string
 }
 
@@ -61,6 +62,7 @@ func LoadServer() Server {
 		TCPBindHost:         env("TCP_BIND_HOST", "127.0.0.1"),
 		TCPPortMin:          envInt("TCP_PORT_MIN", 10000),
 		TCPPortMax:          envInt("TCP_PORT_MAX", 10100),
+		BootstrapToken:      env("BOOTSTRAP_TOKEN", ""),
 		LogLevel:            env("LOG_LEVEL", "info"),
 	}
 }

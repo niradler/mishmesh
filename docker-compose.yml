@@ -1,0 +1,39 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      MISHMESH_BASE_DOMAIN: localhost:8080
+      MISHMESH_BOOTSTRAP_TOKEN: mm_dev_bootstrap_change_me
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+      - "10000-10010:10000-10010"
+    volumes:
+      - mishmesh-data:/data
+
+  whoami:
+    image: traefik/whoami
+    expose:
+      - "80"
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    command:
+      - http
+      - whoami:80
+      - --subdomain
+      - demo
+      - --gateway
+      - ws://server:8081
+      - --token
+      - mm_dev_bootstrap_change_me
+    depends_on:
+      - server
+      - whoami
+
+volumes:
+  mishmesh-data: {}
