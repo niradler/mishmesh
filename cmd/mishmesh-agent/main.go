@@ -26,7 +26,11 @@ func main() {
 	}
 	switch args[0] {
 	case "http":
-		if err := httpCmd(args[1:]); err != nil {
+		if err := runEndpoint("http", args[1:]); err != nil {
+			fail(err)
+		}
+	case "tcp":
+		if err := runEndpoint("tcp", args[1:]); err != nil {
 			fail(err)
 		}
 	case "version", "-version", "--version":
@@ -37,12 +41,13 @@ func main() {
 	}
 }
 
-func httpCmd(args []string) error {
+func runEndpoint(kind string, args []string) error {
 	cfg := config.LoadAgent()
-	fs := flag.NewFlagSet("http", flag.ExitOnError)
+	fs := flag.NewFlagSet(kind, flag.ExitOnError)
 	gw := fs.String("gateway", cfg.GatewayURL, "gateway URL (ws://host:port)")
 	token := fs.String("token", cfg.Token, "agent authtoken")
-	subdomain := fs.String("subdomain", "", "request a specific subdomain (implies reserved)")
+	subdomain := fs.String("subdomain", "", "request a specific subdomain (http only; implies reserved)")
+	port := fs.Int("port", 0, "request a specific public port (tcp only; implies reserved)")
 	reserved := fs.Bool("reserved", false, "reserved (stable) endpoint instead of ephemeral")
 
 	positionals, err := parseInterspersed(fs, args)
@@ -50,21 +55,22 @@ func httpCmd(args []string) error {
 		return err
 	}
 	if len(positionals) == 0 {
-		return errors.New("usage: mishmesh-agent http <port|host:port> [--subdomain x] [--reserved]")
+		return fmt.Errorf("usage: mishmesh-agent %s <port|host:port> [--subdomain x | --port N] [--reserved]", kind)
 	}
 	if *token == "" {
 		return errors.New("no token: pass --token or set MISHMESH_TOKEN")
 	}
 
 	lifecycle := store.LifecycleEphemeral
-	if *reserved || *subdomain != "" {
+	if *reserved || *subdomain != "" || *port != 0 {
 		lifecycle = store.LifecycleReserved
 	}
 
 	spec := agent.EndpointSpec{
-		Kind:        store.KindHTTP,
+		Kind:        kind,
 		Lifecycle:   lifecycle,
 		Subdomain:   *subdomain,
+		Port:        *port,
 		LocalTarget: normalizeTarget(positionals[0]),
 	}
 
@@ -120,7 +126,9 @@ func newLogger(level string) *slog.Logger {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: mishmesh-agent http <port|host:port> [--subdomain x] [--reserved] [--gateway ws://...] [--token x]")
+	fmt.Fprintln(os.Stderr, "usage:")
+	fmt.Fprintln(os.Stderr, "  mishmesh-agent http <port|host:port> [--subdomain x] [--reserved] [--gateway ws://...] [--token x]")
+	fmt.Fprintln(os.Stderr, "  mishmesh-agent tcp  <port|host:port> [--port N] [--reserved] [--gateway ws://...] [--token x]")
 }
 
 func fail(err error) {

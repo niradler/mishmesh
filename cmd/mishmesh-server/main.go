@@ -59,13 +59,31 @@ func serve(_ []string) error {
 	defer data.Close()
 
 	conns := memory.NewConnStore()
-	gw := gateway.New(gateway.Options{
+
+	var tcpIngress *ingress.TCP
+	if cfg.IngressEnabled && cfg.TCPEnabled {
+		tcpIngress = ingress.NewTCP(ingress.TCPOptions{
+			Conns:    conns,
+			Log:      log,
+			BindHost: cfg.TCPBindHost,
+			PortMin:  cfg.TCPPortMin,
+			PortMax:  cfg.TCPPortMax,
+		})
+		defer tcpIngress.Shutdown()
+		log.Info("tcp ingress enabled", "bind", cfg.TCPBindHost, "ports", fmt.Sprintf("%d-%d", cfg.TCPPortMin, cfg.TCPPortMax))
+	}
+
+	gwOpts := gateway.Options{
 		Data:         data,
 		Conns:        conns,
 		Log:          log,
 		BaseDomain:   cfg.BaseDomain,
 		PublicScheme: cfg.PublicScheme,
-	})
+	}
+	if tcpIngress != nil {
+		gwOpts.Ports = tcpIngress
+	}
+	gw := gateway.New(gwOpts)
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)

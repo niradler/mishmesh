@@ -24,6 +24,10 @@ type Server struct {
 	ACMEEnabled         bool
 	ACMEEmail           string
 	ACMECacheDir        string
+	TCPEnabled          bool
+	TCPBindHost         string
+	TCPPortMin          int
+	TCPPortMax          int
 	LogLevel            string
 }
 
@@ -53,6 +57,10 @@ func LoadServer() Server {
 		ACMEEnabled:         envBool("ACME_ENABLED", false),
 		ACMEEmail:           env("ACME_EMAIL", ""),
 		ACMECacheDir:        env("ACME_CACHE_DIR", "./certs"),
+		TCPEnabled:          envBool("TCP_ENABLED", true),
+		TCPBindHost:         env("TCP_BIND_HOST", "127.0.0.1"),
+		TCPPortMin:          envInt("TCP_PORT_MIN", 10000),
+		TCPPortMax:          envInt("TCP_PORT_MAX", 10100),
 		LogLevel:            env("LOG_LEVEL", "info"),
 	}
 }
@@ -80,6 +88,18 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func envInt(key string, def int) int {
+	v, ok := os.LookupEnv(envPrefix + key)
+	if !ok {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 func envBool(key string, def bool) bool {

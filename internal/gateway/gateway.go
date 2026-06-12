@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -12,12 +13,18 @@ import (
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
+type PortOpener interface {
+	Open(endpointID string, requestedPort int) (port int, err error)
+	Close(endpointID string)
+}
+
 type Options struct {
 	Data         store.DataStore
 	Conns        store.ConnectionStore
 	Log          *slog.Logger
 	BaseDomain   string
 	PublicScheme string
+	Ports        PortOpener
 }
 
 type Gateway struct {
@@ -26,6 +33,7 @@ type Gateway struct {
 	log          *slog.Logger
 	baseDomain   string
 	publicScheme string
+	ports        PortOpener
 }
 
 func New(opts Options) *Gateway {
@@ -39,6 +47,7 @@ func New(opts Options) *Gateway {
 		log:          log,
 		baseDomain:   opts.BaseDomain,
 		publicScheme: opts.PublicScheme,
+		ports:        opts.Ports,
 	}
 }
 
@@ -129,6 +138,10 @@ func (g *Gateway) handleRegister(ctx context.Context, agent *store.Agent, p *tun
 		if lifecycle == "" {
 			lifecycle = store.LifecycleEphemeral
 		}
+		if kind == store.KindTCP {
+			ack.Endpoints = append(ack.Endpoints, g.registerTCP(ctx, agent, req, lifecycle))
+			continue
+		}
 		sub := strings.ToLower(strings.TrimSpace(req.Subdomain))
 		if sub == "" {
 			sub = store.NewID("")
@@ -173,12 +186,45 @@ func (g *Gateway) handleRegister(ctx context.Context, agent *store.Agent, p *tun
 	return ack
 }
 
+func (g *Gateway) registerTCP(ctx context.Context, agent *store.Agent, req tunnel.EndpointRequest, lifecycle string) tunnel.EndpointBinding {
+	if g.ports == nil {
+		g.log.Warn("tcp endpoint requested but tcp ingress is disabled", "agent_id", agent.ID)
+		return tunnel.EndpointBinding{Ref: req.Ref}
+	}
+	ep := &store.Endpoint{
+		ID:        store.NewID("ep"),
+		AgentID:   agent.ID,
+		OrgID:     agent.OrgID,
+		Kind:      store.KindTCP,
+		Lifecycle: lifecycle,
+		CreatedAt: time.Now(),
+	}
+	port, err := g.ports.Open(ep.ID, req.Port)
+	if err != nil {
+		g.log.Warn("tcp port allocation failed", "agent_id", agent.ID, "err", err)
+		return tunnel.EndpointBinding{Ref: req.Ref}
+	}
+	ep.Port = port
+	if err := g.data.CreateEndpoint(ctx, ep); err != nil {
+		g.ports.Close(ep.ID)
+		g.log.Warn("create tcp endpoint failed", "agent_id", agent.ID, "err", err)
+		return tunnel.EndpointBinding{Ref: req.Ref}
+	}
+	g.conns.BindEndpoint(ep.ID, agent.ID)
+	url := fmt.Sprintf("tcp://%s:%d", g.publicHost(), port)
+	g.log.Info("tcp endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "url", url)
+	return tunnel.EndpointBinding{Ref: req.Ref, EndpointID: ep.ID, Kind: store.KindTCP, Port: port, PublicURL: url}
+}
+
 func (g *Gateway) cleanupEphemeral(ctx context.Context, agentID string) {
 	eps, err := g.data.ListEndpointsByAgent(ctx, agentID)
 	if err != nil {
 		return
 	}
 	for _, ep := range eps {
+		if ep.Kind == store.KindTCP && g.ports != nil {
+			g.ports.Close(ep.ID)
+		}
 		if ep.Lifecycle == store.LifecycleEphemeral {
 			_ = g.data.DeleteEndpoint(ctx, ep.ID)
 		}
@@ -190,6 +236,13 @@ func (g *Gateway) publicURL(ep *store.Endpoint) string {
 		return fmt.Sprintf("%s://%s.%s", g.publicScheme, ep.Subdomain, g.baseDomain)
 	}
 	return fmt.Sprintf("%s://%s/tunnel/%s", g.publicScheme, g.baseDomain, ep.ID)
+}
+
+func (g *Gateway) publicHost() string {
+	if h, _, err := net.SplitHostPort(g.baseDomain); err == nil {
+		return h
+	}
+	return g.baseDomain
 }
 
 func bearerToken(r *http.Request) string {

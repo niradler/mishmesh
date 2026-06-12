@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS endpoints (
   kind       TEXT NOT NULL,
   lifecycle  TEXT NOT NULL,
   subdomain  TEXT,
+  port       INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_endpoints_subdomain
@@ -228,26 +229,26 @@ func (s *Store) RevokeTokensByAgent(ctx context.Context, agentID string) error {
 
 func (s *Store) CreateEndpoint(ctx context.Context, e *store.Endpoint) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO endpoints (id, agent_id, org_id, kind, lifecycle, subdomain, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		e.ID, e.AgentID, e.OrgID, e.Kind, e.Lifecycle, nullStr(e.Subdomain), ns(e.CreatedAt))
+		`INSERT INTO endpoints (id, agent_id, org_id, kind, lifecycle, subdomain, port, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.AgentID, e.OrgID, e.Kind, e.Lifecycle, nullStr(e.Subdomain), e.Port, ns(e.CreatedAt))
 	return wrap("create endpoint", err)
 }
 
 func (s *Store) GetEndpoint(ctx context.Context, id string) (*store.Endpoint, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, agent_id, org_id, kind, lifecycle, subdomain, created_at FROM endpoints WHERE id = ?`, id)
+		`SELECT id, agent_id, org_id, kind, lifecycle, subdomain, port, created_at FROM endpoints WHERE id = ?`, id)
 	return scanEndpoint(row.Scan)
 }
 
 func (s *Store) GetEndpointBySubdomain(ctx context.Context, subdomain string) (*store.Endpoint, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, agent_id, org_id, kind, lifecycle, subdomain, created_at FROM endpoints WHERE subdomain = ?`, subdomain)
+		`SELECT id, agent_id, org_id, kind, lifecycle, subdomain, port, created_at FROM endpoints WHERE subdomain = ?`, subdomain)
 	return scanEndpoint(row.Scan)
 }
 
 func (s *Store) ListEndpointsByAgent(ctx context.Context, agentID string) ([]*store.Endpoint, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, agent_id, org_id, kind, lifecycle, subdomain, created_at FROM endpoints WHERE agent_id = ? ORDER BY created_at`, agentID)
+		`SELECT id, agent_id, org_id, kind, lifecycle, subdomain, port, created_at FROM endpoints WHERE agent_id = ? ORDER BY created_at`, agentID)
 	if err != nil {
 		return nil, wrap("list endpoints", err)
 	}
@@ -272,7 +273,7 @@ func scanEndpoint(scan func(...any) error) (*store.Endpoint, error) {
 	var e store.Endpoint
 	var created int64
 	var sub sql.NullString
-	if err := scan(&e.ID, &e.AgentID, &e.OrgID, &e.Kind, &e.Lifecycle, &sub, &created); err != nil {
+	if err := scan(&e.ID, &e.AgentID, &e.OrgID, &e.Kind, &e.Lifecycle, &sub, &e.Port, &created); err != nil {
 		return nil, scanErr("scan endpoint", err)
 	}
 	e.Subdomain = sub.String

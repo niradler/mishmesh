@@ -18,6 +18,7 @@ type EndpointSpec struct {
 	Kind        string
 	Lifecycle   string
 	Subdomain   string
+	Port        int
 	LocalTarget string
 }
 
@@ -94,6 +95,7 @@ func (a *Agent) connectOnce(parent context.Context) error {
 			Kind:      sp.Kind,
 			Lifecycle: sp.Lifecycle,
 			Subdomain: sp.Subdomain,
+			Port:      sp.Port,
 		})
 	}
 	if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgRegister, Register: &reg}); err != nil {

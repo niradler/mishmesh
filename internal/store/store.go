@@ -55,6 +55,7 @@ type Endpoint struct {
 	Kind      string
 	Lifecycle string
 	Subdomain string
+	Port      int
 	CreatedAt time.Time
 }
 
