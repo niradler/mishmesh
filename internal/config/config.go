@@ -17,6 +17,13 @@ type Server struct {
 	AuthPasswordEnabled bool
 	WebUIEnabled        bool
 	IngressEnabled      bool
+	TLSEnabled          bool
+	HTTPSAddr           string
+	TLSCertFile         string
+	TLSKeyFile          string
+	ACMEEnabled         bool
+	ACMEEmail           string
+	ACMECacheDir        string
 	LogLevel            string
 }
 
@@ -39,6 +46,13 @@ func LoadServer() Server {
 		AuthPasswordEnabled: envBool("AUTH_PASSWORD_ENABLED", true),
 		WebUIEnabled:        envBool("WEBUI_ENABLED", false),
 		IngressEnabled:      envBool("INGRESS_ENABLED", true),
+		TLSEnabled:          envBool("TLS_ENABLED", false),
+		HTTPSAddr:           env("HTTPS_ADDR", "127.0.0.1:8443"),
+		TLSCertFile:         env("TLS_CERT_FILE", ""),
+		TLSKeyFile:          env("TLS_KEY_FILE", ""),
+		ACMEEnabled:         envBool("ACME_ENABLED", false),
+		ACMEEmail:           env("ACME_EMAIL", ""),
+		ACMECacheDir:        env("ACME_CACHE_DIR", "./certs"),
 		LogLevel:            env("LOG_LEVEL", "info"),
 	}
 }

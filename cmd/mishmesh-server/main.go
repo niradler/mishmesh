@@ -76,8 +76,23 @@ func serve(_ []string) error {
 
 	if cfg.IngressEnabled {
 		ing := ingress.New(ingress.Options{Data: data, Conns: conns, Log: log, BaseDomain: cfg.BaseDomain})
-		servers = append(servers, &http.Server{Addr: cfg.IngressAddr, Handler: ing})
-		log.Info("ingress listener", "addr", cfg.IngressAddr, "base_domain", cfg.BaseDomain)
+		if cfg.TLSEnabled {
+			tc, acmeHTTP, err := buildTLSConfig(cfg)
+			if err != nil {
+				return err
+			}
+			servers = append(servers, &http.Server{Addr: cfg.HTTPSAddr, Handler: ing, TLSConfig: tc})
+			log.Info("ingress https listener", "addr", cfg.HTTPSAddr, "base_domain", cfg.BaseDomain)
+			httpHandler := http.Handler(ing)
+			if acmeHTTP != nil {
+				httpHandler = acmeHTTP
+			}
+			servers = append(servers, &http.Server{Addr: cfg.IngressAddr, Handler: httpHandler})
+			log.Info("ingress http listener", "addr", cfg.IngressAddr)
+		} else {
+			servers = append(servers, &http.Server{Addr: cfg.IngressAddr, Handler: ing})
+			log.Info("ingress listener", "addr", cfg.IngressAddr, "base_domain", cfg.BaseDomain)
+		}
 	}
 	if cfg.WebUIEnabled {
 		log.Warn("MISHMESH_WEBUI_ENABLED is set but the web UI is not built in this MVP")
@@ -93,7 +108,13 @@ func runServers(log *slog.Logger, servers []*http.Server) error {
 	errc := make(chan error, len(servers))
 	for _, srv := range servers {
 		go func(s *http.Server) {
-			if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			var err error
+			if s.TLSConfig != nil {
+				err = s.ListenAndServeTLS("", "")
+			} else {
+				err = s.ListenAndServe()
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errc <- fmt.Errorf("listen %s: %w", s.Addr, err)
 			}
 		}(srv)
