@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS orgs (
 );
 CREATE TABLE IF NOT EXISTS agents (
   id           TEXT PRIMARY KEY,
-  org_id       TEXT NOT NULL REFERENCES orgs(id),
+  org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   name         TEXT NOT NULL,
   status       TEXT NOT NULL,
   created_at   INTEGER NOT NULL,
@@ -62,16 +62,16 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE TABLE IF NOT EXISTS tokens (
   id         TEXT PRIMARY KEY,
-  org_id     TEXT NOT NULL REFERENCES orgs(id),
-  agent_id   TEXT NOT NULL REFERENCES agents(id),
+  org_id     TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   hash       TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
   revoked_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS endpoints (
   id         TEXT PRIMARY KEY,
-  agent_id   TEXT NOT NULL REFERENCES agents(id),
-  org_id     TEXT NOT NULL REFERENCES orgs(id),
+  agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  org_id     TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   kind       TEXT NOT NULL,
   lifecycle  TEXT NOT NULL,
   subdomain  TEXT,
@@ -135,6 +135,16 @@ func (s *Store) ListAgents(ctx context.Context, orgID string) ([]*store.Agent, e
 	return out, wrap("list agents", rows.Err())
 }
 
+func (s *Store) UpdateAgent(ctx context.Context, a *store.Agent) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE agents SET name = ?, status = ? WHERE id = ?`, a.Name, a.Status, a.ID)
+	return wrap("update agent", err)
+}
+
+func (s *Store) DeleteAgent(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = ?`, id)
+	return wrap("delete agent", err)
+}
+
 func (s *Store) TouchAgent(ctx context.Context, id string, seenAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE agents SET last_seen_at = ? WHERE id = ?`, ns(seenAt), id)
 	return wrap("touch agent", err)
@@ -183,6 +193,37 @@ func (s *Store) RevokeToken(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`,
 		ns(time.Now()), id)
 	return wrap("revoke token", err)
+}
+
+func (s *Store) ListTokensByAgent(ctx context.Context, agentID string) ([]*store.Token, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, org_id, agent_id, hash, created_at, revoked_at FROM tokens WHERE agent_id = ? ORDER BY created_at`, agentID)
+	if err != nil {
+		return nil, wrap("list tokens", err)
+	}
+	defer rows.Close()
+	var out []*store.Token
+	for rows.Next() {
+		var t store.Token
+		var created int64
+		var revoked sql.NullInt64
+		if err := rows.Scan(&t.ID, &t.OrgID, &t.AgentID, &t.Hash, &created, &revoked); err != nil {
+			return nil, scanErr("scan token", err)
+		}
+		t.CreatedAt = fromNS(created)
+		if revoked.Valid {
+			rt := fromNS(revoked.Int64)
+			t.RevokedAt = &rt
+		}
+		out = append(out, &t)
+	}
+	return out, wrap("list tokens", rows.Err())
+}
+
+func (s *Store) RevokeTokensByAgent(ctx context.Context, agentID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tokens SET revoked_at = ? WHERE agent_id = ? AND revoked_at IS NULL`,
+		ns(time.Now()), agentID)
+	return wrap("revoke agent tokens", err)
 }
 
 func (s *Store) CreateEndpoint(ctx context.Context, e *store.Endpoint) error {

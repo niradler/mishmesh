@@ -65,11 +65,15 @@ type DataStore interface {
 	CreateAgent(ctx context.Context, a *Agent) error
 	GetAgent(ctx context.Context, id string) (*Agent, error)
 	ListAgents(ctx context.Context, orgID string) ([]*Agent, error)
+	UpdateAgent(ctx context.Context, a *Agent) error
+	DeleteAgent(ctx context.Context, id string) error
 	TouchAgent(ctx context.Context, id string, seenAt time.Time) error
 
 	CreateToken(ctx context.Context, t *Token) error
 	GetTokenByHash(ctx context.Context, hash string) (*Token, error)
+	ListTokensByAgent(ctx context.Context, agentID string) ([]*Token, error)
 	RevokeToken(ctx context.Context, id string) error
+	RevokeTokensByAgent(ctx context.Context, agentID string) error
 
 	CreateEndpoint(ctx context.Context, e *Endpoint) error
 	GetEndpoint(ctx context.Context, id string) (*Endpoint, error)

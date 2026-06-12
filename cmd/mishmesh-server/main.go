@@ -69,7 +69,7 @@ func serve(_ []string) error {
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
-	controlplane.New(data, log).Register(apiMux)
+	controlplane.New(data, conns, log).Register(apiMux)
 
 	servers := []*http.Server{{Addr: cfg.APIAddr, Handler: apiMux}}
 	log.Info("api listener", "addr", cfg.APIAddr)
