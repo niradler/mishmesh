@@ -30,6 +30,7 @@ type Server struct {
 	TCPPortMax          int
 	BootstrapToken      string
 	APIAuthToken        string
+	APIAuthDisabled     bool
 	LogLevel            string
 }
 
@@ -65,6 +66,7 @@ func LoadServer() Server {
 		TCPPortMax:          envInt("TCP_PORT_MAX", 10100),
 		BootstrapToken:      env("BOOTSTRAP_TOKEN", ""),
 		APIAuthToken:        env("API_AUTH_TOKEN", ""),
+		APIAuthDisabled:     envBool("API_AUTH_DISABLED", false),
 		LogLevel:            env("LOG_LEVEL", "info"),
 	}
 }
@@ -83,6 +85,9 @@ func (s Server) Validate() error {
 	}
 	if s.PublicScheme != "http" && s.PublicScheme != "https" {
 		return fmt.Errorf("config: PUBLIC_SCHEME must be http or https, got %q", s.PublicScheme)
+	}
+	if s.APIAuthToken == "" && !s.APIAuthDisabled {
+		return fmt.Errorf("config: API_AUTH_TOKEN must be set to protect the control API (or set API_AUTH_DISABLED=true to explicitly run it without auth)")
 	}
 	return nil
 }

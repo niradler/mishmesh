@@ -86,6 +86,7 @@ MISHMESH_TOKEN=<token> mishmesh-agent tcp 22 --gateway wss://tunnel.example.com:
 | `MISHMESH_DATA_DSN` | SQLite path (default `/data/mishmesh.db`) |
 | `MISHMESH_BOOTSTRAP_TOKEN` | seed a fixed agent token on startup |
 | `MISHMESH_API_AUTH_TOKEN` | require this bearer token on the control/management API (`/api/v1/*`); health stays open |
+| `MISHMESH_API_AUTH_DISABLED` | explicit opt-out: run the control API without auth. The server refuses to start if neither this nor `API_AUTH_TOKEN` is set (fail-closed). |
 
 ## Notes
 
