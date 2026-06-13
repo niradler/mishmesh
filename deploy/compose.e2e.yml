@@ -1,0 +1,52 @@
+name: mishmesh-e2e
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    networks: [edge]
+    environment:
+      MISHMESH_BASE_DOMAIN: localhost:8080
+      MISHMESH_PUBLIC_SCHEME: http
+      MISHMESH_API_AUTH_DISABLED: "true"
+      MISHMESH_WEBUI_ENABLED: "true"
+      MISHMESH_TCP_PORT_MIN: "10000"
+      MISHMESH_TCP_PORT_MAX: "10010"
+    ports:
+      - "18080:8080"
+      - "18081:8081"
+      - "10000:10000"
+
+  echo:
+    image: jmalloc/echo-server:latest
+    networks: [private]
+    environment:
+      PORT: "8080"
+
+  tester:
+    image: curlimages/curl:latest
+    networks: [edge]
+    command: ["sleep", "3600"]
+    depends_on: [server]
+
+  agent-http:
+    build:
+      context: ..
+      dockerfile: Dockerfile.agent
+    networks: [edge, private]
+    command: ["http", "echo:8080", "--subdomain", "demo", "--gateway", "ws://server:8081", "--token", "${HTTP_TOKEN}"]
+    depends_on: [server, echo]
+
+  agent-tcp:
+    build:
+      context: ..
+      dockerfile: Dockerfile.agent
+    networks: [edge, private]
+    command: ["tcp", "echo:8080", "--port", "10000", "--gateway", "ws://server:8081", "--token", "${TCP_TOKEN}"]
+    depends_on: [server, echo]
+
+networks:
+  edge: {}
+  private:
+    internal: true

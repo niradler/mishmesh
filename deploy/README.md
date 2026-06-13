@@ -106,6 +106,28 @@ Agent reach-in allowlist: `MISHMESH_ALLOW` / `--allow` (deny-first, comma-separa
 
 With `MISHMESH_WEBUI_ENABLED=true` the SPA is served from the control listener (same origin as `/api/v1`). Browse to `http://<api-host>:8081/`. Put the control listener behind TLS / a reverse proxy in production; the session cookie is `Secure` when `PUBLIC_SCHEME=https`.
 
+## Live network e2e (isolated Docker networks)
+
+`deploy/compose.e2e.yml` proves real tunnels across isolated networks: an `internal` `private`
+network holds the backend (`echo`) + agents with no route to the host/`edge`; the `edge` network
+holds the server + a `tester`. Traffic reaches the private backend **only** through the tunnel.
+
+```bash
+cd deploy
+docker compose -f compose.e2e.yml up -d --build server echo tester
+# mint two agent tokens (HTTP + TCP need distinct agent identities), then start agents:
+HTTP_TOKEN=$(curl -s -XPOST localhost:18081/api/v1/agents -d '{"name":"http"}' | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+TCP_TOKEN=$(curl -s -XPOST localhost:18081/api/v1/agents -d '{"name":"tcp"}'  | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+HTTP_TOKEN=$HTTP_TOKEN TCP_TOKEN=$TCP_TOKEN docker compose -f compose.e2e.yml up -d agent-http agent-tcp
+
+# HTTP tunnel:  docker compose -f compose.e2e.yml exec -T tester curl -s -H "Host: demo.localhost" http://server:8080/
+# TCP tunnel:   docker compose -f compose.e2e.yml exec -T tester curl -s http://server:10000/
+# isolation:    docker compose -f compose.e2e.yml exec -T tester curl -m5 http://echo:8080/   # must fail
+docker compose -f compose.e2e.yml down
+```
+
+The WebSocket upgrade path also has an in-process regression test: `go test ./internal/e2e -run WebSocket`.
+
 ## Notes
 
 - Persist `/data` (SQLite + ACME cache) on a volume.
