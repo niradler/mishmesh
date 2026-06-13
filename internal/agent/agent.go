@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,11 +17,20 @@ import (
 )
 
 type EndpointSpec struct {
-	Kind        string
-	Lifecycle   string
-	Subdomain   string
-	Port        int
-	LocalTarget string
+	Kind           string
+	Lifecycle      string
+	Subdomain      string
+	Port           int
+	LocalTarget    string
+	TargetTLS      bool
+	TargetInsecure bool
+	Policy         json.RawMessage
+}
+
+type localTarget struct {
+	addr     string
+	useTLS   bool
+	insecure bool
 }
 
 type Options struct {
@@ -33,7 +44,7 @@ type Agent struct {
 	opts    Options
 	log     *slog.Logger
 	mu      sync.RWMutex
-	targets map[string]string
+	targets map[string]localTarget
 }
 
 func New(opts Options) *Agent {
@@ -41,7 +52,7 @@ func New(opts Options) *Agent {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Agent{opts: opts, log: log, targets: make(map[string]string)}
+	return &Agent{opts: opts, log: log, targets: make(map[string]localTarget)}
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -85,17 +96,18 @@ func (a *Agent) connectOnce(parent context.Context) error {
 		return fmt.Errorf("open control: %w", err)
 	}
 
-	refTarget := make(map[string]string, len(a.opts.Endpoints))
+	refTarget := make(map[string]localTarget, len(a.opts.Endpoints))
 	var reg tunnel.RegisterPayload
 	for idx, sp := range a.opts.Endpoints {
 		ref := strconv.Itoa(idx)
-		refTarget[ref] = sp.LocalTarget
+		refTarget[ref] = localTarget{addr: sp.LocalTarget, useTLS: sp.TargetTLS, insecure: sp.TargetInsecure}
 		reg.Endpoints = append(reg.Endpoints, tunnel.EndpointRequest{
 			Ref:       ref,
 			Kind:      sp.Kind,
 			Lifecycle: sp.Lifecycle,
 			Subdomain: sp.Subdomain,
 			Port:      sp.Port,
+			Policy:    sp.Policy,
 		})
 	}
 	if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgRegister, Register: &reg}); err != nil {
@@ -115,7 +127,7 @@ func (a *Agent) connectOnce(parent context.Context) error {
 	}
 }
 
-func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, refTarget map[string]string) {
+func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, refTarget map[string]localTarget) {
 	for ctx.Err() == nil {
 		msg, err := ctrl.Recv()
 		if err != nil {
@@ -127,8 +139,9 @@ func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, refTarget
 					a.log.Warn("endpoint registration failed", "ref", b.Ref)
 					continue
 				}
-				a.setTarget(b.EndpointID, refTarget[b.Ref])
-				fmt.Printf("  %s  ->  %s\n", b.PublicURL, refTarget[b.Ref])
+				tgt := refTarget[b.Ref]
+				a.setTarget(b.EndpointID, tgt)
+				fmt.Printf("  %s  ->  %s\n", b.PublicURL, tgt.addr)
 			}
 		}
 	}
@@ -151,14 +164,14 @@ func (a *Agent) pingLoop(ctx context.Context, ctrl *tunnel.Control) {
 
 func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 	defer stream.Close()
-	target := a.targetFor(init.EndpointID)
-	if target == "" {
+	tgt, ok := a.targetFor(init.EndpointID)
+	if !ok || tgt.addr == "" {
 		a.log.Warn("stream for unknown endpoint", "endpoint_id", init.EndpointID)
 		return
 	}
-	local, err := net.Dial("tcp", target)
+	local, err := dialTarget(tgt)
 	if err != nil {
-		a.log.Warn("dial local target failed", "target", target, "err", err)
+		a.log.Warn("dial local target failed", "target", tgt.addr, "err", err)
 		return
 	}
 	defer local.Close()
@@ -169,14 +182,35 @@ func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 	<-done
 }
 
-func (a *Agent) setTarget(endpointID, target string) {
+func dialTarget(tgt localTarget) (net.Conn, error) {
+	conn, err := net.Dial("tcp", tgt.addr)
+	if err != nil {
+		return nil, err
+	}
+	if !tgt.useTLS {
+		return conn, nil
+	}
+	host, _, splitErr := net.SplitHostPort(tgt.addr)
+	if splitErr != nil {
+		host = tgt.addr
+	}
+	tc := tls.Client(conn, &tls.Config{ServerName: host, InsecureSkipVerify: tgt.insecure})
+	if err := tc.Handshake(); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("local tls handshake: %w", err)
+	}
+	return tc, nil
+}
+
+func (a *Agent) setTarget(endpointID string, target localTarget) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.targets[endpointID] = target
 }
 
-func (a *Agent) targetFor(endpointID string) string {
+func (a *Agent) targetFor(endpointID string) (localTarget, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.targets[endpointID]
+	t, ok := a.targets[endpointID]
+	return t, ok
 }

@@ -49,6 +49,8 @@ func runEndpoint(kind string, args []string) error {
 	subdomain := fs.String("subdomain", "", "request a specific subdomain (http only; implies reserved)")
 	port := fs.Int("port", 0, "request a specific public port (tcp only; implies reserved)")
 	reserved := fs.Bool("reserved", false, "reserved (stable) endpoint instead of ephemeral")
+	targetHTTPS := fs.Bool("target-https", false, "local target speaks TLS (dial it over https)")
+	insecure := fs.Bool("insecure", false, "skip TLS verification of the local target (self-signed)")
 
 	positionals, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -66,12 +68,15 @@ func runEndpoint(kind string, args []string) error {
 		lifecycle = store.LifecycleReserved
 	}
 
+	addr, schemeTLS := normalizeTarget(positionals[0])
 	spec := agent.EndpointSpec{
-		Kind:        kind,
-		Lifecycle:   lifecycle,
-		Subdomain:   *subdomain,
-		Port:        *port,
-		LocalTarget: normalizeTarget(positionals[0]),
+		Kind:           kind,
+		Lifecycle:      lifecycle,
+		Subdomain:      *subdomain,
+		Port:           *port,
+		LocalTarget:    addr,
+		TargetTLS:      *targetHTTPS || schemeTLS,
+		TargetInsecure: *insecure,
 	}
 
 	log := newLogger(cfg.LogLevel)
@@ -107,14 +112,25 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-func normalizeTarget(arg string) string {
+func normalizeTarget(arg string) (addr string, useTLS bool) {
+	switch {
+	case strings.HasPrefix(arg, "https://"):
+		arg = strings.TrimPrefix(arg, "https://")
+		useTLS = true
+	case strings.HasPrefix(arg, "tls://"):
+		arg = strings.TrimPrefix(arg, "tls://")
+		useTLS = true
+	case strings.HasPrefix(arg, "http://"):
+		arg = strings.TrimPrefix(arg, "http://")
+	}
+	arg = strings.TrimSuffix(arg, "/")
 	if strings.HasPrefix(arg, ":") {
-		return "127.0.0.1" + arg
+		return "127.0.0.1" + arg, useTLS
 	}
 	if !strings.Contains(arg, ":") {
-		return "127.0.0.1:" + arg
+		return "127.0.0.1:" + arg, useTLS
 	}
-	return arg
+	return arg, useTLS
 }
 
 func newLogger(level string) *slog.Logger {
