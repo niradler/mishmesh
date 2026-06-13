@@ -30,6 +30,17 @@ func TestAllowlistRules(t *testing.T) {
 	}
 }
 
+func TestAllowlistResolvePinsIP(t *testing.T) {
+	a := NewAllowlist([]string{"8.8.8.8:53"})
+	dialAddr, serverName, ok := a.Resolve("8.8.8.8:53")
+	if !ok || dialAddr != "8.8.8.8:53" || serverName != "8.8.8.8" {
+		t.Fatalf("Resolve pinning: addr=%q sni=%q ok=%v", dialAddr, serverName, ok)
+	}
+	if _, _, ok := a.Resolve("169.254.169.254:53"); ok {
+		t.Fatal("metadata target must not resolve")
+	}
+}
+
 func TestAllowlistHardDenyOverridesBroadRule(t *testing.T) {
 	a := NewAllowlist([]string{"0.0.0.0/0"})
 	if a.Allowed("169.254.169.254:80") {

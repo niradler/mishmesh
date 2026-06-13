@@ -28,9 +28,10 @@ type EndpointSpec struct {
 }
 
 type localTarget struct {
-	addr     string
-	useTLS   bool
-	insecure bool
+	addr       string
+	useTLS     bool
+	insecure   bool
+	serverName string
 }
 
 type Options struct {
@@ -191,9 +192,13 @@ func dialTarget(tgt localTarget) (net.Conn, error) {
 	if !tgt.useTLS {
 		return conn, nil
 	}
-	host, _, splitErr := net.SplitHostPort(tgt.addr)
-	if splitErr != nil {
-		host = tgt.addr
+	host := tgt.serverName
+	if host == "" {
+		if h, _, splitErr := net.SplitHostPort(tgt.addr); splitErr == nil {
+			host = h
+		} else {
+			host = tgt.addr
+		}
 	}
 	tc := tls.Client(conn, &tls.Config{ServerName: host, InsecureSkipVerify: tgt.insecure})
 	if err := tc.Handshake(); err != nil {
@@ -210,11 +215,12 @@ func (a *Agent) resolveStreamTarget(init tunnel.StreamInit) (localTarget, bool) 
 			a.log.Warn("reach-in stream without target")
 			return localTarget{}, false
 		}
-		if !a.allow.Allowed(target) {
+		dialAddr, serverName, ok := a.allow.Resolve(target)
+		if !ok {
 			a.log.Warn("reach-in target denied by allowlist", "target", target)
 			return localTarget{}, false
 		}
-		return localTarget{addr: target, useTLS: init.Meta["tls"] == "true", insecure: init.Meta["insecure"] == "true"}, true
+		return localTarget{addr: dialAddr, serverName: serverName, useTLS: init.Meta["tls"] == "true", insecure: init.Meta["insecure"] == "true"}, true
 	}
 	tgt, ok := a.targetFor(init.EndpointID)
 	if !ok || tgt.addr == "" {

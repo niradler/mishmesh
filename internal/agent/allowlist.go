@@ -68,32 +68,44 @@ func isPortList(s string) bool {
 }
 
 func (a *Allowlist) Allowed(target string) bool {
+	_, _, ok := a.Resolve(target)
+	return ok
+}
+
+func (a *Allowlist) Resolve(target string) (dialAddr, serverName string, ok bool) {
 	host, portStr, err := net.SplitHostPort(target)
 	if err != nil {
-		return false
+		return "", "", false
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return false
+		return "", "", false
 	}
 	ips := resolveIPs(host)
 	if len(ips) == 0 {
-		return false
+		return "", "", false
 	}
 	for _, ip := range ips {
 		if hardDenied(ip) {
-			return false
+			return "", "", false
 		}
 	}
+	for _, ip := range ips {
+		if a.allowsIP(ip, host, port) {
+			return net.JoinHostPort(ip.String(), portStr), host, true
+		}
+	}
+	return "", "", false
+}
+
+func (a *Allowlist) allowsIP(ip net.IP, host string, port int) bool {
 	for _, rule := range a.rules {
 		if !rule.anyPort && !rule.ports[port] {
 			continue
 		}
 		if rule.cidr != nil {
-			for _, ip := range ips {
-				if rule.cidr.Contains(ip) {
-					return true
-				}
+			if rule.cidr.Contains(ip) {
+				return true
 			}
 			continue
 		}
