@@ -3,6 +3,9 @@
 **Goal:** production-ready drop-in for ngrok / Cloudflare Tunnel. Priority order: core tunnel
 capabilities + per-endpoint customization first, then multi-tenant/prod backends, then SaaS UI.
 
+> **Status (2026-06-13): all rows below are DELIVERED.** Remaining follow-ups (edge-OIDC end-user
+> gating, TCP bandwidth metering, multi-pod stream routing) are tracked in `.claude/docs/mvp-build.md`.
+
 ## Capability matrix (target)
 
 | Capability | Status |

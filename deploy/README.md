@@ -1,6 +1,8 @@
-# Deploying mishmesh (headless)
+# Deploying mishmesh
 
-mishmesh ships two images: `mishmesh-server` (gateway + ingress + control API) and `mishmesh-agent` (tunnel client). This guide covers a headless cloud deployment.
+mishmesh ships two images: `mishmesh-server` (gateway + ingress + control API + web UI) and `mishmesh-agent` (tunnel client). This guide covers a cloud deployment. Disabled features are simply not wired in, so the same image runs as a headless enterprise gateway (`AUTH=off, WEBUI=off`) or a full multi-tenant SaaS (`AUTH=on, WEBUI=on`).
+
+Capabilities: HTTP (subdomain / path / custom domain) + WebSocket/streaming, TCP, TLS passthrough; HTTPS via BYO cert, ACME, or self-signed; per-endpoint policy (header rewrite, host/path, basic-auth, IP allow/deny, force-https, compression); quotas + bandwidth; Prometheus `/metrics`; SQLite/Postgres + in-mem/Redis backends; enterprise reach-in API with an agent allowlist; password + Google-OIDC login with org/role RBAC; and a React web UI.
 
 ## Local demo (one command)
 
@@ -87,9 +89,25 @@ MISHMESH_TOKEN=<token> mishmesh-agent tcp 22 --gateway wss://tunnel.example.com:
 | `MISHMESH_BOOTSTRAP_TOKEN` | seed a fixed agent token on startup |
 | `MISHMESH_API_AUTH_TOKEN` | require this bearer token on the control/management API (`/api/v1/*`); health stays open |
 | `MISHMESH_API_AUTH_DISABLED` | explicit opt-out: run the control API without auth. The server refuses to start if neither this nor `API_AUTH_TOKEN` is set (fail-closed). |
+| `MISHMESH_SELF_SIGNED_TLS` | mint an in-memory self-signed cert for the apex + wildcard (dev/local TLS) when no BYO/ACME cert is set |
+| `MISHMESH_TLS_PASSTHROUGH_ENABLED` / `MISHMESH_TLS_PASSTHROUGH_ADDR` | SNI-routed TLS passthrough listener for `kind=tls` endpoints |
+| `MISHMESH_AUTH_ENABLED` / `MISHMESH_AUTH_PASSWORD_ENABLED` | require browser login; toggle password auth (off ⇒ Google-only) |
+| `MISHMESH_WEBUI_ENABLED` / `MISHMESH_WEBUI_DIR` | serve the React SPA (image bundles it at `/webui`) |
+| `MISHMESH_GOOGLE_CLIENT_ID` / `MISHMESH_GOOGLE_CLIENT_SECRET` / `MISHMESH_OIDC_REDIRECT_URL` | Google OIDC login |
+| `MISHMESH_DATA_BACKEND` / `MISHMESH_DATA_DSN` | `sqlite` (default) or `postgres` (e.g. `postgres://user:pw@host/db`) |
+| `MISHMESH_CONN_BACKEND` / `MISHMESH_REDIS_URL` | `memory` (default) or `redis` (shared usage/presence) |
+| `MISHMESH_METRICS_ENABLED` | expose Prometheus `/metrics` on the control listener |
+| `MISHMESH_REACHIN_ENABLED` | enable the enterprise reach-in data-plane API |
+| `MISHMESH_QUOTA_MAX_AGENTS` / `_MAX_ENDPOINTS` / `_MAX_BANDWIDTH_BYTES` | default per-org quotas (0 = unlimited) |
+
+Agent reach-in allowlist: `MISHMESH_ALLOW` / `--allow` (deny-first, comma-separated `host|cidr[:port;port]`). Loopback, link-local, and cloud-metadata IPs are always hard-denied.
+
+## Web UI
+
+With `MISHMESH_WEBUI_ENABLED=true` the SPA is served from the control listener (same origin as `/api/v1`). Browse to `http://<api-host>:8081/`. Put the control listener behind TLS / a reverse proxy in production; the session cookie is `Secure` when `PUBLIC_SCHEME=https`.
 
 ## Notes
 
 - Persist `/data` (SQLite + ACME cache) on a volume.
-- The control/API port (`8081`) is the agent connect + management surface — restrict it.
-- Single-node today: in-memory connection store + SQLite. Redis + Postgres backends are planned behind the existing store interfaces for multi-node.
+- The control/API port (`8081`) is the agent connect + management + UI surface — restrict it or front it with TLS.
+- Multi-node: select `postgres` + `redis` backends. Redis shares per-org usage/presence; cross-pod stream routing (forwarding ingress to the pod owning an agent) is not yet implemented, so route agents/ingress with session affinity per node for now.
