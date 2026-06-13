@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -167,6 +168,7 @@ func (g *Gateway) handleRegister(ctx context.Context, agent *store.Agent, p *tun
 			Kind:      kind,
 			Lifecycle: lifecycle,
 			Subdomain: sub,
+			Policy:    decodePolicy(req.Policy, g.log),
 			CreatedAt: time.Now(),
 		}
 		if err := g.data.CreateEndpoint(ctx, ep); err != nil {
@@ -197,6 +199,7 @@ func (g *Gateway) registerTCP(ctx context.Context, agent *store.Agent, req tunne
 		OrgID:     agent.OrgID,
 		Kind:      store.KindTCP,
 		Lifecycle: lifecycle,
+		Policy:    decodePolicy(req.Policy, g.log),
 		CreatedAt: time.Now(),
 	}
 	port, err := g.ports.Open(ep.ID, req.Port)
@@ -243,6 +246,18 @@ func (g *Gateway) publicHost() string {
 		return h
 	}
 	return g.baseDomain
+}
+
+func decodePolicy(raw json.RawMessage, log *slog.Logger) *store.EndpointPolicy {
+	if len(raw) == 0 {
+		return nil
+	}
+	var p store.EndpointPolicy
+	if err := json.Unmarshal(raw, &p); err != nil {
+		log.Warn("ignoring invalid endpoint policy", "err", err)
+		return nil
+	}
+	return &p
 }
 
 func bearerToken(r *http.Request) string {

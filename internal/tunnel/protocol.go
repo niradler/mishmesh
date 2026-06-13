@@ -29,11 +29,12 @@ type StreamInit struct {
 }
 
 type EndpointRequest struct {
-	Ref       string `json:"ref"`
-	Kind      string `json:"kind"`
-	Lifecycle string `json:"lifecycle"`
-	Subdomain string `json:"subdomain,omitempty"`
-	Port      int    `json:"port,omitempty"`
+	Ref       string          `json:"ref"`
+	Kind      string          `json:"kind"`
+	Lifecycle string          `json:"lifecycle"`
+	Subdomain string          `json:"subdomain,omitempty"`
+	Port      int             `json:"port,omitempty"`
+	Policy    json.RawMessage `json:"policy,omitempty"`
 }
 
 type EndpointBinding struct {
