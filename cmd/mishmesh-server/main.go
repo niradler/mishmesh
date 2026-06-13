@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,8 +18,11 @@ import (
 	"github.com/mishmesh/mishmesh/internal/controlplane"
 	"github.com/mishmesh/mishmesh/internal/gateway"
 	"github.com/mishmesh/mishmesh/internal/ingress"
+	"github.com/mishmesh/mishmesh/internal/metrics"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
+	"github.com/mishmesh/mishmesh/internal/store/postgres"
+	"github.com/mishmesh/mishmesh/internal/store/redis"
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
@@ -52,13 +57,21 @@ func serve(_ []string) error {
 	}
 	log := newLogger(cfg.LogLevel)
 
-	data, err := sqlite.Open(cfg.DataDSN)
+	data, err := openDataStore(cfg)
 	if err != nil {
 		return err
 	}
 	defer data.Close()
 
-	conns := memory.NewConnStore()
+	conns, err := openConnStore(cfg, log)
+	if err != nil {
+		return err
+	}
+
+	var mx *metrics.Metrics
+	if cfg.MetricsEnabled {
+		mx = metrics.New()
+	}
 
 	var tcpIngress *ingress.TCP
 	if cfg.IngressEnabled && cfg.TCPEnabled {
@@ -68,6 +81,7 @@ func serve(_ []string) error {
 			BindHost: cfg.TCPBindHost,
 			PortMin:  cfg.TCPPortMin,
 			PortMax:  cfg.TCPPortMax,
+			Meter:    mx,
 		})
 		defer tcpIngress.Shutdown()
 		log.Info("tcp ingress enabled", "bind", cfg.TCPBindHost, "ports", fmt.Sprintf("%d-%d", cfg.TCPPortMin, cfg.TCPPortMax))
@@ -79,6 +93,7 @@ func serve(_ []string) error {
 		Log:          log,
 		BaseDomain:   cfg.BaseDomain,
 		PublicScheme: cfg.PublicScheme,
+		Metrics:      mx,
 	}
 	if tcpIngress != nil {
 		gwOpts.Ports = tcpIngress
@@ -95,6 +110,14 @@ func serve(_ []string) error {
 		MaxBandwidthBytes: cfg.QuotaMaxBandwidthBytes,
 	})
 	cp.Register(apiMux)
+	if mx != nil {
+		apiMux.Handle("GET /metrics", mx.Handler())
+		log.Info("metrics enabled", "path", "/metrics")
+	}
+	if cfg.WebUIEnabled && cfg.WebUIDir != "" {
+		apiMux.Handle("/", spaHandler(cfg.WebUIDir))
+		log.Info("web ui enabled", "dir", cfg.WebUIDir)
+	}
 
 	if cfg.BootstrapToken != "" {
 		if _, err := cp.EnsureBootstrap(context.Background(), cfg.BootstrapToken); err != nil {
@@ -107,7 +130,7 @@ func serve(_ []string) error {
 	log.Info("api listener", "addr", cfg.APIAddr)
 
 	if cfg.IngressEnabled {
-		ing := ingress.New(ingress.Options{Data: data, Conns: conns, Log: log, BaseDomain: cfg.BaseDomain})
+		ing := ingress.New(ingress.Options{Data: data, Conns: conns, Log: log, BaseDomain: cfg.BaseDomain, Meter: mx})
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg)
 			if err != nil {
@@ -125,12 +148,72 @@ func serve(_ []string) error {
 			servers = append(servers, &http.Server{Addr: cfg.IngressAddr, Handler: ing})
 			log.Info("ingress listener", "addr", cfg.IngressAddr, "base_domain", cfg.BaseDomain)
 		}
-	}
-	if cfg.WebUIEnabled {
-		log.Warn("MISHMESH_WEBUI_ENABLED is set but the web UI is not built in this MVP")
+		if cfg.TLSPassthroughEnabled {
+			tp := ingress.NewTLSPassthrough(ingress.TLSPassthroughOptions{Data: data, Conns: conns, Log: log, BaseDomain: cfg.BaseDomain, Meter: mx})
+			if err := tp.Listen(cfg.TLSPassthroughAddr); err != nil {
+				return err
+			}
+			defer tp.Shutdown()
+			log.Info("tls passthrough listener", "addr", cfg.TLSPassthroughAddr)
+		}
 	}
 
 	return runServers(log, servers)
+}
+
+func openDataStore(cfg config.Server) (store.DataStore, error) {
+	backend := cfg.DataBackend
+	if backend == "" {
+		if strings.HasPrefix(cfg.DataDSN, "postgres://") || strings.HasPrefix(cfg.DataDSN, "postgresql://") {
+			backend = "postgres"
+		} else {
+			backend = "sqlite"
+		}
+	}
+	switch backend {
+	case "postgres":
+		return postgres.Open(cfg.DataDSN)
+	case "sqlite":
+		return sqlite.Open(cfg.DataDSN)
+	default:
+		return nil, fmt.Errorf("unknown DATA_BACKEND %q (want sqlite or postgres)", backend)
+	}
+}
+
+func openConnStore(cfg config.Server, log *slog.Logger) (store.ConnectionStore, error) {
+	switch cfg.ConnBackend {
+	case "redis":
+		if cfg.RedisURL == "" {
+			return nil, fmt.Errorf("CONN_BACKEND=redis requires REDIS_URL")
+		}
+		cs, err := redis.NewConnStore(cfg.RedisURL)
+		if err != nil {
+			return nil, err
+		}
+		log.Info("redis connection store enabled")
+		return cs, nil
+	case "", "memory":
+		return memory.NewConnStore(), nil
+	default:
+		return nil, fmt.Errorf("unknown CONN_BACKEND %q (want memory or redis)", cfg.ConnBackend)
+	}
+}
+
+func spaHandler(dir string) http.Handler {
+	fileServer := http.FileServer(http.Dir(dir))
+	index := filepath.Join(dir, "index.html")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clean := filepath.Join(dir, filepath.Clean("/"+r.URL.Path))
+		if !strings.HasPrefix(clean, filepath.Clean(dir)) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if st, err := os.Stat(clean); err == nil && !st.IsDir() {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		http.ServeFile(w, r, index)
+	})
 }
 
 func runServers(log *slog.Logger, servers []*http.Server) error {

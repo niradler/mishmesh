@@ -19,6 +19,13 @@ type PortOpener interface {
 	Close(endpointID string)
 }
 
+type Metrics interface {
+	AgentConnected()
+	AgentDisconnected()
+	HandshakeFailure()
+	StreamOpened(kind string)
+}
+
 type Options struct {
 	Data         store.DataStore
 	Conns        store.ConnectionStore
@@ -26,6 +33,7 @@ type Options struct {
 	BaseDomain   string
 	PublicScheme string
 	Ports        PortOpener
+	Metrics      Metrics
 }
 
 type Gateway struct {
@@ -35,6 +43,7 @@ type Gateway struct {
 	baseDomain   string
 	publicScheme string
 	ports        PortOpener
+	metrics      Metrics
 }
 
 func New(opts Options) *Gateway {
@@ -49,6 +58,7 @@ func New(opts Options) *Gateway {
 		baseDomain:   opts.BaseDomain,
 		publicScheme: opts.PublicScheme,
 		ports:        opts.Ports,
+		metrics:      opts.Metrics,
 	}
 }
 
@@ -73,20 +83,29 @@ func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
 	conn, err := tunnel.Accept(w, r)
 	if err != nil {
 		g.log.Warn("agent websocket accept failed", "agent_id", agent.ID, "err", err)
+		if g.metrics != nil {
+			g.metrics.HandshakeFailure()
+		}
 		return
 	}
 	sess, err := tunnel.Server(conn)
 	if err != nil {
 		g.log.Warn("yamux server failed", "agent_id", agent.ID, "err", err)
+		if g.metrics != nil {
+			g.metrics.HandshakeFailure()
+		}
 		_ = conn.Close()
 		return
 	}
-	ac := newAgentConn(agent.ID, sess)
+	ac := newAgentConn(agent.ID, sess, g.metrics)
 	if superseded := g.conns.AddAgent(ac); superseded != nil {
 		g.log.Info("superseding existing agent connection", "agent_id", agent.ID)
 		_ = superseded.Close()
 	}
 	_ = g.data.TouchAgent(ctx, agent.ID, time.Now())
+	if g.metrics != nil {
+		g.metrics.AgentConnected()
+	}
 	g.log.Info("agent connected", "agent_id", agent.ID, "org_id", agent.OrgID)
 
 	g.serve(context.WithoutCancel(ctx), agent, ac)
@@ -97,6 +116,9 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 		g.conns.RemoveAgent(ac)
 		_ = ac.Close()
 		g.cleanupEphemeral(ctx, agent.ID)
+		if g.metrics != nil {
+			g.metrics.AgentDisconnected()
+		}
 		g.log.Info("agent disconnected", "agent_id", agent.ID)
 	}()
 

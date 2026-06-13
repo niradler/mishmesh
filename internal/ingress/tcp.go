@@ -17,6 +17,7 @@ type TCPOptions struct {
 	BindHost string
 	PortMin  int
 	PortMax  int
+	Meter    Meter
 }
 
 type TCP struct {
@@ -25,6 +26,7 @@ type TCP struct {
 	bindHost string
 	portMin  int
 	portMax  int
+	meter    Meter
 
 	mu        sync.Mutex
 	listeners map[string]*tcpListener
@@ -51,6 +53,7 @@ func NewTCP(opts TCPOptions) *TCP {
 		bindHost:  opts.BindHost,
 		portMin:   opts.PortMin,
 		portMax:   opts.PortMax,
+		meter:     opts.Meter,
 		listeners: make(map[string]*tcpListener),
 		used:      make(map[int]bool),
 	}
@@ -136,10 +139,14 @@ func (t *TCP) handle(client net.Conn, endpointID string) {
 	}
 	defer stream.Close()
 
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(stream, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, stream); done <- struct{}{} }()
-	<-done
+	errc := make(chan error, 2)
+	var up, down int64
+	go func() { n, e := io.Copy(stream, client); up = n; errc <- e }()
+	go func() { n, e := io.Copy(client, stream); down = n; errc <- e }()
+	<-errc
+	if t.meter != nil {
+		t.meter.AddBytes(store.KindTCP, up, down)
+	}
 }
 
 func (t *TCP) Shutdown() {
