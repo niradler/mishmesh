@@ -12,13 +12,14 @@ import (
 )
 
 type API struct {
-	data         store.DataStore
-	conns        store.ConnectionStore
-	log          *slog.Logger
-	adminToken   string
-	defaultQuota store.Quota
-	baseDomain   string
-	publicScheme string
+	data           store.DataStore
+	conns          store.ConnectionStore
+	log            *slog.Logger
+	adminToken     string
+	defaultQuota   store.Quota
+	baseDomain     string
+	publicScheme   string
+	reachInEnabled bool
 }
 
 func (a *API) SetPublicConfig(baseDomain, scheme string) {
@@ -101,6 +102,10 @@ func (a *API) Register(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/v1/audit", a.guard(a.listAuditHandler))
 	mux.HandleFunc("GET /api/v1/status", a.guard(a.statusHandler))
+
+	if a.reachInEnabled {
+		mux.HandleFunc("POST /api/v1/reach/{agent_id}/http", a.guard(a.reachInHTTPHandler))
+	}
 }
 
 func (a *API) guard(h http.HandlerFunc) http.HandlerFunc {

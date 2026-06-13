@@ -51,6 +51,7 @@ func runEndpoint(kind string, args []string) error {
 	reserved := fs.Bool("reserved", false, "reserved (stable) endpoint instead of ephemeral")
 	targetHTTPS := fs.Bool("target-https", false, "local target speaks TLS (dial it over https)")
 	insecure := fs.Bool("insecure", false, "skip TLS verification of the local target (self-signed)")
+	allow := fs.String("allow", cfg.Allow, "reach-in allowlist rules, comma-separated host|cidr[:port;port] (deny-first)")
 
 	positionals, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -85,6 +86,7 @@ func runEndpoint(kind string, args []string) error {
 		Token:      *token,
 		Log:        log,
 		Endpoints:  []agent.EndpointSpec{spec},
+		Allowlist:  splitCSV(*allow),
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -131,6 +133,20 @@ func normalizeTarget(arg string) (addr string, useTLS bool) {
 		return "127.0.0.1:" + arg, useTLS
 	}
 	return arg, useTLS
+}
+
+func splitCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func newLogger(level string) *slog.Logger {

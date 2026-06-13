@@ -38,11 +38,13 @@ type Options struct {
 	Token      string
 	Log        *slog.Logger
 	Endpoints  []EndpointSpec
+	Allowlist  []string
 }
 
 type Agent struct {
 	opts    Options
 	log     *slog.Logger
+	allow   *Allowlist
 	mu      sync.RWMutex
 	targets map[string]localTarget
 }
@@ -52,7 +54,7 @@ func New(opts Options) *Agent {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Agent{opts: opts, log: log, targets: make(map[string]localTarget)}
+	return &Agent{opts: opts, log: log, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget)}
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -164,9 +166,8 @@ func (a *Agent) pingLoop(ctx context.Context, ctrl *tunnel.Control) {
 
 func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 	defer stream.Close()
-	tgt, ok := a.targetFor(init.EndpointID)
-	if !ok || tgt.addr == "" {
-		a.log.Warn("stream for unknown endpoint", "endpoint_id", init.EndpointID)
+	tgt, ok := a.resolveStreamTarget(init)
+	if !ok {
 		return
 	}
 	local, err := dialTarget(tgt)
@@ -200,6 +201,27 @@ func dialTarget(tgt localTarget) (net.Conn, error) {
 		return nil, fmt.Errorf("local tls handshake: %w", err)
 	}
 	return tc, nil
+}
+
+func (a *Agent) resolveStreamTarget(init tunnel.StreamInit) (localTarget, bool) {
+	if init.EndpointID == "" {
+		target := init.Meta["target"]
+		if target == "" {
+			a.log.Warn("reach-in stream without target")
+			return localTarget{}, false
+		}
+		if !a.allow.Allowed(target) {
+			a.log.Warn("reach-in target denied by allowlist", "target", target)
+			return localTarget{}, false
+		}
+		return localTarget{addr: target, useTLS: init.Meta["tls"] == "true", insecure: init.Meta["insecure"] == "true"}, true
+	}
+	tgt, ok := a.targetFor(init.EndpointID)
+	if !ok || tgt.addr == "" {
+		a.log.Warn("stream for unknown endpoint", "endpoint_id", init.EndpointID)
+		return localTarget{}, false
+	}
+	return tgt, true
 }
 
 func (a *Agent) setTarget(endpointID string, target localTarget) {

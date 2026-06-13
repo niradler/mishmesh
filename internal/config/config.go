@@ -60,6 +60,7 @@ type Agent struct {
 	GatewayURL string
 	Token      string
 	LogLevel   string
+	Allow      string
 }
 
 const envPrefix = "MISHMESH_"
@@ -120,6 +121,7 @@ func LoadAgent() Agent {
 		GatewayURL: env("GATEWAY_URL", "ws://localhost:8081"),
 		Token:      env("TOKEN", ""),
 		LogLevel:   env("LOG_LEVEL", "info"),
+		Allow:      env("ALLOW", ""),
 	}
 }
 

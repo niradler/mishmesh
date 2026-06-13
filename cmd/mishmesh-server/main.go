@@ -109,7 +109,11 @@ func serve(_ []string) error {
 		MaxEndpoints:      cfg.QuotaMaxEndpoints,
 		MaxBandwidthBytes: cfg.QuotaMaxBandwidthBytes,
 	})
+	cp.SetReachInEnabled(cfg.ReachInEnabled)
 	cp.Register(apiMux)
+	if cfg.ReachInEnabled {
+		log.Info("reach-in data-plane api enabled")
+	}
 	if mx != nil {
 		apiMux.Handle("GET /metrics", mx.Handler())
 		log.Info("metrics enabled", "path", "/metrics")
