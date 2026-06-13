@@ -7,6 +7,8 @@ services:
       MISHMESH_BASE_DOMAIN: localhost:8080
       MISHMESH_BOOTSTRAP_TOKEN: mm_dev_bootstrap_change_me
       MISHMESH_API_AUTH_DISABLED: "true"
+      MISHMESH_WEBUI_ENABLED: "true"
+      MISHMESH_METRICS_ENABLED: "true"
     ports:
       - "8080:8080"
       - "8081:8081"
