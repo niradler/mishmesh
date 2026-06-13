@@ -110,6 +110,16 @@ func serve(_ []string) error {
 		MaxBandwidthBytes: cfg.QuotaMaxBandwidthBytes,
 	})
 	cp.SetReachInEnabled(cfg.ReachInEnabled)
+	cp.ConfigureAuth(controlplane.AuthOptions{
+		Enabled:            cfg.AuthEnabled,
+		PasswordEnabled:    cfg.AuthPasswordEnabled,
+		CookieSecure:       cfg.PublicScheme == "https",
+		SessionTTL:         time.Duration(cfg.SessionTTLHours) * time.Hour,
+		GoogleClientID:     cfg.GoogleClientID,
+		GoogleClientSecret: cfg.GoogleClientSecret,
+		RedirectURL:        cfg.OIDCRedirectURL,
+		Issuer:             cfg.OIDCIssuer,
+	})
 	cp.Register(apiMux)
 	if cfg.ReachInEnabled {
 		log.Info("reach-in data-plane api enabled")

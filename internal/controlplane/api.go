@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -20,6 +21,7 @@ type API struct {
 	baseDomain     string
 	publicScheme   string
 	reachInEnabled bool
+	auth           *authConfig
 }
 
 func (a *API) SetPublicConfig(baseDomain, scheme string) {
@@ -78,8 +80,16 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", a.health)
 	mux.HandleFunc("GET /readyz", a.health)
 
+	a.registerAuthRoutes(mux)
+
+	mux.HandleFunc("GET /api/v1/orgs", a.guard(a.listOrgsHandler))
 	mux.HandleFunc("POST /api/v1/orgs", a.guard(a.createOrgHandler))
 	mux.HandleFunc("GET /api/v1/orgs/{id}", a.guard(a.getOrgHandler))
+
+	mux.HandleFunc("GET /api/v1/members", a.guard(a.listMembersHandler))
+	mux.HandleFunc("POST /api/v1/members", a.adminGuard(a.addMemberHandler))
+	mux.HandleFunc("PATCH /api/v1/members/{user_id}", a.adminGuard(a.updateMemberHandler))
+	mux.HandleFunc("DELETE /api/v1/members/{user_id}", a.adminGuard(a.removeMemberHandler))
 
 	mux.HandleFunc("POST /api/v1/agents", a.guard(a.createAgentHandler))
 	mux.HandleFunc("GET /api/v1/agents", a.guard(a.listAgentsHandler))
@@ -110,14 +120,60 @@ func (a *API) Register(mux *http.ServeMux) {
 
 func (a *API) guard(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if a.adminToken != "" {
-			if !store.ConstantTimeEqualHash(bearerToken(r), a.adminToken) {
-				writeError(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
+		ctx, ok := a.authorize(w, r)
+		if !ok {
+			return
+		}
+		h(w, r.WithContext(ctx))
+	}
+}
+
+func (a *API) adminGuard(h http.HandlerFunc) http.HandlerFunc {
+	return a.guard(func(w http.ResponseWriter, r *http.Request) {
+		if role, _ := r.Context().Value(ctxRole).(string); role != store.RoleOwner && role != store.RoleAdmin {
+			writeError(w, http.StatusForbidden, "requires admin role")
+			return
 		}
 		h(w, r)
+	})
+}
+
+func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context, bool) {
+	tok := bearerToken(r)
+	if a.adminToken != "" && tok != "" {
+		if !store.ConstantTimeEqualHash(tok, a.adminToken) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return nil, false
+		}
+		return a.authContext(r, a.queryOrg(r), "admin", store.RoleOwner), true
 	}
+	if a.authEnabled() {
+		su, ok := a.resolveSession(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return nil, false
+		}
+		return a.authContext(r, su.orgID, su.user.Email, su.role), true
+	}
+	if a.adminToken != "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return nil, false
+	}
+	return a.authContext(r, a.queryOrg(r), "system", store.RoleOwner), true
+}
+
+func (a *API) authContext(r *http.Request, orgID, actor, role string) context.Context {
+	ctx := context.WithValue(r.Context(), ctxOrgID, orgID)
+	ctx = context.WithValue(ctx, ctxActor, actor)
+	ctx = context.WithValue(ctx, ctxRole, role)
+	return ctx
+}
+
+func (a *API) queryOrg(r *http.Request) string {
+	if v := r.URL.Query().Get("org_id"); v != "" {
+		return v
+	}
+	return defaultOrgID
 }
 
 func bearerToken(r *http.Request) string {
@@ -177,6 +233,10 @@ func (a *API) createOrgHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "create org failed")
 		return
 	}
+	if su, ok := a.resolveSession(r); ok {
+		_ = a.data.CreateMembership(r.Context(), &store.Membership{OrgID: org.ID, UserID: su.user.ID, Role: store.RoleOwner, CreatedAt: time.Now()})
+	}
+	a.audit(r, "org.create", org.ID, org.Name)
 	writeJSON(w, http.StatusCreated, org)
 }
 
