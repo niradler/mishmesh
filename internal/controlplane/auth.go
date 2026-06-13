@@ -309,6 +309,10 @@ func (a *API) googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := a.upsertOIDCUser(r.Context(), profile)
+	if errors.Is(err, errEmailUnverified) {
+		writeError(w, http.StatusForbidden, "email not verified by provider; sign in with password and link from settings")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "user upsert failed")
 		return
@@ -322,16 +326,25 @@ func (a *API) googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type oidcProfile struct {
-	Sub   string `json:"sub"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
+	Sub           string `json:"sub"`
+	Email         string `json:"email"`
+	EmailVerified *bool  `json:"email_verified"`
+	Name          string `json:"name"`
 }
+
+var errEmailUnverified = errors.New("oidc provider did not assert a verified email")
 
 func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, error) {
 	if u, err := a.data.GetUserByGoogleSub(ctx, p.Sub); err == nil {
 		return u, nil
 	}
+	if p.EmailVerified == nil || !*p.EmailVerified {
+		return nil, errEmailUnverified
+	}
 	if u, err := a.data.GetUserByEmail(ctx, p.Email); err == nil {
+		if u.GoogleSub != "" && u.GoogleSub != p.Sub {
+			return nil, errEmailUnverified
+		}
 		u.GoogleSub = p.Sub
 		_ = a.data.UpdateUser(ctx, u)
 		return u, nil
