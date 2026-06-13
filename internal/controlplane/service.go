@@ -62,6 +62,7 @@ func (a *API) ensureOrg(ctx context.Context, orgID string) (*store.Org, error) {
 	if err := a.data.CreateOrg(ctx, org); err != nil {
 		return nil, err
 	}
+	a.applyDefaultQuota(ctx, org.ID)
 	return org, nil
 }
 
@@ -70,6 +71,7 @@ func (a *API) createOrg(ctx context.Context, name string) (*store.Org, error) {
 	if err := a.data.CreateOrg(ctx, org); err != nil {
 		return nil, err
 	}
+	a.applyDefaultQuota(ctx, org.ID)
 	return org, nil
 }
 
@@ -80,6 +82,9 @@ func (a *API) createAgent(ctx context.Context, orgID, name string) (*store.Agent
 	}
 	if name == "" {
 		name = "agent"
+	}
+	if err := a.enforceAgentQuota(ctx, org.ID); err != nil {
+		return nil, "", err
 	}
 	agent := &store.Agent{
 		ID:        store.NewID("ag"),

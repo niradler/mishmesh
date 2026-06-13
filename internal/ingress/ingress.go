@@ -55,6 +55,11 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tunnel not found", http.StatusNotFound)
 		return
 	}
+	if i.bandwidthExceeded(r, ep) {
+		http.Error(w, "bandwidth quota exceeded", http.StatusTooManyRequests)
+		i.recordCode(http.StatusTooManyRequests)
+		return
+	}
 	if !applyPolicyGate(w, r, ep) {
 		return
 	}
@@ -260,6 +265,17 @@ func preserveUpgradeHeaders(dst, src http.Header) {
 			dst.Set(k, v)
 		}
 	}
+}
+
+func (i *Ingress) bandwidthExceeded(r *http.Request, ep *store.Endpoint) bool {
+	if ep == nil || ep.OrgID == "" {
+		return false
+	}
+	q, err := i.data.GetQuota(r.Context(), ep.OrgID)
+	if err != nil || q.MaxBandwidthBytes <= 0 {
+		return false
+	}
+	return i.conns.Usage(ep.OrgID) >= q.MaxBandwidthBytes
 }
 
 func (i *Ingress) meterBytes(ep *store.Endpoint, kind string, in, out int64) {

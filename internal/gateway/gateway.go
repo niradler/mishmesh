@@ -161,6 +161,11 @@ func (g *Gateway) handleRegister(ctx context.Context, agent *store.Agent, p *tun
 			})
 			continue
 		}
+		if !g.quotaAllowsEndpoint(ctx, agent.OrgID) {
+			g.log.Warn("endpoint quota exceeded", "agent_id", agent.ID, "org_id", agent.OrgID)
+			ack.Endpoints = append(ack.Endpoints, tunnel.EndpointBinding{Ref: req.Ref})
+			continue
+		}
 		ep := &store.Endpoint{
 			ID:        store.NewID("ep"),
 			AgentID:   agent.ID,
@@ -191,6 +196,10 @@ func (g *Gateway) handleRegister(ctx context.Context, agent *store.Agent, p *tun
 func (g *Gateway) registerTCP(ctx context.Context, agent *store.Agent, req tunnel.EndpointRequest, lifecycle string) tunnel.EndpointBinding {
 	if g.ports == nil {
 		g.log.Warn("tcp endpoint requested but tcp ingress is disabled", "agent_id", agent.ID)
+		return tunnel.EndpointBinding{Ref: req.Ref}
+	}
+	if !g.quotaAllowsEndpoint(ctx, agent.OrgID) {
+		g.log.Warn("endpoint quota exceeded", "agent_id", agent.ID, "org_id", agent.OrgID)
 		return tunnel.EndpointBinding{Ref: req.Ref}
 	}
 	ep := &store.Endpoint{
@@ -246,6 +255,18 @@ func (g *Gateway) publicHost() string {
 		return h
 	}
 	return g.baseDomain
+}
+
+func (g *Gateway) quotaAllowsEndpoint(ctx context.Context, orgID string) bool {
+	q, err := g.data.GetQuota(ctx, orgID)
+	if err != nil || q.MaxEndpoints <= 0 {
+		return true
+	}
+	n, err := g.data.CountEndpoints(ctx, orgID)
+	if err != nil {
+		return true
+	}
+	return n < q.MaxEndpoints
 }
 
 func decodePolicy(raw json.RawMessage, log *slog.Logger) *store.EndpointPolicy {

@@ -12,10 +12,18 @@ import (
 )
 
 type API struct {
-	data       store.DataStore
-	conns      store.ConnectionStore
-	log        *slog.Logger
-	adminToken string
+	data         store.DataStore
+	conns        store.ConnectionStore
+	log          *slog.Logger
+	adminToken   string
+	defaultQuota store.Quota
+	baseDomain   string
+	publicScheme string
+}
+
+func (a *API) SetPublicConfig(baseDomain, scheme string) {
+	a.baseDomain = baseDomain
+	a.publicScheme = scheme
 }
 
 func New(data store.DataStore, conns store.ConnectionStore, adminToken string, log *slog.Logger) *API {
@@ -23,6 +31,46 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 		log = slog.Default()
 	}
 	return &API{data: data, conns: conns, log: log, adminToken: adminToken}
+}
+
+type ctxKey int
+
+const (
+	ctxOrgID ctxKey = iota
+	ctxActor
+	ctxRole
+)
+
+func (a *API) orgScope(r *http.Request) string {
+	if v, ok := r.Context().Value(ctxOrgID).(string); ok && v != "" {
+		return v
+	}
+	if v := r.URL.Query().Get("org_id"); v != "" {
+		return v
+	}
+	return defaultOrgID
+}
+
+func (a *API) actor(r *http.Request) string {
+	if v, ok := r.Context().Value(ctxActor).(string); ok && v != "" {
+		return v
+	}
+	return "system"
+}
+
+func (a *API) audit(r *http.Request, action, target, detail string) {
+	ev := &store.AuditEvent{
+		ID:        store.NewID("aud"),
+		OrgID:     a.orgScope(r),
+		Actor:     a.actor(r),
+		Action:    action,
+		Target:    target,
+		Detail:    detail,
+		CreatedAt: time.Now(),
+	}
+	if err := a.data.AppendAudit(r.Context(), ev); err != nil {
+		a.log.Warn("append audit failed", "action", action, "err", err)
+	}
 }
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -41,6 +89,18 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/agents/{id}/revoke", a.guard(a.revokeAgentHandler))
 	mux.HandleFunc("GET /api/v1/agents/{id}/endpoints", a.guard(a.listEndpointsHandler))
 	mux.HandleFunc("GET /api/v1/agents/{id}/tokens", a.guard(a.listTokensHandler))
+
+	mux.HandleFunc("GET /api/v1/endpoints", a.guard(a.listOrgEndpointsHandler))
+	mux.HandleFunc("POST /api/v1/endpoints", a.guard(a.createEndpointHandler))
+	mux.HandleFunc("GET /api/v1/endpoints/{id}", a.guard(a.getEndpointHandler))
+	mux.HandleFunc("PATCH /api/v1/endpoints/{id}", a.guard(a.patchEndpointHandler))
+	mux.HandleFunc("DELETE /api/v1/endpoints/{id}", a.guard(a.deleteEndpointHandler))
+
+	mux.HandleFunc("GET /api/v1/quota", a.guard(a.getQuotaHandler))
+	mux.HandleFunc("PUT /api/v1/quota", a.guard(a.putQuotaHandler))
+
+	mux.HandleFunc("GET /api/v1/audit", a.guard(a.listAuditHandler))
+	mux.HandleFunc("GET /api/v1/status", a.guard(a.statusHandler))
 }
 
 func (a *API) guard(h http.HandlerFunc) http.HandlerFunc {
@@ -132,9 +192,14 @@ func (a *API) createAgentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent, raw, err := a.createAgent(r.Context(), req.OrgID, req.Name)
+	if errors.Is(err, errQuotaAgents) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if a.handleErr(w, err) {
 		return
 	}
+	a.audit(r, "agent.create", agent.ID, agent.Name)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"agent": a.toAgentDTO(agent),
 		"token": raw,

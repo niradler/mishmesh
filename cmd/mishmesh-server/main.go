@@ -88,6 +88,12 @@ func serve(_ []string) error {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
 	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
+	cp.SetPublicConfig(cfg.BaseDomain, cfg.PublicScheme)
+	cp.SetDefaultQuota(store.Quota{
+		MaxAgents:         cfg.QuotaMaxAgents,
+		MaxEndpoints:      cfg.QuotaMaxEndpoints,
+		MaxBandwidthBytes: cfg.QuotaMaxBandwidthBytes,
+	})
 	cp.Register(apiMux)
 
 	if cfg.BootstrapToken != "" {
