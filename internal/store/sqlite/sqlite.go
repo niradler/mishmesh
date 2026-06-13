@@ -3,8 +3,10 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -75,16 +77,73 @@ CREATE TABLE IF NOT EXISTS endpoints (
   kind       TEXT NOT NULL,
   lifecycle  TEXT NOT NULL,
   subdomain  TEXT,
+  domain     TEXT,
   port       INTEGER NOT NULL DEFAULT 0,
+  policy     TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_endpoints_subdomain
   ON endpoints(subdomain) WHERE subdomain IS NOT NULL AND subdomain <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_endpoints_domain
+  ON endpoints(domain) WHERE domain IS NOT NULL AND domain <> '';
+CREATE TABLE IF NOT EXISTS quotas (
+  org_id              TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+  max_agents          INTEGER NOT NULL DEFAULT 0,
+  max_endpoints       INTEGER NOT NULL DEFAULT 0,
+  max_bandwidth_bytes INTEGER NOT NULL DEFAULT 0,
+  updated_at          INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS users (
+  id            TEXT PRIMARY KEY,
+  email         TEXT NOT NULL UNIQUE,
+  name          TEXT NOT NULL,
+  password_hash TEXT,
+  google_sub    TEXT,
+  created_at    INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub
+  ON users(google_sub) WHERE google_sub IS NOT NULL AND google_sub <> '';
+CREATE TABLE IF NOT EXISTS memberships (
+  org_id     TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role       TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (org_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  id_hash    TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  org_id     TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit (
+  id         TEXT PRIMARY KEY,
+  org_id     TEXT NOT NULL,
+  actor      TEXT NOT NULL,
+  action     TEXT NOT NULL,
+  target     TEXT,
+  detail     TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_org ON audit(org_id, created_at);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	for _, alter := range []string{
+		`ALTER TABLE endpoints ADD COLUMN domain TEXT`,
+		`ALTER TABLE endpoints ADD COLUMN policy TEXT`,
+	} {
+		if _, err := s.db.ExecContext(ctx, alter); err != nil && !isDuplicateColumn(err) {
+			return fmt.Errorf("migrate alter: %w", err)
+		}
+	}
 	return nil
+}
+
+func isDuplicateColumn(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column")
 }
 
 func (s *Store) CreateOrg(ctx context.Context, o *store.Org) error {
@@ -103,6 +162,25 @@ func (s *Store) GetOrg(ctx context.Context, id string) (*store.Org, error) {
 	}
 	o.CreatedAt = fromNS(created)
 	return &o, nil
+}
+
+func (s *Store) ListOrgs(ctx context.Context) ([]*store.Org, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created_at FROM orgs ORDER BY created_at`)
+	if err != nil {
+		return nil, wrap("list orgs", err)
+	}
+	defer rows.Close()
+	var out []*store.Org
+	for rows.Next() {
+		var o store.Org
+		var created int64
+		if err := rows.Scan(&o.ID, &o.Name, &created); err != nil {
+			return nil, scanErr("scan org", err)
+		}
+		o.CreatedAt = fromNS(created)
+		out = append(out, &o)
+	}
+	return out, wrap("list orgs", rows.Err())
 }
 
 func (s *Store) CreateAgent(ctx context.Context, a *store.Agent) error {
@@ -149,6 +227,10 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 func (s *Store) TouchAgent(ctx context.Context, id string, seenAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE agents SET last_seen_at = ? WHERE id = ?`, ns(seenAt), id)
 	return wrap("touch agent", err)
+}
+
+func (s *Store) CountAgents(ctx context.Context, orgID string) (int, error) {
+	return s.count(ctx, `SELECT COUNT(*) FROM agents WHERE org_id = ? AND status != ?`, orgID, store.AgentRevoked)
 }
 
 func scanAgent(scan func(...any) error) (*store.Agent, error) {
@@ -227,28 +309,44 @@ func (s *Store) RevokeTokensByAgent(ctx context.Context, agentID string) error {
 	return wrap("revoke agent tokens", err)
 }
 
+const endpointCols = `id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, policy, created_at`
+
 func (s *Store) CreateEndpoint(ctx context.Context, e *store.Endpoint) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO endpoints (id, agent_id, org_id, kind, lifecycle, subdomain, port, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.ID, e.AgentID, e.OrgID, e.Kind, e.Lifecycle, nullStr(e.Subdomain), e.Port, ns(e.CreatedAt))
+	pol, err := marshalPolicy(e.Policy)
+	if err != nil {
+		return wrap("create endpoint", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO endpoints (id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, policy, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.AgentID, e.OrgID, e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, ns(e.CreatedAt))
 	return wrap("create endpoint", err)
 }
 
 func (s *Store) GetEndpoint(ctx context.Context, id string) (*store.Endpoint, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT id, agent_id, org_id, kind, lifecycle, subdomain, port, created_at FROM endpoints WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE id = ?`, id)
 	return scanEndpoint(row.Scan)
 }
 
 func (s *Store) GetEndpointBySubdomain(ctx context.Context, subdomain string) (*store.Endpoint, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT id, agent_id, org_id, kind, lifecycle, subdomain, port, created_at FROM endpoints WHERE subdomain = ?`, subdomain)
+	row := s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE subdomain = ?`, subdomain)
+	return scanEndpoint(row.Scan)
+}
+
+func (s *Store) GetEndpointByDomain(ctx context.Context, domain string) (*store.Endpoint, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE domain = ?`, domain)
 	return scanEndpoint(row.Scan)
 }
 
 func (s *Store) ListEndpointsByAgent(ctx context.Context, agentID string) ([]*store.Endpoint, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, agent_id, org_id, kind, lifecycle, subdomain, port, created_at FROM endpoints WHERE agent_id = ? ORDER BY created_at`, agentID)
+	return s.queryEndpoints(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE agent_id = ? ORDER BY created_at`, agentID)
+}
+
+func (s *Store) ListEndpointsByOrg(ctx context.Context, orgID string) ([]*store.Endpoint, error) {
+	return s.queryEndpoints(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE org_id = ? ORDER BY created_at`, orgID)
+}
+
+func (s *Store) queryEndpoints(ctx context.Context, query string, args ...any) ([]*store.Endpoint, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, wrap("list endpoints", err)
 	}
@@ -264,21 +362,251 @@ func (s *Store) ListEndpointsByAgent(ctx context.Context, agentID string) ([]*st
 	return out, wrap("list endpoints", rows.Err())
 }
 
+func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
+	pol, err := marshalPolicy(e.Policy)
+	if err != nil {
+		return wrap("update endpoint", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE endpoints SET kind = ?, lifecycle = ?, subdomain = ?, domain = ?, port = ?, policy = ? WHERE id = ?`,
+		e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, e.ID)
+	return wrap("update endpoint", err)
+}
+
 func (s *Store) DeleteEndpoint(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM endpoints WHERE id = ?`, id)
 	return wrap("delete endpoint", err)
 }
 
+func (s *Store) CountEndpoints(ctx context.Context, orgID string) (int, error) {
+	return s.count(ctx, `SELECT COUNT(*) FROM endpoints WHERE org_id = ?`, orgID)
+}
+
+func (s *Store) count(ctx context.Context, query string, args ...any) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		return 0, wrap("count", err)
+	}
+	return n, nil
+}
+
 func scanEndpoint(scan func(...any) error) (*store.Endpoint, error) {
 	var e store.Endpoint
 	var created int64
-	var sub sql.NullString
-	if err := scan(&e.ID, &e.AgentID, &e.OrgID, &e.Kind, &e.Lifecycle, &sub, &e.Port, &created); err != nil {
+	var sub, domain, pol sql.NullString
+	if err := scan(&e.ID, &e.AgentID, &e.OrgID, &e.Kind, &e.Lifecycle, &sub, &domain, &e.Port, &pol, &created); err != nil {
 		return nil, scanErr("scan endpoint", err)
 	}
 	e.Subdomain = sub.String
+	e.Domain = domain.String
 	e.CreatedAt = fromNS(created)
+	if pol.Valid && pol.String != "" {
+		var p store.EndpointPolicy
+		if err := json.Unmarshal([]byte(pol.String), &p); err != nil {
+			return nil, wrap("scan endpoint policy", err)
+		}
+		e.Policy = &p
+	}
 	return &e, nil
+}
+
+func marshalPolicy(p *store.EndpointPolicy) (any, error) {
+	if p == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}
+
+func (s *Store) GetQuota(ctx context.Context, orgID string) (*store.Quota, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT org_id, max_agents, max_endpoints, max_bandwidth_bytes, updated_at FROM quotas WHERE org_id = ?`, orgID)
+	var q store.Quota
+	var updated int64
+	if err := row.Scan(&q.OrgID, &q.MaxAgents, &q.MaxEndpoints, &q.MaxBandwidthBytes, &updated); err != nil {
+		return nil, scanErr("get quota", err)
+	}
+	q.UpdatedAt = fromNS(updated)
+	return &q, nil
+}
+
+func (s *Store) SetQuota(ctx context.Context, q *store.Quota) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO quotas (org_id, max_agents, max_endpoints, max_bandwidth_bytes, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(org_id) DO UPDATE SET max_agents = excluded.max_agents,
+		   max_endpoints = excluded.max_endpoints, max_bandwidth_bytes = excluded.max_bandwidth_bytes,
+		   updated_at = excluded.updated_at`,
+		q.OrgID, q.MaxAgents, q.MaxEndpoints, q.MaxBandwidthBytes, ns(time.Now()))
+	return wrap("set quota", err)
+}
+
+func (s *Store) CreateUser(ctx context.Context, u *store.User) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO users (id, email, name, password_hash, google_sub, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		u.ID, strings.ToLower(u.Email), u.Name, nullStr(u.PasswordHash), nullStr(u.GoogleSub), ns(u.CreatedAt))
+	return wrap("create user", err)
+}
+
+func (s *Store) GetUserByID(ctx context.Context, id string) (*store.User, error) {
+	return scanUser(s.db.QueryRowContext(ctx, `SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE id = ?`, id).Scan)
+}
+
+func (s *Store) GetUserByEmail(ctx context.Context, email string) (*store.User, error) {
+	return scanUser(s.db.QueryRowContext(ctx, `SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE email = ?`, strings.ToLower(email)).Scan)
+}
+
+func (s *Store) GetUserByGoogleSub(ctx context.Context, sub string) (*store.User, error) {
+	return scanUser(s.db.QueryRowContext(ctx, `SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE google_sub = ?`, sub).Scan)
+}
+
+func (s *Store) UpdateUser(ctx context.Context, u *store.User) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET email = ?, name = ?, password_hash = ?, google_sub = ? WHERE id = ?`,
+		strings.ToLower(u.Email), u.Name, nullStr(u.PasswordHash), nullStr(u.GoogleSub), u.ID)
+	return wrap("update user", err)
+}
+
+func (s *Store) CountUsers(ctx context.Context) (int, error) {
+	return s.count(ctx, `SELECT COUNT(*) FROM users`)
+}
+
+func scanUser(scan func(...any) error) (*store.User, error) {
+	var u store.User
+	var created int64
+	var pw, sub sql.NullString
+	if err := scan(&u.ID, &u.Email, &u.Name, &pw, &sub, &created); err != nil {
+		return nil, scanErr("scan user", err)
+	}
+	u.PasswordHash = pw.String
+	u.GoogleSub = sub.String
+	u.CreatedAt = fromNS(created)
+	return &u, nil
+}
+
+func (s *Store) CreateMembership(ctx context.Context, m *store.Membership) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(org_id, user_id) DO UPDATE SET role = excluded.role`,
+		m.OrgID, m.UserID, m.Role, ns(m.CreatedAt))
+	return wrap("create membership", err)
+}
+
+func (s *Store) GetMembership(ctx context.Context, orgID, userID string) (*store.Membership, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT org_id, user_id, role, created_at FROM memberships WHERE org_id = ? AND user_id = ?`, orgID, userID)
+	return scanMembership(row.Scan)
+}
+
+func (s *Store) ListMembershipsByUser(ctx context.Context, userID string) ([]*store.Membership, error) {
+	return s.queryMemberships(ctx, `SELECT org_id, user_id, role, created_at FROM memberships WHERE user_id = ? ORDER BY created_at`, userID)
+}
+
+func (s *Store) ListMembershipsByOrg(ctx context.Context, orgID string) ([]*store.Membership, error) {
+	return s.queryMemberships(ctx, `SELECT org_id, user_id, role, created_at FROM memberships WHERE org_id = ? ORDER BY created_at`, orgID)
+}
+
+func (s *Store) queryMemberships(ctx context.Context, query string, args ...any) ([]*store.Membership, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, wrap("list memberships", err)
+	}
+	defer rows.Close()
+	var out []*store.Membership
+	for rows.Next() {
+		m, err := scanMembership(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, wrap("list memberships", rows.Err())
+}
+
+func (s *Store) UpdateMembership(ctx context.Context, m *store.Membership) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE memberships SET role = ? WHERE org_id = ? AND user_id = ?`, m.Role, m.OrgID, m.UserID)
+	return wrap("update membership", err)
+}
+
+func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = ? AND user_id = ?`, orgID, userID)
+	return wrap("delete membership", err)
+}
+
+func scanMembership(scan func(...any) error) (*store.Membership, error) {
+	var m store.Membership
+	var created int64
+	if err := scan(&m.OrgID, &m.UserID, &m.Role, &created); err != nil {
+		return nil, scanErr("scan membership", err)
+	}
+	m.CreatedAt = fromNS(created)
+	return &m, nil
+}
+
+func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (id_hash, user_id, org_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		sess.IDHash, sess.UserID, sess.OrgID, ns(sess.CreatedAt), ns(sess.ExpiresAt))
+	return wrap("create session", err)
+}
+
+func (s *Store) GetSession(ctx context.Context, idHash string) (*store.Session, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id_hash, user_id, org_id, created_at, expires_at FROM sessions WHERE id_hash = ?`, idHash)
+	var sess store.Session
+	var created, expires int64
+	if err := row.Scan(&sess.IDHash, &sess.UserID, &sess.OrgID, &created, &expires); err != nil {
+		return nil, scanErr("get session", err)
+	}
+	sess.CreatedAt = fromNS(created)
+	sess.ExpiresAt = fromNS(expires)
+	return &sess, nil
+}
+
+func (s *Store) DeleteSession(ctx context.Context, idHash string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = ?`, idHash)
+	return wrap("delete session", err)
+}
+
+func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`, ns(now))
+	return wrap("delete expired sessions", err)
+}
+
+func (s *Store) AppendAudit(ctx context.Context, e *store.AuditEvent) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO audit (id, org_id, actor, action, target, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.OrgID, e.Actor, e.Action, nullStr(e.Target), nullStr(e.Detail), ns(e.CreatedAt))
+	return wrap("append audit", err)
+}
+
+func (s *Store) ListAudit(ctx context.Context, orgID string, limit int) ([]*store.AuditEvent, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, org_id, actor, action, target, detail, created_at FROM audit WHERE org_id = ? ORDER BY created_at DESC LIMIT ?`, orgID, limit)
+	if err != nil {
+		return nil, wrap("list audit", err)
+	}
+	defer rows.Close()
+	var out []*store.AuditEvent
+	for rows.Next() {
+		var e store.AuditEvent
+		var created int64
+		var target, detail sql.NullString
+		if err := rows.Scan(&e.ID, &e.OrgID, &e.Actor, &e.Action, &target, &detail, &created); err != nil {
+			return nil, scanErr("scan audit", err)
+		}
+		e.Target = target.String
+		e.Detail = detail.String
+		e.CreatedAt = fromNS(created)
+		out = append(out, &e)
+	}
+	return out, wrap("list audit", rows.Err())
 }
 
 func ns(t time.Time) int64 { return t.UTC().UnixNano() }

@@ -21,9 +21,9 @@ type Options struct {
 }
 
 type Ingress struct {
-	data    store.DataStore
-	conns   store.ConnectionStore
-	log     *slog.Logger
+	data     store.DataStore
+	conns    store.ConnectionStore
+	log      *slog.Logger
 	apexHost string
 }
 
@@ -100,7 +100,7 @@ func (i *Ingress) proxyHTTP(w http.ResponseWriter, r *http.Request, conn store.A
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	stream, err := conn.OpenStream(ctx, endpointID, store.KindHTTP)
+	stream, err := conn.OpenStream(ctx, endpointID, store.KindHTTP, nil)
 	if err != nil {
 		http.Error(w, "tunnel stream failed", http.StatusBadGateway)
 		i.log.Warn("open stream failed", "endpoint_id", endpointID, "err", err)

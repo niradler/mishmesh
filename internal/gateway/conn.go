@@ -21,8 +21,8 @@ func newAgentConn(agentID string, sess *tunnel.Session) *agentConn {
 
 func (a *agentConn) AgentID() string { return a.agentID }
 
-func (a *agentConn) OpenStream(_ context.Context, endpointID, kind string) (net.Conn, error) {
-	return a.sess.OpenData(tunnel.StreamInit{EndpointID: endpointID, Kind: kind})
+func (a *agentConn) OpenStream(_ context.Context, endpointID, kind string, meta map[string]string) (net.Conn, error) {
+	return a.sess.OpenData(tunnel.StreamInit{EndpointID: endpointID, Kind: kind, Meta: meta})
 }
 
 func (a *agentConn) Close() error { return a.sess.Close() }

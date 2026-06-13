@@ -10,12 +10,14 @@ type ConnStore struct {
 	mu        sync.RWMutex
 	agents    map[string]store.AgentConn
 	endpoints map[string]string
+	usage     map[string]int64
 }
 
 func NewConnStore() *ConnStore {
 	return &ConnStore{
 		agents:    make(map[string]store.AgentConn),
 		endpoints: make(map[string]string),
+		usage:     make(map[string]int64),
 	}
 }
 
@@ -74,4 +76,19 @@ func (c *ConnStore) ResolveEndpoint(endpointID string) (store.AgentConn, bool) {
 	conn, ok := c.agents[agentID]
 	c.mu.RUnlock()
 	return conn, ok
+}
+
+func (c *ConnStore) AddUsage(orgID string, bytes int64) {
+	if orgID == "" || bytes == 0 {
+		return
+	}
+	c.mu.Lock()
+	c.usage[orgID] += bytes
+	c.mu.Unlock()
+}
+
+func (c *ConnStore) Usage(orgID string) int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.usage[orgID]
 }
