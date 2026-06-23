@@ -91,6 +91,7 @@ MISHMESH_TOKEN=<token> mishmesh-agent tcp 22 --gateway wss://tunnel.example.com:
 | `MISHMESH_API_AUTH_DISABLED` | explicit opt-out: run the control API without auth. The server refuses to start if neither this nor `API_AUTH_TOKEN` is set (fail-closed). |
 | `MISHMESH_SELF_SIGNED_TLS` | mint an in-memory self-signed cert for the apex + wildcard (dev/local TLS) when no BYO/ACME cert is set |
 | `MISHMESH_TLS_PASSTHROUGH_ENABLED` / `MISHMESH_TLS_PASSTHROUGH_ADDR` | SNI-routed TLS passthrough listener for `kind=tls` endpoints |
+| `MISHMESH_SSH_ENABLED` / `MISHMESH_SSH_ADDR` / `MISHMESH_SSH_HOST_KEY_FILE` | clientless SSH remote-forward front door (stock `ssh -R`); host key persisted if set |
 | `MISHMESH_AUTH_ENABLED` / `MISHMESH_AUTH_PASSWORD_ENABLED` | require browser login; toggle password auth (off ⇒ Google-only) |
 | `MISHMESH_WEBUI_ENABLED` / `MISHMESH_WEBUI_DIR` | serve the React SPA (image bundles it at `/webui`) |
 | `MISHMESH_GOOGLE_CLIENT_ID` / `MISHMESH_GOOGLE_CLIENT_SECRET` / `MISHMESH_OIDC_REDIRECT_URL` | Google OIDC login |
@@ -101,6 +102,61 @@ MISHMESH_TOKEN=<token> mishmesh-agent tcp 22 --gateway wss://tunnel.example.com:
 | `MISHMESH_QUOTA_MAX_AGENTS` / `_MAX_ENDPOINTS` / `_MAX_BANDWIDTH_BYTES` | default per-org quotas (0 = unlimited) |
 
 Agent reach-in allowlist: `MISHMESH_ALLOW` / `--allow` (deny-first, comma-separated `host|cidr[:port;port]`). Loopback, link-local, and cloud-metadata IPs are always hard-denied.
+
+## Connectivity methods
+
+Beyond the native agent tunnel, endpoints carry a `method` (`native | ssh | proxy | tailscale | cloudflare`).
+
+### Clientless SSH remote-forward (no install)
+
+Enable a stock-SSH front door — users expose a service with the `ssh` already on their machine, no
+mishmesh agent:
+
+```
+MISHMESH_SSH_ENABLED=true
+MISHMESH_SSH_ADDR=0.0.0.0:2222        # default 127.0.0.1:2222
+MISHMESH_SSH_HOST_KEY_FILE=/data/ssh_host_ed25519   # optional; generated in-memory if unset
+```
+
+```bash
+# password = an agent token (POST /api/v1/agents); the SSH username becomes the subdomain.
+ssh -N -R 80:localhost:3000 myapp@tunnel.example.com -p 2222
+#   -> https://myapp.tunnel.example.com   (HTTP, method=ssh)
+# non-80 bind ports allocate a public TCP port (needs TCP ingress enabled).
+```
+
+The reverse forward maps to a normal mishmesh Endpoint, so all routing, policy, TLS, quota, and metering
+apply unchanged. Persist the host key file so the server identity is stable across restarts.
+
+### Agentless proxy
+
+For a target mishmesh can already reach, create a `method=proxy` endpoint — mishmesh reverse-proxies it
+directly (managed DNS/TLS/policy, no agent, no tunnel):
+
+```bash
+curl -X POST http://127.0.0.1:8081/api/v1/endpoints \
+  -d '{"method":"proxy","subdomain":"internal","policy":{"proxy_target":"10.0.0.5:8080"}}'
+```
+
+Targets resolving to cloud-metadata, loopback, link-local, multicast, or unspecified addresses are
+refused, and the resolved IP is pinned for the dial (no DNS-rebinding). Private/LAN ranges are allowed —
+that is the method's purpose. Set `MISHMESH_PROXY_ALLOW_LOOPBACK=true` only if you must proxy to the
+server's own loopback.
+
+### mTLS at the edge
+
+Require client certificates per endpoint (HTTPS ingress only). Add to an endpoint's policy:
+
+```json
+{"mtls": {"client_ca_pem": "-----BEGIN CERTIFICATE-----\n...", "allowed_cns": ["svc-a"]}}
+```
+
+Requests without a certificate chaining to `client_ca_pem` (and matching `allowed_cns`, if set) get 403.
+
+### Managed Tailscale / Cloudflare
+
+Orchestrate-only methods (mishmesh provisions provider resources, traffic flows over the provider) are
+scaffolded behind the `method` field but require live provider API credentials; not enabled in this build.
 
 ## Web UI
 

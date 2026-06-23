@@ -69,7 +69,7 @@ func serve(_ []string) error {
 	if err != nil {
 		return err
 	}
-	proxy.Register(context.Background(), data, conns, log)
+	proxy.Register(context.Background(), data, conns, log, cfg.ProxyAllowLoopback)
 
 	var mx *metrics.Metrics
 	if cfg.MetricsEnabled {

@@ -49,13 +49,19 @@ Roles: `owner` > `admin` > `member`. Writes to org/members/quota require `admin`
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/endpoints` | org endpoints → `[endpointDTO]` |
-| POST | `/endpoints` | create reserved: `{agent_id, kind, subdomain?, domain?, port?, policy?}` |
+| POST | `/endpoints` | create reserved: `{agent_id, kind, method?, subdomain?, domain?, port?, policy?}` |
 | GET | `/endpoints/{id}` | endpointDTO |
 | PATCH | `/endpoints/{id}` | `{subdomain?, domain?, port?, policy?}` |
 | DELETE | `/endpoints/{id}` | 204 |
 
-`endpointDTO`: `{id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, public_url, online, policy}`
-`policy` (all optional): `{request_headers_add:{}, request_headers_remove:[], response_headers_add:{}, response_headers_remove:[], host_header, strip_path_prefix, add_path_prefix, basic_auth_user, basic_auth_password (write-only, hashed server-side), ip_allow:[cidr], ip_deny:[cidr], force_https, max_body_bytes, compression, oidc:{issuer, client_id, client_secret, allowed_emails:[], allowed_domains:[]}}`
+`endpointDTO`: `{id, agent_id, org_id, kind, method, lifecycle, subdomain, domain, port, public_url, online, policy}`
+`method` (default `native`): `native | ssh | proxy | tailscale | cloudflare`. For `method=proxy` omit `agent_id`
+and set `policy.proxy_target` (`host:port`); mishmesh reverse-proxies it directly (no agent). `ssh` endpoints
+are created implicitly by the clientless SSH remote-forward server (see deploy guide), not via this API.
+`policy` (all optional): `{request_headers_add:{}, request_headers_remove:[], response_headers_add:{}, response_headers_remove:[], host_header, strip_path_prefix, add_path_prefix, basic_auth_user, basic_auth_password (write-only, hashed server-side), ip_allow:[cidr], ip_deny:[cidr], force_https, max_body_bytes, compression, oidc:{...}, mtls:{client_ca_pem, allowed_cns:[]}, proxy_target}`
+
+`mtls`: when set, the HTTPS edge requires a client certificate that chains to `client_ca_pem`
+(and whose CN is in `allowed_cns`, if given); otherwise 403. Requires the HTTPS ingress (`TLS_ENABLED`).
 
 ## Quota
 

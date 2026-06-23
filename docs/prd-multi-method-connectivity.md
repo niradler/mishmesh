@@ -68,10 +68,16 @@ mishmesh carries traffic **only** for its own native tunnel and its own clientle
 | # | Method | Client install | Data plane | mishmesh role |
 | - | --- | --- | --- | --- |
 | 1 | **Native tunnel** | mishmesh agent | mishmesh | full (built ✅) |
-| 2 | **Clientless — SSH remote forward** | none (stock `ssh`) | mishmesh | full |
-| 3 | **Clientless — agentless proxy** | none | mishmesh | full |
-| 4 | **Managed Tailscale** | `tailscaled` (managed) | Tailscale | orchestrate only |
-| 5 | **Managed Cloudflare** | `cloudflared` (managed) | Cloudflare | orchestrate only |
+| 2 | **Clientless — SSH remote forward** | none (stock `ssh`) | mishmesh | full (built ✅) |
+| 3 | **Clientless — agentless proxy** | none | mishmesh | full (built ✅) |
+| 4 | **Managed Tailscale** | `tailscaled` (managed) | Tailscale | orchestrate only (scaffolded) |
+| 5 | **Managed Cloudflare** | `cloudflared` (managed) | Cloudflare | orchestrate only (scaffolded) |
+
+> **Build status (2026-06-24):** §5.1 seams (`Endpoint.method`, `connect.Connector`, policy `mtls`/`proxy_target`,
+> store migrations) ✅. Method 2 (clientless SSH remote-forward, `internal/connect/sshfwd`) ✅ — Docker-proven
+> with a stock OpenSSH client across isolated networks. Method 3 (agentless proxy, `internal/connect/proxy`) ✅.
+> Plus mTLS edge auth (networking common). Methods 4–5 are scaffolded behind `method` and await provider
+> credentials. `go test -race ./...` green.
 
 ### 3.1 Native tunnel (existing)
 Already shipped: WSS + yamux, HTTP/TCP/TLS endpoints, per-endpoint policy. Unchanged by this PRD; it is the reference method other methods conform to.

@@ -33,6 +33,7 @@ type Server struct {
 	SSHEnabled            bool
 	SSHAddr               string
 	SSHHostKeyFile        string
+	ProxyAllowLoopback    bool
 	SelfSignedTLS         bool
 	BootstrapToken        string
 	APIAuthToken          string
@@ -95,6 +96,7 @@ func LoadServer() Server {
 		SSHEnabled:            envBool("SSH_ENABLED", false),
 		SSHAddr:               env("SSH_ADDR", "127.0.0.1:2222"),
 		SSHHostKeyFile:        env("SSH_HOST_KEY_FILE", ""),
+		ProxyAllowLoopback:    envBool("PROXY_ALLOW_LOOPBACK", false),
 		SelfSignedTLS:         envBool("SELF_SIGNED_TLS", false),
 		BootstrapToken:        env("BOOTSTRAP_TOKEN", ""),
 		APIAuthToken:          env("API_AUTH_TOKEN", ""),

@@ -1,0 +1,38 @@
+name: mishmesh-ssh
+
+services:
+  server:
+    image: mishmesh-server:ssh
+    networks: [edge]
+    environment:
+      MISHMESH_BASE_DOMAIN: localhost:8080
+      MISHMESH_PUBLIC_SCHEME: http
+      MISHMESH_API_AUTH_DISABLED: "true"
+      MISHMESH_SSH_ENABLED: "true"
+      MISHMESH_SSH_ADDR: 0.0.0.0:2222
+    ports:
+      - "38080:8080"
+      - "38081:8081"
+      - "2222:2222"
+
+  backend:
+    image: traefik/whoami
+    networks: [private]
+    command: ["--port", "80"]
+
+  sshclient:
+    image: ghcr.io/linuxserver/openssh-server
+    networks: [edge, private]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["apk add --no-cache sshpass openssh-client >/dev/null; sleep 360000"]
+
+  tester:
+    image: curlimages/curl:latest
+    networks: [edge]
+    command: ["sleep", "360000"]
+    depends_on: [server]
+
+networks:
+  edge: {}
+  private:
+    internal: true

@@ -40,7 +40,7 @@ func TestProxyRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	_ = data.CreateOrg(ctx, &store.Org{ID: "org_default", Name: "d", CreatedAt: now})
-	Register(ctx, data, conns, nil)
+	Register(ctx, data, conns, nil, true)
 
 	ep := &store.Endpoint{
 		ID: store.NewID("ep"), AgentID: AgentID, OrgID: "org_default", Kind: store.KindHTTP,
@@ -52,10 +52,7 @@ func TestProxyRoundTrip(t *testing.T) {
 	}
 	conns.BindEndpoint(ep.ID, AgentID)
 
-	ac, ok := conns.ResolveEndpoint(ep.ID)
-	if !ok {
-		t.Fatal("proxy endpoint not bound")
-	}
+	ac := newConn(data, nil, true)
 	stream, err := ac.OpenStream(ctx, ep.ID, store.KindHTTP, nil)
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
@@ -73,11 +70,18 @@ func TestProxyRoundTrip(t *testing.T) {
 	}
 }
 
-func TestGuardBlocksMetadata(t *testing.T) {
-	if err := guardTarget("169.254.169.254:80"); err == nil {
-		t.Fatal("expected metadata IP to be blocked")
+func TestGuardBlocks(t *testing.T) {
+	c := newConn(nil, nil, false)
+	for _, target := range []string{"169.254.169.254:80", "169.254.10.10:80", "127.0.0.1:80", "0.0.0.0:80"} {
+		if _, err := c.resolveTarget(target); err == nil {
+			t.Fatalf("expected %q to be blocked", target)
+		}
 	}
-	if err := guardTarget("169.254.10.10:80"); err == nil {
-		t.Fatal("expected link-local to be blocked")
+	if _, err := c.resolveTarget("10.1.2.3:80"); err != nil {
+		t.Fatalf("private LAN target should be allowed (feature intent): %v", err)
+	}
+	loop := newConn(nil, nil, true)
+	if addr, err := loop.resolveTarget("127.0.0.1:80"); err != nil || addr != "127.0.0.1:80" {
+		t.Fatalf("loopback should be allowed when opted in: addr=%q err=%v", addr, err)
 	}
 }

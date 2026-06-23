@@ -48,8 +48,25 @@ Deferred (need live provider creds — flag for Nir): Managed Tailscale (#4), Ma
 Self-signed certs already shipped (`MISHMESH_SELF_SIGNED_TLS`).
 
 ## Status
-- [x] Phase 1 validation
-- [ ] Seams
-- [ ] SSH remote-forward
-- [ ] mTLS edge
-- [ ] Agentless proxy
+- [x] Phase 1 validation (e2e tunnels, isolation, perf, API-key lifecycle)
+- [x] Seams: Endpoint.method + connect.Connector + store migrations + policy mtls/proxy_target
+- [x] Clientless SSH remote-forward (internal/connect/sshfwd) — unit + Docker-proven (stock OpenSSH,
+      across isolated networks, public req -> SSH reverse tunnel -> backend; backend unreachable directly)
+- [x] mTLS edge (per-endpoint client-cert verify) — unit-tested
+- [x] Agentless proxy (internal/connect/proxy) — unit + live-server-proven; SSRF guard
+- [x] go test -race ./... green; gofmt + vet clean; server image rebuilt (mishmesh-server:ssh)
+
+Deferred (need live provider creds): Managed Tailscale (#4), Managed Cloudflare (#5) — scaffolded behind `method`.
+
+## Docker validation stacks (deploy/)
+- compose.e2e.yml — HTTP/TCP tunnels + isolation
+- compose.perf.yml — git-clone/ssh/scp tunnel-vs-direct perf (linux kernel)
+- compose.ssh.yml — clientless SSH remote-forward + agentless proxy
+
+## Next session prompt
+Context: mishmesh prod push — native tunnel + SaaS shipped; added multi-method connectivity (clientless
+SSH remote-forward, agentless proxy, mTLS edge) on the connect.Connector seam. All Docker-validated, tests green.
+State: committed on main. Docs updated (api.md, deploy/README, PRD, this file).
+Next: (optional) Managed Cloudflare/Tailscale connectors (need provider API creds); per-org SSH host-key /
+CA auth option; meter ssh/proxy bytes into quota.
+Issues: SSH host key is ephemeral unless MISHMESH_SSH_HOST_KEY_FILE set — persist it in prod.
