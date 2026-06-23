@@ -9,6 +9,13 @@ import (
 
 var ErrNotFound = errors.New("store: not found")
 
+func MethodOrDefault(m string) string {
+	if m == "" {
+		return MethodNative
+	}
+	return m
+}
+
 const (
 	KindHTTP = "http"
 	KindTCP  = "tcp"
@@ -16,6 +23,12 @@ const (
 
 	LifecycleEphemeral = "ephemeral"
 	LifecycleReserved  = "reserved"
+
+	MethodNative     = "native"
+	MethodSSH        = "ssh"
+	MethodProxy      = "proxy"
+	MethodTailscale  = "tailscale"
+	MethodCloudflare = "cloudflare"
 )
 
 const (
@@ -78,6 +91,13 @@ type EndpointPolicy struct {
 	MaxBodyBytes          int64             `json:"max_body_bytes,omitempty"`
 	Compression           bool              `json:"compression,omitempty"`
 	OIDC                  *OIDCEndpointAuth `json:"oidc,omitempty"`
+	MTLS                  *MTLSConfig       `json:"mtls,omitempty"`
+	ProxyTarget           string            `json:"proxy_target,omitempty"`
+}
+
+type MTLSConfig struct {
+	ClientCAPEM string   `json:"client_ca_pem"`
+	AllowedCNs  []string `json:"allowed_cns,omitempty"`
 }
 
 type Endpoint struct {
@@ -85,6 +105,7 @@ type Endpoint struct {
 	AgentID   string
 	OrgID     string
 	Kind      string
+	Method    string
 	Lifecycle string
 	Subdomain string
 	Domain    string

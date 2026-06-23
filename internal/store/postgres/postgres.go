@@ -122,6 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_org ON audit(org_id, created_at);
 	for _, alter := range []string{
 		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS domain TEXT`,
 		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS policy TEXT`,
+		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS method TEXT`,
 	} {
 		if _, err := s.db.ExecContext(ctx, alter); err != nil {
 			return fmt.Errorf("postgres migrate alter: %w", err)
@@ -288,7 +289,7 @@ func (s *Store) RevokeTokensByAgent(ctx context.Context, agentID string) error {
 	return wrap("revoke agent tokens", err)
 }
 
-const endpointCols = `id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, policy, created_at`
+const endpointCols = `id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, policy, created_at, method`
 
 func (s *Store) CreateEndpoint(ctx context.Context, e *store.Endpoint) error {
 	pol, err := marshalPolicy(e.Policy)
@@ -296,8 +297,8 @@ func (s *Store) CreateEndpoint(ctx context.Context, e *store.Endpoint) error {
 		return wrap("create endpoint", err)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO endpoints (id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, policy, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		e.ID, e.AgentID, e.OrgID, e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, ns(e.CreatedAt))
+		`INSERT INTO endpoints (id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, policy, created_at, method) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		e.ID, e.AgentID, e.OrgID, e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, ns(e.CreatedAt), store.MethodOrDefault(e.Method))
 	return wrap("create endpoint", err)
 }
 
@@ -344,8 +345,8 @@ func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
 		return wrap("update endpoint", err)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE endpoints SET kind = $1, lifecycle = $2, subdomain = $3, domain = $4, port = $5, policy = $6 WHERE id = $7`,
-		e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, e.ID)
+		`UPDATE endpoints SET kind = $1, lifecycle = $2, subdomain = $3, domain = $4, port = $5, policy = $6, method = $7 WHERE id = $8`,
+		e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, store.MethodOrDefault(e.Method), e.ID)
 	return wrap("update endpoint", err)
 }
 
@@ -361,12 +362,13 @@ func (s *Store) CountEndpoints(ctx context.Context, orgID string) (int, error) {
 func scanEndpoint(scan func(...any) error) (*store.Endpoint, error) {
 	var e store.Endpoint
 	var created int64
-	var sub, domain, pol sql.NullString
-	if err := scan(&e.ID, &e.AgentID, &e.OrgID, &e.Kind, &e.Lifecycle, &sub, &domain, &e.Port, &pol, &created); err != nil {
+	var sub, domain, pol, method sql.NullString
+	if err := scan(&e.ID, &e.AgentID, &e.OrgID, &e.Kind, &e.Lifecycle, &sub, &domain, &e.Port, &pol, &created, &method); err != nil {
 		return nil, scanErr("scan endpoint", err)
 	}
 	e.Subdomain = sub.String
 	e.Domain = domain.String
+	e.Method = store.MethodOrDefault(method.String)
 	e.CreatedAt = fromNS(created)
 	if pol.Valid && pol.String != "" {
 		var p store.EndpointPolicy

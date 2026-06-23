@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"crypto/subtle"
+	"crypto/x509"
 	"net"
 	"net/http"
 	"strings"
@@ -37,6 +38,13 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint)
 		if !checkBasicAuth(r, p.BasicAuthUser, p.BasicAuthHash) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="mishmesh"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return false
+		}
+	}
+
+	if p.MTLS != nil {
+		if !checkMTLS(r, p.MTLS) {
+			http.Error(w, "client certificate required", http.StatusForbidden)
 			return false
 		}
 	}
@@ -121,6 +129,37 @@ func shouldCompress(ep *store.Endpoint, r *http.Request, resp *http.Response) bo
 		return false
 	}
 	return strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip")
+}
+
+func checkMTLS(r *http.Request, m *store.MTLSConfig) bool {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return false
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM([]byte(m.ClientCAPEM)) {
+		return false
+	}
+	leaf := r.TLS.PeerCertificates[0]
+	inter := x509.NewCertPool()
+	for _, c := range r.TLS.PeerCertificates[1:] {
+		inter.AddCert(c)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots:         roots,
+		Intermediates: inter,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return false
+	}
+	if len(m.AllowedCNs) == 0 {
+		return true
+	}
+	for _, cn := range m.AllowedCNs {
+		if subtle.ConstantTimeCompare([]byte(cn), []byte(leaf.Subject.CommonName)) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 func checkBasicAuth(r *http.Request, user, hash string) bool {

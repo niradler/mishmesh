@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/config"
+	"github.com/mishmesh/mishmesh/internal/connect/proxy"
+	"github.com/mishmesh/mishmesh/internal/connect/sshfwd"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
 	"github.com/mishmesh/mishmesh/internal/gateway"
 	"github.com/mishmesh/mishmesh/internal/ingress"
@@ -67,6 +69,7 @@ func serve(_ []string) error {
 	if err != nil {
 		return err
 	}
+	proxy.Register(context.Background(), data, conns, log)
 
 	var mx *metrics.Metrics
 	if cfg.MetricsEnabled {
@@ -170,6 +173,38 @@ func serve(_ []string) error {
 			defer tp.Shutdown()
 			log.Info("tls passthrough listener", "addr", cfg.TLSPassthroughAddr)
 		}
+	}
+
+	if cfg.SSHEnabled {
+		sshOpts := sshfwd.Options{
+			Data:         data,
+			Conns:        conns,
+			Log:          log,
+			BaseDomain:   cfg.BaseDomain,
+			PublicScheme: cfg.PublicScheme,
+		}
+		if tcpIngress != nil {
+			sshOpts.Ports = tcpIngress
+		}
+		if mx != nil {
+			sshOpts.Metrics = mx
+		}
+		if cfg.SSHHostKeyFile != "" {
+			pem, err := os.ReadFile(cfg.SSHHostKeyFile)
+			if err != nil {
+				return fmt.Errorf("ssh host key: %w", err)
+			}
+			sshOpts.HostKeyPEM = pem
+		}
+		sshSrv, err := sshfwd.New(sshOpts)
+		if err != nil {
+			return err
+		}
+		if _, err := sshSrv.Listen(cfg.SSHAddr); err != nil {
+			return err
+		}
+		defer sshSrv.Shutdown()
+		log.Info("clientless ssh remote-forward listener", "addr", cfg.SSHAddr)
 	}
 
 	return runServers(log, servers)

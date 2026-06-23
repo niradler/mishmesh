@@ -1,0 +1,72 @@
+name: mishmesh-perf
+
+services:
+  server:
+    image: mishmesh-e2e-server
+    networks: [edge]
+    environment:
+      MISHMESH_BASE_DOMAIN: localhost:28080
+      MISHMESH_PUBLIC_SCHEME: http
+      MISHMESH_API_AUTH_DISABLED: "true"
+      MISHMESH_TCP_PORT_MIN: "20000"
+      MISHMESH_TCP_PORT_MAX: "20010"
+    ports:
+      - "28080:8080"
+      - "28081:8081"
+      - "20000:20000"
+      - "20001:20001"
+
+  gitserver:
+    image: alpine/git
+    networks: [gitnet]
+    volumes:
+      - gitdata:/srv
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        apk add --no-cache git-daemon >/dev/null
+        REPO="${PERF_REPO:-https://github.com/torvalds/linux}"
+        DEPTH="${PERF_DEPTH:-1}"
+        if [ ! -d /srv/repo.git ]; then
+          echo "cloning $$REPO depth=$$DEPTH ..."
+          git clone --bare --depth "$$DEPTH" --single-branch "$$REPO" /srv/repo.git
+          cd /srv/repo.git && git update-server-info
+        fi
+        du -sh /srv/repo.git
+        echo "git daemon up"
+        exec git daemon --verbose --reuseaddr --export-all --base-path=/srv --listen=0.0.0.0 --port=9418
+
+  sshd:
+    image: linuxserver/openssh-server
+    networks: [gitnet]
+    environment:
+      PUBLIC_KEY: "${SSH_PUBKEY}"
+      USER_NAME: tunneluser
+      SUDO_ACCESS: "false"
+      PASSWORD_ACCESS: "false"
+
+  perf-client:
+    image: alpine/git
+    networks: [edge, gitnet]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["apk add --no-cache openssh-client >/dev/null; sleep 360000"]
+
+  agent-git:
+    image: mishmesh-e2e-agent-tcp
+    networks: [edge, gitnet]
+    command: ["tcp", "gitserver:9418", "--port", "20000", "--gateway", "ws://server:8081", "--token", "${GIT_TOKEN}"]
+    depends_on: [server, gitserver]
+
+  agent-ssh:
+    image: mishmesh-e2e-agent-tcp
+    networks: [edge, gitnet]
+    command: ["tcp", "sshd:2222", "--port", "20001", "--gateway", "ws://server:8081", "--token", "${SSH_TOKEN}"]
+    depends_on: [server, sshd]
+
+networks:
+  edge: {}
+  gitnet: {}
+
+volumes:
+  gitdata: {}

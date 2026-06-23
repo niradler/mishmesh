@@ -26,7 +26,7 @@ func buildTLSConfig(cfg config.Server) (*tls.Config, http.Handler, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("load tls keypair: %w", err)
 		}
-		return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, nil, nil
+		return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, ClientAuth: tls.RequestClientCert}, nil, nil
 	}
 	if cfg.ACMEEnabled {
 		apex := hostOnly(cfg.BaseDomain)
@@ -38,6 +38,7 @@ func buildTLSConfig(cfg config.Server) (*tls.Config, http.Handler, error) {
 		}
 		tc := m.TLSConfig()
 		tc.MinVersion = tls.VersionTLS12
+		tc.ClientAuth = tls.RequestClientCert
 		return tc, m.HTTPHandler(nil), nil
 	}
 	if cfg.SelfSignedTLS {
@@ -45,7 +46,7 @@ func buildTLSConfig(cfg config.Server) (*tls.Config, http.Handler, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, nil, nil
+		return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, ClientAuth: tls.RequestClientCert}, nil, nil
 	}
 	return nil, nil, fmt.Errorf("TLS enabled but no certificate source: set TLS_CERT_FILE/TLS_KEY_FILE, ACME_ENABLED=true, or SELF_SIGNED_TLS=true")
 }

@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -24,6 +25,7 @@ type endpointDTO struct {
 	AgentID   string                `json:"agent_id"`
 	OrgID     string                `json:"org_id"`
 	Kind      string                `json:"kind"`
+	Method    string                `json:"method"`
 	Lifecycle string                `json:"lifecycle"`
 	Subdomain string                `json:"subdomain"`
 	Domain    string                `json:"domain"`
@@ -37,6 +39,7 @@ type endpointDTO struct {
 type endpointInput struct {
 	AgentID   string       `json:"agent_id"`
 	Kind      string       `json:"kind"`
+	Method    string       `json:"method"`
 	Subdomain string       `json:"subdomain"`
 	Domain    string       `json:"domain"`
 	Port      int          `json:"port"`
@@ -54,7 +57,7 @@ func (a *API) toEndpointDTO(ep *store.Endpoint) endpointDTO {
 		_, online = a.conns.ResolveEndpoint(ep.ID)
 	}
 	return endpointDTO{
-		ID: ep.ID, AgentID: ep.AgentID, OrgID: ep.OrgID, Kind: ep.Kind,
+		ID: ep.ID, AgentID: ep.AgentID, OrgID: ep.OrgID, Kind: ep.Kind, Method: store.MethodOrDefault(ep.Method),
 		Lifecycle: ep.Lifecycle, Subdomain: ep.Subdomain, Domain: ep.Domain, Port: ep.Port,
 		PublicURL: a.publicURL(ep), Online: online, Policy: redactPolicy(ep.Policy), CreatedAt: ep.CreatedAt,
 	}
@@ -125,13 +128,37 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgID := a.orgScope(r)
-	ag, err := a.data.GetAgent(r.Context(), req.AgentID)
-	if a.handleErr(w, err) {
+	kind := req.Kind
+	if kind == "" {
+		kind = store.KindHTTP
+	}
+	method := store.MethodOrDefault(req.Method)
+	if !validMethod(method) {
+		writeError(w, http.StatusBadRequest, "unknown method")
 		return
 	}
-	if ag.OrgID != orgID {
-		writeError(w, http.StatusForbidden, "agent not in org")
+	pol, err := buildPolicy(req.Policy, nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	agentID := req.AgentID
+	if method == store.MethodProxy {
+		if pol == nil || pol.ProxyTarget == "" {
+			writeError(w, http.StatusBadRequest, "proxy_target required for proxy method")
+			return
+		}
+		agentID = proxy.AgentID
+	} else {
+		ag, err := a.data.GetAgent(r.Context(), req.AgentID)
+		if a.handleErr(w, err) {
+			return
+		}
+		if ag.OrgID != orgID {
+			writeError(w, http.StatusForbidden, "agent not in org")
+			return
+		}
+		agentID = ag.ID
 	}
 	if q, err := a.data.GetQuota(r.Context(), orgID); err == nil && q.MaxEndpoints > 0 {
 		if n, _ := a.data.CountEndpoints(r.Context(), orgID); n >= q.MaxEndpoints {
@@ -139,22 +166,16 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	kind := req.Kind
-	if kind == "" {
-		kind = store.KindHTTP
-	}
-	pol, err := buildPolicy(req.Policy, nil)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
 	ep := &store.Endpoint{
-		ID: store.NewID("ep"), AgentID: ag.ID, OrgID: orgID, Kind: kind,
+		ID: store.NewID("ep"), AgentID: agentID, OrgID: orgID, Kind: kind, Method: method,
 		Lifecycle: store.LifecycleReserved, Subdomain: req.Subdomain, Domain: req.Domain,
 		Port: req.Port, Policy: pol, CreatedAt: time.Now(),
 	}
 	if a.handleErr(w, a.data.CreateEndpoint(r.Context(), ep)) {
 		return
+	}
+	if method == store.MethodProxy && a.conns != nil {
+		a.conns.BindEndpoint(ep.ID, proxy.AgentID)
 	}
 	a.audit(r, "endpoint.create", ep.ID, kind)
 	writeJSON(w, http.StatusCreated, a.toEndpointDTO(ep))
@@ -219,6 +240,15 @@ func (a *API) deleteEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "endpoint.delete", ep.ID, "")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func validMethod(m string) bool {
+	switch m {
+	case store.MethodNative, store.MethodSSH, store.MethodProxy, store.MethodTailscale, store.MethodCloudflare:
+		return true
+	default:
+		return false
+	}
 }
 
 func buildPolicy(in *policyInput, existing *store.EndpointPolicy) (*store.EndpointPolicy, error) {

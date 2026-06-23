@@ -30,6 +30,9 @@ type Server struct {
 	TCPPortMax            int
 	TLSPassthroughAddr    string
 	TLSPassthroughEnabled bool
+	SSHEnabled            bool
+	SSHAddr               string
+	SSHHostKeyFile        string
 	SelfSignedTLS         bool
 	BootstrapToken        string
 	APIAuthToken          string
@@ -89,6 +92,9 @@ func LoadServer() Server {
 		TCPPortMax:            envInt("TCP_PORT_MAX", 10100),
 		TLSPassthroughAddr:    env("TLS_PASSTHROUGH_ADDR", "127.0.0.1:8444"),
 		TLSPassthroughEnabled: envBool("TLS_PASSTHROUGH_ENABLED", false),
+		SSHEnabled:            envBool("SSH_ENABLED", false),
+		SSHAddr:               env("SSH_ADDR", "127.0.0.1:2222"),
+		SSHHostKeyFile:        env("SSH_HOST_KEY_FILE", ""),
 		SelfSignedTLS:         envBool("SELF_SIGNED_TLS", false),
 		BootstrapToken:        env("BOOTSTRAP_TOKEN", ""),
 		APIAuthToken:          env("API_AUTH_TOKEN", ""),
