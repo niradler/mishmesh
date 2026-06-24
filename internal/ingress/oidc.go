@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,13 +31,14 @@ const (
 )
 
 type oidcGate struct {
-	data         store.DataStore
-	signKey      []byte
-	cookieSecure bool
-	log          *slog.Logger
-	httpClient   *http.Client
-	mu           sync.Mutex
-	providers    map[string]*oidcProvider
+	data          store.DataStore
+	signKey       []byte
+	cookieSecure  bool
+	allowLoopback bool
+	log           *slog.Logger
+	httpClient    *http.Client
+	mu            sync.Mutex
+	providers     map[string]*oidcProvider
 }
 
 type oidcProvider struct {
@@ -47,17 +49,63 @@ type oidcProvider struct {
 	keysAt                time.Time
 }
 
-func newOIDCGate(data store.DataStore, signKey []byte, cookieSecure bool, log *slog.Logger) *oidcGate {
+func newOIDCGate(data store.DataStore, signKey []byte, cookieSecure, allowLoopback bool, log *slog.Logger) *oidcGate {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &oidcGate{
-		data:         data,
-		signKey:      signKey,
-		cookieSecure: cookieSecure,
-		log:          log,
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
-		providers:    make(map[string]*oidcProvider),
+		data:          data,
+		signKey:       signKey,
+		cookieSecure:  cookieSecure,
+		allowLoopback: allowLoopback,
+		log:           log,
+		httpClient:    ssrfSafeHTTPClient(allowLoopback),
+		providers:     make(map[string]*oidcProvider),
+	}
+}
+
+var oidcMetadataIP = net.IPv4(169, 254, 169, 254)
+
+func oidcBlockedTarget(ip net.IP, allowLoopback bool) bool {
+	if ip.Equal(oidcMetadataIP) || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	return ip.IsLoopback() && !allowLoopback
+}
+
+func ssrfSafeHTTPClient(allowLoopback bool) *http.Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport := &http.Transport{
+		ForceAttemptHTTP2: true,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			for _, ip := range ips {
+				if oidcBlockedTarget(ip.IP, allowLoopback) {
+					return nil, fmt.Errorf("oidc: host %q resolves to blocked address %s", host, ip.IP)
+				}
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		},
+	}
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("oidc: too many redirects")
+			}
+			if !allowLoopback && req.URL.Scheme != "https" {
+				return fmt.Errorf("oidc: insecure redirect scheme %q", req.URL.Scheme)
+			}
+			return nil
+		},
 	}
 }
 
@@ -188,6 +236,9 @@ func (g *oidcGate) provider(ctx context.Context, issuer string) (*oidcProvider, 
 	issuer = strings.TrimRight(issuer, "/")
 	if issuer == "" {
 		return nil, errors.New("empty issuer")
+	}
+	if !g.allowLoopback && !strings.HasPrefix(strings.ToLower(issuer), "https://") {
+		return nil, errors.New("oidc issuer must use https")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()

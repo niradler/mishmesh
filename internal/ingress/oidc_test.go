@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,7 +26,7 @@ import (
 )
 
 func testGate() *oidcGate {
-	return newOIDCGate(nil, []byte("test-signing-key-0123456789abcdef"), false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newOIDCGate(nil, []byte("test-signing-key-0123456789abcdef"), false, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestStateRoundTrip(t *testing.T) {
@@ -90,6 +91,48 @@ func TestAllowlistPermits(t *testing.T) {
 				t.Fatalf("allowlistPermits(%q) = %v want %v", tc.email, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSSRFBlockedTargets(t *testing.T) {
+	cases := []struct {
+		ip            string
+		allowLoopback bool
+		blocked       bool
+	}{
+		{"169.254.169.254", false, true},
+		{"127.0.0.1", false, true},
+		{"::1", false, true},
+		{"169.254.1.2", false, true},
+		{"0.0.0.0", false, true},
+		{"224.0.0.1", false, true},
+		{"127.0.0.1", true, false},
+		{"8.8.8.8", false, false},
+		{"203.0.113.10", false, false},
+	}
+	for _, tc := range cases {
+		ip := net.ParseIP(tc.ip)
+		if ip == nil {
+			t.Fatalf("bad test IP %q", tc.ip)
+		}
+		if got := oidcBlockedTarget(ip, tc.allowLoopback); got != tc.blocked {
+			t.Errorf("oidcBlockedTarget(%s, allowLoopback=%v) = %v want %v", tc.ip, tc.allowLoopback, got, tc.blocked)
+		}
+	}
+}
+
+func TestProviderRejectsInsecureIssuer(t *testing.T) {
+	g := newOIDCGate(nil, []byte("k"), false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := g.provider(context.Background(), "http://accounts.google.com"); err == nil {
+		t.Fatal("non-https issuer must be rejected when loopback is disallowed")
+	}
+}
+
+func TestProviderBlocksMetadataIssuer(t *testing.T) {
+	g := newOIDCGate(nil, []byte("k"), false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := g.provider(context.Background(), "https://169.254.169.254")
+	if err == nil {
+		t.Fatal("metadata-IP issuer must be blocked by the SSRF dialer")
 	}
 }
 
@@ -191,7 +234,7 @@ func TestOIDCFullCallbackFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), false, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	w1 := httptest.NewRecorder()
 	r1 := httptest.NewRequest("GET", "http://app.local/secret", nil)
@@ -272,7 +315,7 @@ func TestOIDCCallbackDeniesDisallowedDomain(t *testing.T) {
 	}
 	_ = data.CreateEndpoint(ctx, ep)
 
-	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), false, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	w1 := httptest.NewRecorder()
 	g.authenticate(w1, httptest.NewRequest("GET", "http://app.local/x", nil), ep)
 	loc, _ := url.Parse(w1.Result().Header.Get("Location"))

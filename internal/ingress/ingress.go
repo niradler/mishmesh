@@ -51,7 +51,7 @@ func New(opts Options) *Ingress {
 		meter:    opts.Meter,
 	}
 	if len(opts.OIDCSignKey) > 0 {
-		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.CookieSecure, log)
+		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.CookieSecure, false, log)
 	}
 	return i
 }
