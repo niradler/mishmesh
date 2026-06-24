@@ -13,7 +13,15 @@ export function Audit() {
 
   return (
     <div>
-      <PageHeader title="Audit log" description="Recent activity in this organization." />
+      <PageHeader
+        title="Audit log"
+        description="Recent activity in this organization."
+        actions={
+          <Badge variant="muted" className="gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse-dot" /> live
+          </Badge>
+        }
+      />
       <Card>
         <CardContent className="pt-4">
           {audit.isLoading ? (
@@ -30,6 +38,7 @@ export function Audit() {
                   <TableHead>Actor</TableHead>
                   <TableHead>Action</TableHead>
                   <TableHead>Target</TableHead>
+                  <TableHead>Detail</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -41,6 +50,7 @@ export function Audit() {
                       <Badge variant="muted" className="font-mono">{ev.action}</Badge>
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{ev.target}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{ev.detail}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

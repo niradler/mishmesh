@@ -32,9 +32,7 @@ export interface Org {
 }
 
 export interface Member {
-  id: string;
-  email: string;
-  name: string;
+  user: { id: string; email: string; name: string };
   role: Role;
   created_at: string;
 }
@@ -121,34 +119,45 @@ export interface EndpointKindCount {
   tls: number;
 }
 
-export interface BandwidthUsage {
-  used_bytes: number;
-  limit_bytes: number;
+export interface StatusQuota {
+  max_agents: number;
+  max_endpoints: number;
+  max_bandwidth_bytes: number;
 }
 
 export interface Status {
-  agents_total: number;
-  agents_connected: number;
-  endpoints_total: number;
-  endpoints_by_kind: EndpointKindCount;
-  bandwidth: BandwidthUsage;
+  agents: { total: number; connected: number };
+  endpoints: { total: number; online: number; by_kind: EndpointKindCount };
+  usage_bytes: number;
+  quota?: StatusQuota;
+}
+
+export interface QuotaUsage {
+  agents: number;
+  endpoints: number;
+  bandwidth_bytes: number;
 }
 
 export interface Quota {
   max_agents: number;
   max_endpoints: number;
-  max_reserved_domains: number;
-  bandwidth_bytes: number;
+  max_bandwidth_bytes: number;
+  usage?: QuotaUsage;
+}
+
+export interface QuotaUpdate {
+  max_agents: number;
+  max_endpoints: number;
+  max_bandwidth_bytes: number;
 }
 
 export interface AuditEvent {
   id: string;
-  org_id: string;
   actor: string;
   action: string;
   target: string;
+  detail: string;
   created_at: string;
-  metadata?: Record<string, string>;
 }
 
 export interface ApiErrorBody {

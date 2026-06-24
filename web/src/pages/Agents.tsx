@@ -82,12 +82,12 @@ function CreateAgentDialog({ orgId }: { orgId?: string }) {
                 Copy this token now — it is shown only once and cannot be retrieved later.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-3">
-              <div className="space-y-1.5">
+            <div className="min-w-0 space-y-3">
+              <div className="min-w-0 space-y-1.5">
                 <Label>Authtoken</Label>
                 <CodeBlock value={issuedToken} label="token" />
               </div>
-              <div className="space-y-1.5">
+              <div className="min-w-0 space-y-1.5">
                 <Label>Run the agent</Label>
                 <CodeBlock value={agentRunCommand(issuedToken)} label="command" />
               </div>

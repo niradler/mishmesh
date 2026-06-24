@@ -39,7 +39,8 @@ function StatCard({
 }
 
 function BandwidthCard({ status }: { status: Status }) {
-  const { used_bytes, limit_bytes } = status.bandwidth;
+  const used_bytes = status.usage_bytes;
+  const limit_bytes = status.quota?.max_bandwidth_bytes ?? 0;
   const pct = limit_bytes > 0 ? Math.min(100, Math.round((used_bytes / limit_bytes) * 100)) : 0;
   const over = pct >= 90;
   return (
@@ -87,19 +88,19 @@ export function Dashboard() {
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <StatCard
             label="Agents"
-            value={`${status.data.agents_connected}/${status.data.agents_total}`}
+            value={`${status.data.agents.connected}/${status.data.agents.total}`}
             hint="connected / total"
             icon={<Server className="h-4 w-4" />}
           />
           <StatCard
             label="Endpoints"
-            value={String(status.data.endpoints_total)}
-            hint={`${status.data.endpoints_by_kind.http} http · ${status.data.endpoints_by_kind.tcp} tcp · ${status.data.endpoints_by_kind.tls} tls`}
+            value={String(status.data.endpoints.total)}
+            hint={`${status.data.endpoints.by_kind.http} http · ${status.data.endpoints.by_kind.tcp} tcp · ${status.data.endpoints.by_kind.tls} tls`}
             icon={<Globe className="h-4 w-4" />}
           />
           <StatCard
             label="HTTP"
-            value={String(status.data.endpoints_by_kind.http)}
+            value={String(status.data.endpoints.by_kind.http)}
             hint="active routes"
             icon={<Radio className="h-4 w-4" />}
           />

@@ -87,9 +87,9 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/orgs/{id}", a.guard(a.getOrgHandler))
 
 	mux.HandleFunc("GET /api/v1/members", a.guard(a.listMembersHandler))
-	mux.HandleFunc("POST /api/v1/members", a.adminGuard(a.addMemberHandler))
-	mux.HandleFunc("PATCH /api/v1/members/{user_id}", a.adminGuard(a.updateMemberHandler))
-	mux.HandleFunc("DELETE /api/v1/members/{user_id}", a.adminGuard(a.removeMemberHandler))
+	mux.HandleFunc("POST /api/v1/members", a.writeGuard(a.addMemberHandler))
+	mux.HandleFunc("PATCH /api/v1/members/{user_id}", a.writeGuard(a.updateMemberHandler))
+	mux.HandleFunc("DELETE /api/v1/members/{user_id}", a.writeGuard(a.removeMemberHandler))
 
 	mux.HandleFunc("POST /api/v1/agents", a.guard(a.createAgentHandler))
 	mux.HandleFunc("GET /api/v1/agents", a.guard(a.listAgentsHandler))
@@ -128,10 +128,10 @@ func (a *API) guard(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (a *API) adminGuard(h http.HandlerFunc) http.HandlerFunc {
+func (a *API) writeGuard(h http.HandlerFunc) http.HandlerFunc {
 	return a.guard(func(w http.ResponseWriter, r *http.Request) {
 		if role, _ := r.Context().Value(ctxRole).(string); role != store.RoleOwner && role != store.RoleAdmin {
-			writeError(w, http.StatusForbidden, "requires admin role")
+			writeError(w, http.StatusForbidden, "requires owner or admin role")
 			return
 		}
 		h(w, r)
@@ -346,7 +346,11 @@ func (a *API) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, eps)
+	out := make([]endpointDTO, 0, len(eps))
+	for _, ep := range eps {
+		out = append(out, a.toEndpointDTO(ep))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *API) listTokensHandler(w http.ResponseWriter, r *http.Request) {

@@ -4,7 +4,7 @@ import {
   useQueryClient,
   type UseQueryOptions,
 } from "@tanstack/react-query";
-import { api } from "./client";
+import { api, apiRequest } from "./client";
 import type {
   Agent,
   AuditEvent,
@@ -17,6 +17,7 @@ import type {
   Member,
   Org,
   Quota,
+  QuotaUpdate,
   Role,
   RotateTokenResponse,
   Status,
@@ -253,7 +254,8 @@ export function useQuota(orgId?: string) {
 export function useUpdateQuota(orgId?: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (quota: Quota) => api.put<Quota>("/quota", { ...quota, org_id: orgId }),
+    mutationFn: (quota: QuotaUpdate) =>
+      apiRequest<Quota>("/quota", { method: "PUT", body: quota, query: { org_id: orgId } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.quota(orgId) }),
   });
 }
@@ -262,6 +264,7 @@ export function useAudit(orgId?: string) {
   return useQuery({
     queryKey: qk.audit(orgId),
     queryFn: () => api.get<AuditEvent[]>("/audit", { org_id: orgId }),
+    refetchInterval: 10000,
   });
 }
 

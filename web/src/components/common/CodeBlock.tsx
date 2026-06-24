@@ -15,7 +15,7 @@ export function CodeBlock({
   return (
     <div
       className={cn(
-        "flex items-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2",
+        "flex w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-md border border-border bg-muted/50 px-3 py-2",
         className,
       )}
     >

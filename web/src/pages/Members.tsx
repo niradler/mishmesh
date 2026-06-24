@@ -130,10 +130,10 @@ export function Members() {
               </TableHeader>
               <TableBody>
                 {members.data.map((m) => (
-                  <TableRow key={m.id}>
+                  <TableRow key={m.user.id}>
                     <TableCell>
-                      <p className="font-medium">{m.name || m.email}</p>
-                      <p className="text-xs text-muted-foreground">{m.email}</p>
+                      <p className="font-medium">{m.user.name || m.user.email}</p>
+                      <p className="text-xs text-muted-foreground">{m.user.email}</p>
                     </TableCell>
                     <TableCell>
                       {isOwnerOrAdmin ? (
@@ -141,7 +141,7 @@ export function Members() {
                           value={m.role}
                           onValueChange={(v) =>
                             updateRole.mutate(
-                              { id: m.id, role: v as Role },
+                              { id: m.user.id, role: v as Role },
                               {
                                 onSuccess: () => toast({ title: "Role updated" }),
                                 onError: (e) => toast({ variant: "destructive", title: "Update failed", description: errMsg(e) }),
@@ -172,7 +172,7 @@ export function Members() {
                           size="icon"
                           className="text-destructive"
                           onClick={() =>
-                            remove.mutate(m.id, {
+                            remove.mutate(m.user.id, {
                               onSuccess: () => toast({ title: "Member removed" }),
                               onError: (e) => toast({ variant: "destructive", title: "Remove failed", description: errMsg(e) }),
                             })

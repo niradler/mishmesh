@@ -11,7 +11,7 @@ import { useSession } from "@/context/SessionContext";
 import { toast } from "@/hooks/use-toast";
 import { ApiError } from "@/api/client";
 import { formatBytes } from "@/lib/utils";
-import type { Quota } from "@/api/types";
+import type { Quota, QuotaUpdate } from "@/api/types";
 
 function Flag({ label, on }: { label: string; on: boolean }) {
   return (
@@ -33,10 +33,22 @@ function Flag({ label, on }: { label: string; on: boolean }) {
 function QuotaForm({ orgId, quota }: { orgId?: string; quota: Quota }) {
   const update = useUpdateQuota(orgId);
   const { isOwnerOrAdmin } = useSession();
-  const [form, setForm] = useState<Quota>(quota);
-  useEffect(() => setForm(quota), [quota]);
+  const [form, setForm] = useState<QuotaUpdate>({
+    max_agents: quota.max_agents,
+    max_endpoints: quota.max_endpoints,
+    max_bandwidth_bytes: quota.max_bandwidth_bytes,
+  });
+  useEffect(
+    () =>
+      setForm({
+        max_agents: quota.max_agents,
+        max_endpoints: quota.max_endpoints,
+        max_bandwidth_bytes: quota.max_bandwidth_bytes,
+      }),
+    [quota],
+  );
 
-  const num = (k: keyof Quota) => (e: React.ChangeEvent<HTMLInputElement>) =>
+  const num = (k: keyof QuotaUpdate) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [k]: Number(e.target.value) }));
 
   const onSubmit = (e: FormEvent) => {
@@ -60,13 +72,11 @@ function QuotaForm({ orgId, quota }: { orgId?: string; quota: Quota }) {
           <Input type="number" value={form.max_endpoints} onChange={num("max_endpoints")} disabled={!isOwnerOrAdmin} />
         </div>
         <div className="space-y-1.5">
-          <Label>Max reserved domains</Label>
-          <Input type="number" value={form.max_reserved_domains} onChange={num("max_reserved_domains")} disabled={!isOwnerOrAdmin} />
-        </div>
-        <div className="space-y-1.5">
-          <Label>Bandwidth bytes</Label>
-          <Input type="number" value={form.bandwidth_bytes} onChange={num("bandwidth_bytes")} disabled={!isOwnerOrAdmin} />
-          <p className="text-xs text-muted-foreground">{formatBytes(form.bandwidth_bytes)}</p>
+          <Label>Max bandwidth</Label>
+          <Input type="number" value={form.max_bandwidth_bytes} onChange={num("max_bandwidth_bytes")} disabled={!isOwnerOrAdmin} />
+          <p className="text-xs text-muted-foreground">
+            {form.max_bandwidth_bytes > 0 ? formatBytes(form.max_bandwidth_bytes) : "unlimited"}
+          </p>
         </div>
       </div>
       {isOwnerOrAdmin && (
