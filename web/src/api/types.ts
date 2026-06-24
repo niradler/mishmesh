@@ -12,6 +12,18 @@ export interface AuthConfig {
   google_enabled: boolean;
 }
 
+export interface Policy {
+  is_default: boolean;
+  roles: string[];
+  actions: string[];
+  matrix: Record<string, Record<string, boolean>>;
+  cedar_src: string;
+}
+
+export interface PolicyUpdate {
+  matrix: Record<string, string[]>;
+}
+
 export interface Membership {
   org_id: string;
   org_name: string;

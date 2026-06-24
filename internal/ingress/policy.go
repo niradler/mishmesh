@@ -12,7 +12,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint) bool {
+func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, oidc *oidcGate) bool {
 	if ep == nil || ep.Policy == nil {
 		return true
 	}
@@ -50,8 +50,13 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint)
 	}
 
 	if p.OIDC != nil {
-		http.Error(w, "endpoint oidc auth not available on this build", http.StatusServiceUnavailable)
-		return false
+		if oidc == nil {
+			http.Error(w, "endpoint oidc auth not configured", http.StatusServiceUnavailable)
+			return false
+		}
+		if !oidc.authenticate(w, r, ep) {
+			return false
+		}
 	}
 
 	if p.MaxBodyBytes > 0 && r.Body != nil {

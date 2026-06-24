@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -22,6 +24,10 @@ type API struct {
 	publicScheme   string
 	reachInEnabled bool
 	auth           *authConfig
+
+	defaultAuthz *authz.Authorizer
+	authzMu      sync.Mutex
+	authzCache   map[string]*authz.Authorizer
 }
 
 func (a *API) SetPublicConfig(baseDomain, scheme string) {
@@ -33,7 +39,40 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 	if log == nil {
 		log = slog.Default()
 	}
-	return &API{data: data, conns: conns, log: log, adminToken: adminToken}
+	return &API{
+		data:         data,
+		conns:        conns,
+		log:          log,
+		adminToken:   adminToken,
+		defaultAuthz: authz.Default(),
+		authzCache:   make(map[string]*authz.Authorizer),
+	}
+}
+
+func (a *API) authorizerFor(ctx context.Context, orgID string) *authz.Authorizer {
+	a.authzMu.Lock()
+	defer a.authzMu.Unlock()
+	if az, ok := a.authzCache[orgID]; ok {
+		return az
+	}
+	pol, err := a.data.GetOrgPolicy(ctx, orgID)
+	if err != nil || pol.CedarSrc == "" {
+		a.authzCache[orgID] = a.defaultAuthz
+		return a.defaultAuthz
+	}
+	az, err := authz.New([]byte(pol.CedarSrc))
+	if err != nil {
+		a.log.Warn("org policy parse failed, using defaults", "org", orgID, "err", err)
+		az = a.defaultAuthz
+	}
+	a.authzCache[orgID] = az
+	return az
+}
+
+func (a *API) invalidateAuthz(orgID string) {
+	a.authzMu.Lock()
+	delete(a.authzCache, orgID)
+	a.authzMu.Unlock()
 }
 
 type ctxKey int
@@ -86,35 +125,38 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/orgs", a.guard(a.createOrgHandler))
 	mux.HandleFunc("GET /api/v1/orgs/{id}", a.guard(a.getOrgHandler))
 
-	mux.HandleFunc("GET /api/v1/members", a.guard(a.listMembersHandler))
-	mux.HandleFunc("POST /api/v1/members", a.writeGuard(a.addMemberHandler))
-	mux.HandleFunc("PATCH /api/v1/members/{user_id}", a.writeGuard(a.updateMemberHandler))
-	mux.HandleFunc("DELETE /api/v1/members/{user_id}", a.writeGuard(a.removeMemberHandler))
+	mux.HandleFunc("GET /api/v1/members", a.require(authz.ActionMemberRead, a.listMembersHandler))
+	mux.HandleFunc("POST /api/v1/members", a.require(authz.ActionMemberManage, a.addMemberHandler))
+	mux.HandleFunc("PATCH /api/v1/members/{user_id}", a.require(authz.ActionMemberManage, a.updateMemberHandler))
+	mux.HandleFunc("DELETE /api/v1/members/{user_id}", a.require(authz.ActionMemberManage, a.removeMemberHandler))
 
-	mux.HandleFunc("POST /api/v1/agents", a.guard(a.createAgentHandler))
-	mux.HandleFunc("GET /api/v1/agents", a.guard(a.listAgentsHandler))
-	mux.HandleFunc("GET /api/v1/agents/{id}", a.guard(a.getAgentHandler))
-	mux.HandleFunc("PATCH /api/v1/agents/{id}", a.guard(a.patchAgentHandler))
-	mux.HandleFunc("DELETE /api/v1/agents/{id}", a.guard(a.deleteAgentHandler))
-	mux.HandleFunc("POST /api/v1/agents/{id}/rotate", a.guard(a.rotateTokenHandler))
-	mux.HandleFunc("POST /api/v1/agents/{id}/revoke", a.guard(a.revokeAgentHandler))
-	mux.HandleFunc("GET /api/v1/agents/{id}/endpoints", a.guard(a.listEndpointsHandler))
-	mux.HandleFunc("GET /api/v1/agents/{id}/tokens", a.guard(a.listTokensHandler))
+	mux.HandleFunc("POST /api/v1/agents", a.require(authz.ActionAgentWrite, a.createAgentHandler))
+	mux.HandleFunc("GET /api/v1/agents", a.require(authz.ActionAgentRead, a.listAgentsHandler))
+	mux.HandleFunc("GET /api/v1/agents/{id}", a.require(authz.ActionAgentRead, a.getAgentHandler))
+	mux.HandleFunc("PATCH /api/v1/agents/{id}", a.require(authz.ActionAgentWrite, a.patchAgentHandler))
+	mux.HandleFunc("DELETE /api/v1/agents/{id}", a.require(authz.ActionAgentWrite, a.deleteAgentHandler))
+	mux.HandleFunc("POST /api/v1/agents/{id}/rotate", a.require(authz.ActionAgentWrite, a.rotateTokenHandler))
+	mux.HandleFunc("POST /api/v1/agents/{id}/revoke", a.require(authz.ActionAgentWrite, a.revokeAgentHandler))
+	mux.HandleFunc("GET /api/v1/agents/{id}/endpoints", a.require(authz.ActionEndpointRead, a.listEndpointsHandler))
+	mux.HandleFunc("GET /api/v1/agents/{id}/tokens", a.require(authz.ActionAgentRead, a.listTokensHandler))
 
-	mux.HandleFunc("GET /api/v1/endpoints", a.guard(a.listOrgEndpointsHandler))
-	mux.HandleFunc("POST /api/v1/endpoints", a.guard(a.createEndpointHandler))
-	mux.HandleFunc("GET /api/v1/endpoints/{id}", a.guard(a.getEndpointHandler))
-	mux.HandleFunc("PATCH /api/v1/endpoints/{id}", a.guard(a.patchEndpointHandler))
-	mux.HandleFunc("DELETE /api/v1/endpoints/{id}", a.guard(a.deleteEndpointHandler))
+	mux.HandleFunc("GET /api/v1/endpoints", a.require(authz.ActionEndpointRead, a.listOrgEndpointsHandler))
+	mux.HandleFunc("POST /api/v1/endpoints", a.require(authz.ActionEndpointWrite, a.createEndpointHandler))
+	mux.HandleFunc("GET /api/v1/endpoints/{id}", a.require(authz.ActionEndpointRead, a.getEndpointHandler))
+	mux.HandleFunc("PATCH /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.patchEndpointHandler))
+	mux.HandleFunc("DELETE /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.deleteEndpointHandler))
 
-	mux.HandleFunc("GET /api/v1/quota", a.guard(a.getQuotaHandler))
-	mux.HandleFunc("PUT /api/v1/quota", a.guard(a.putQuotaHandler))
+	mux.HandleFunc("GET /api/v1/quota", a.require(authz.ActionQuotaRead, a.getQuotaHandler))
+	mux.HandleFunc("PUT /api/v1/quota", a.require(authz.ActionQuotaWrite, a.putQuotaHandler))
 
-	mux.HandleFunc("GET /api/v1/audit", a.guard(a.listAuditHandler))
-	mux.HandleFunc("GET /api/v1/status", a.guard(a.statusHandler))
+	mux.HandleFunc("GET /api/v1/audit", a.require(authz.ActionAuditRead, a.listAuditHandler))
+	mux.HandleFunc("GET /api/v1/status", a.require(authz.ActionStatusRead, a.statusHandler))
+
+	mux.HandleFunc("GET /api/v1/policy", a.require(authz.ActionPolicyRead, a.getPolicyHandler))
+	mux.HandleFunc("PUT /api/v1/policy", a.require(authz.ActionPolicyWrite, a.putPolicyHandler))
 
 	if a.reachInEnabled {
-		mux.HandleFunc("POST /api/v1/reach/{agent_id}/http", a.guard(a.reachInHTTPHandler))
+		mux.HandleFunc("POST /api/v1/reach/{agent_id}/http", a.require(authz.ActionAgentWrite, a.reachInHTTPHandler))
 	}
 }
 
@@ -128,10 +170,13 @@ func (a *API) guard(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (a *API) writeGuard(h http.HandlerFunc) http.HandlerFunc {
+func (a *API) require(action authz.Action, h http.HandlerFunc) http.HandlerFunc {
 	return a.guard(func(w http.ResponseWriter, r *http.Request) {
-		if role, _ := r.Context().Value(ctxRole).(string); role != store.RoleOwner && role != store.RoleAdmin {
-			writeError(w, http.StatusForbidden, "requires owner or admin role")
+		role, _ := r.Context().Value(ctxRole).(string)
+		org := a.orgScope(r)
+		az := a.authorizerFor(r.Context(), org)
+		if !az.Authorize(authz.Principal{ID: a.actor(r), Role: role, Org: org}, action) {
+			writeError(w, http.StatusForbidden, "permission denied: "+string(action))
 			return
 		}
 		h(w, r)

@@ -64,20 +64,20 @@ func TestMTLSGate(t *testing.T) {
 	caPEM, sign := makeCA(t)
 	ep := &store.Endpoint{Policy: &store.EndpointPolicy{MTLS: &store.MTLSConfig{ClientCAPEM: caPEM}}}
 
-	if !applyPolicyGate(httptest.NewRecorder(), reqWithClientCert(sign("alice")), ep) {
+	if !applyPolicyGate(httptest.NewRecorder(), reqWithClientCert(sign("alice")), ep, nil) {
 		t.Fatal("valid client cert should pass")
 	}
-	if applyPolicyGate(httptest.NewRecorder(), reqWithClientCert(nil), ep) {
+	if applyPolicyGate(httptest.NewRecorder(), reqWithClientCert(nil), ep, nil) {
 		t.Fatal("missing client cert should be rejected")
 	}
 
 	other, _ := makeCA(t)
 	_ = other
 	epCN := &store.Endpoint{Policy: &store.EndpointPolicy{MTLS: &store.MTLSConfig{ClientCAPEM: caPEM, AllowedCNs: []string{"bob"}}}}
-	if applyPolicyGate(httptest.NewRecorder(), reqWithClientCert(sign("alice")), epCN) {
+	if applyPolicyGate(httptest.NewRecorder(), reqWithClientCert(sign("alice")), epCN, nil) {
 		t.Fatal("cert CN not in allow-list should be rejected")
 	}
-	if !applyPolicyGate(httptest.NewRecorder(), reqWithClientCert(sign("bob")), epCN) {
+	if !applyPolicyGate(httptest.NewRecorder(), reqWithClientCert(sign("bob")), epCN, nil) {
 		t.Fatal("cert CN in allow-list should pass")
 	}
 }

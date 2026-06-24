@@ -5,13 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ErrorState, LoadingState } from "@/components/common/States";
-import { useQuota, useUpdateQuota } from "@/api/hooks";
+import { usePolicy, useQuota, useUpdatePolicy, useUpdateQuota } from "@/api/hooks";
 import { useSession } from "@/context/SessionContext";
 import { toast } from "@/hooks/use-toast";
 import { ApiError } from "@/api/client";
 import { formatBytes } from "@/lib/utils";
-import type { Quota, QuotaUpdate } from "@/api/types";
+import type { Policy, Quota, QuotaUpdate } from "@/api/types";
 
 function Flag({ label, on }: { label: string; on: boolean }) {
   return (
@@ -90,9 +93,81 @@ function QuotaForm({ orgId, quota }: { orgId?: string; quota: Quota }) {
   );
 }
 
+function PermissionMatrix({ orgId, policy }: { orgId?: string; policy: Policy }) {
+  const update = useUpdatePolicy(orgId);
+  const { isOwnerOrAdmin } = useSession();
+  const [matrix, setMatrix] = useState(policy.matrix);
+  useEffect(() => setMatrix(policy.matrix), [policy]);
+
+  const toggle = (role: string, action: string) =>
+    setMatrix((m) => ({ ...m, [role]: { ...m[role], [action]: !m[role]?.[action] } }));
+
+  const onSave = () => {
+    const body = {
+      matrix: Object.fromEntries(
+        policy.roles.map((role) => [role, policy.actions.filter((a) => matrix[role]?.[a])]),
+      ),
+    };
+    update.mutate(body, {
+      onSuccess: () => toast({ title: "Permissions saved" }),
+      onError: (err) =>
+        toast({ variant: "destructive", title: "Save failed", description: err instanceof ApiError ? err.message : "Unknown error" }),
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        {policy.is_default ? (
+          <Badge variant="secondary">Default policy</Badge>
+        ) : (
+          <Badge>Customized</Badge>
+        )}
+        <p className="text-xs text-muted-foreground">Cedar-backed. Members are read-only by default.</p>
+      </div>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Action</TableHead>
+              {policy.roles.map((role) => (
+                <TableHead key={role} className="text-center capitalize">{role}</TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {policy.actions.map((action) => (
+              <TableRow key={action}>
+                <TableCell className="font-mono text-xs">{action}</TableCell>
+                {policy.roles.map((role) => (
+                  <TableCell key={role} className="text-center">
+                    <Switch
+                      checked={!!matrix[role]?.[action]}
+                      onCheckedChange={() => toggle(role, action)}
+                      disabled={!isOwnerOrAdmin}
+                    />
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      {isOwnerOrAdmin && (
+        <div className="flex justify-end">
+          <Button onClick={onSave} disabled={update.isPending}>
+            {update.isPending ? "Saving…" : "Save permissions"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Settings() {
   const { authConfig, currentOrgId } = useSession();
   const quota = useQuota(currentOrgId);
+  const policy = usePolicy(currentOrgId);
 
   return (
     <div className="space-y-6">
@@ -122,6 +197,22 @@ export function Settings() {
             <ErrorState error={quota.error} />
           ) : quota.data ? (
             <QuotaForm orgId={currentOrgId} quota={quota.data} />
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Permissions</CardTitle>
+          <CardDescription>Role × action matrix enforced on the control API.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {policy.isLoading ? (
+            <LoadingState label="Loading permissions" />
+          ) : policy.isError ? (
+            <ErrorState error={policy.error} />
+          ) : policy.data ? (
+            <PermissionMatrix orgId={currentOrgId} policy={policy.data} />
           ) : null}
         </CardContent>
       </Card>

@@ -86,7 +86,7 @@ func TestBasicAuthGate(t *testing.T) {
 
 	r := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
-	if applyPolicyGate(w, r, ep) {
+	if applyPolicyGate(w, r, ep, nil) {
 		t.Fatal("missing credentials should be blocked")
 	}
 	if w.Code != http.StatusUnauthorized {
@@ -95,7 +95,7 @@ func TestBasicAuthGate(t *testing.T) {
 
 	r2 := httptest.NewRequest("GET", "/", nil)
 	r2.SetBasicAuth("alice", "s3cret")
-	if !applyPolicyGate(httptest.NewRecorder(), r2, ep) {
+	if !applyPolicyGate(httptest.NewRecorder(), r2, ep, nil) {
 		t.Fatal("valid credentials should pass")
 	}
 }
@@ -105,7 +105,7 @@ func TestIPDenyGate(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "203.0.113.7:5000"
 	w := httptest.NewRecorder()
-	if applyPolicyGate(w, r, ep) || w.Code != http.StatusForbidden {
+	if applyPolicyGate(w, r, ep, nil) || w.Code != http.StatusForbidden {
 		t.Fatalf("denied IP should be 403, got %d", w.Code)
 	}
 }
@@ -113,7 +113,7 @@ func TestIPDenyGate(t *testing.T) {
 func TestOIDCPolicyFailsClosed(t *testing.T) {
 	ep := &store.Endpoint{Policy: &store.EndpointPolicy{OIDC: &store.OIDCEndpointAuth{Issuer: "x"}}}
 	w := httptest.NewRecorder()
-	if applyPolicyGate(w, httptest.NewRequest("GET", "/", nil), ep) {
+	if applyPolicyGate(w, httptest.NewRequest("GET", "/", nil), ep, nil) {
 		t.Fatal("oidc policy must fail closed, not pass")
 	}
 	if w.Code != http.StatusServiceUnavailable {

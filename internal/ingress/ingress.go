@@ -20,11 +20,13 @@ type Meter interface {
 }
 
 type Options struct {
-	Data       store.DataStore
-	Conns      store.ConnectionStore
-	Log        *slog.Logger
-	BaseDomain string
-	Meter      Meter
+	Data         store.DataStore
+	Conns        store.ConnectionStore
+	Log          *slog.Logger
+	BaseDomain   string
+	Meter        Meter
+	OIDCSignKey  []byte
+	CookieSecure bool
 }
 
 type Ingress struct {
@@ -33,6 +35,7 @@ type Ingress struct {
 	log      *slog.Logger
 	apexHost string
 	meter    Meter
+	oidc     *oidcGate
 }
 
 func New(opts Options) *Ingress {
@@ -40,16 +43,28 @@ func New(opts Options) *Ingress {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Ingress{
+	i := &Ingress{
 		data:     opts.Data,
 		conns:    opts.Conns,
 		log:      log,
 		apexHost: hostOnly(opts.BaseDomain),
 		meter:    opts.Meter,
 	}
+	if len(opts.OIDCSignKey) > 0 {
+		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.CookieSecure, log)
+	}
+	return i
 }
 
 func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == oidcCallbackPath {
+		if i.oidc == nil {
+			http.Error(w, "oidc not configured", http.StatusServiceUnavailable)
+			return
+		}
+		i.oidc.handleCallback(w, r)
+		return
+	}
 	ep, outPath, ok := i.resolve(r)
 	if !ok {
 		http.Error(w, "tunnel not found", http.StatusNotFound)
@@ -60,7 +75,7 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		i.recordCode(http.StatusTooManyRequests)
 		return
 	}
-	if !applyPolicyGate(w, r, ep) {
+	if !applyPolicyGate(w, r, ep, i.oidc) {
 		return
 	}
 	conn, ok := i.conns.ResolveEndpoint(ep.ID)

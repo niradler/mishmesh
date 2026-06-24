@@ -180,6 +180,24 @@ func TestQuotaUserMembershipSession(t *testing.T) {
 	if _, err := s.GetSession(ctx, "sh_1"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expired session: want ErrNotFound, got %v", err)
 	}
+
+	if _, err := s.GetOrgPolicy(ctx, "org_1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("absent org policy: want ErrNotFound, got %v", err)
+	}
+	if err := s.SetOrgPolicy(ctx, &store.OrgPolicy{OrgID: "org_1", CedarSrc: "permit(principal,action,resource);", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	pol, err := s.GetOrgPolicy(ctx, "org_1")
+	if err != nil || pol.CedarSrc != "permit(principal,action,resource);" {
+		t.Fatalf("get org policy: %+v err=%v", pol, err)
+	}
+	if err := s.SetOrgPolicy(ctx, &store.OrgPolicy{OrgID: "org_1", CedarSrc: "forbid(principal,action,resource);", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	pol, _ = s.GetOrgPolicy(ctx, "org_1")
+	if pol.CedarSrc != "forbid(principal,action,resource);" {
+		t.Fatalf("upsert org policy: got %q", pol.CedarSrc)
+	}
 }
 
 func mustSeed(t *testing.T, ctx context.Context, s *Store, now time.Time) {

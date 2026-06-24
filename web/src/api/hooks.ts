@@ -16,6 +16,8 @@ import type {
   Me,
   Member,
   Org,
+  Policy,
+  PolicyUpdate,
   Quota,
   QuotaUpdate,
   Role,
@@ -37,6 +39,7 @@ export const qk = {
   members: (orgId?: string) => ["members", orgId] as const,
   quota: (orgId?: string) => ["quota", orgId] as const,
   audit: (orgId?: string) => ["audit", orgId] as const,
+  policy: (orgId?: string) => ["policy", orgId] as const,
 };
 
 export function useAuthConfig() {
@@ -257,6 +260,22 @@ export function useUpdateQuota(orgId?: string) {
     mutationFn: (quota: QuotaUpdate) =>
       apiRequest<Quota>("/quota", { method: "PUT", body: quota, query: { org_id: orgId } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.quota(orgId) }),
+  });
+}
+
+export function usePolicy(orgId?: string) {
+  return useQuery({
+    queryKey: qk.policy(orgId),
+    queryFn: () => api.get<Policy>("/policy", { org_id: orgId }),
+  });
+}
+
+export function useUpdatePolicy(orgId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PolicyUpdate) =>
+      apiRequest<Policy>("/policy", { method: "PUT", body, query: { org_id: orgId } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.policy(orgId) }),
   });
 }
 

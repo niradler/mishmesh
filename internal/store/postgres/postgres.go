@@ -115,6 +115,11 @@ CREATE TABLE IF NOT EXISTS audit (
   created_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_org ON audit(org_id, created_at);
+CREATE TABLE IF NOT EXISTS org_policies (
+  org_id     TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+  cedar_src  TEXT NOT NULL,
+  updated_at BIGINT NOT NULL
+);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("postgres migrate: %w", err)
@@ -531,6 +536,25 @@ func (s *Store) DeleteSession(ctx context.Context, idHash string) error {
 func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < $1`, ns(now))
 	return wrap("delete expired sessions", err)
+}
+
+func (s *Store) GetOrgPolicy(ctx context.Context, orgID string) (*store.OrgPolicy, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT org_id, cedar_src, updated_at FROM org_policies WHERE org_id = $1`, orgID)
+	var p store.OrgPolicy
+	var updated int64
+	if err := row.Scan(&p.OrgID, &p.CedarSrc, &updated); err != nil {
+		return nil, scanErr("get org policy", err)
+	}
+	p.UpdatedAt = fromNS(updated)
+	return &p, nil
+}
+
+func (s *Store) SetOrgPolicy(ctx context.Context, p *store.OrgPolicy) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO org_policies (org_id, cedar_src, updated_at) VALUES ($1, $2, $3)
+		 ON CONFLICT (org_id) DO UPDATE SET cedar_src = EXCLUDED.cedar_src, updated_at = EXCLUDED.updated_at`,
+		p.OrgID, p.CedarSrc, ns(p.UpdatedAt))
+	return wrap("set org policy", err)
 }
 
 func (s *Store) AppendAudit(ctx context.Context, e *store.AuditEvent) error {

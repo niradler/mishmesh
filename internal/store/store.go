@@ -146,6 +146,12 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
+type OrgPolicy struct {
+	OrgID     string
+	CedarSrc  string
+	UpdatedAt time.Time
+}
+
 type DataStore interface {
 	CreateOrg(ctx context.Context, o *Org) error
 	GetOrg(ctx context.Context, id string) (*Org, error)
@@ -196,6 +202,9 @@ type DataStore interface {
 	GetSession(ctx context.Context, idHash string) (*Session, error)
 	DeleteSession(ctx context.Context, idHash string) error
 	DeleteExpiredSessions(ctx context.Context, now time.Time) error
+
+	GetOrgPolicy(ctx context.Context, orgID string) (*OrgPolicy, error)
+	SetOrgPolicy(ctx context.Context, p *OrgPolicy) error
 
 	AppendAudit(ctx context.Context, e *AuditEvent) error
 	ListAudit(ctx context.Context, orgID string, limit int) ([]*AuditEvent, error)

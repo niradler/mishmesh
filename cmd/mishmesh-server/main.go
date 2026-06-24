@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -148,7 +149,15 @@ func serve(_ []string) error {
 	log.Info("api listener", "addr", cfg.APIAddr)
 
 	if cfg.IngressEnabled {
-		ing := ingress.New(ingress.Options{Data: data, Conns: conns, Log: log, BaseDomain: cfg.BaseDomain, Meter: mx})
+		ing := ingress.New(ingress.Options{
+			Data:         data,
+			Conns:        conns,
+			Log:          log,
+			BaseDomain:   cfg.BaseDomain,
+			Meter:        mx,
+			OIDCSignKey:  endpointOIDCKey(cfg),
+			CookieSecure: cfg.PublicScheme == "https",
+		})
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg)
 			if err != nil {
@@ -365,4 +374,16 @@ func envOr(key, def string) string {
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(1)
+}
+
+func endpointOIDCKey(cfg config.Server) []byte {
+	if cfg.EndpointOIDCKey != "" {
+		sum := sha256.Sum256([]byte(cfg.EndpointOIDCKey))
+		return sum[:]
+	}
+	if cfg.APIAuthToken != "" {
+		sum := sha256.Sum256([]byte("endpoint-oidc:" + cfg.APIAuthToken))
+		return sum[:]
+	}
+	return nil
 }

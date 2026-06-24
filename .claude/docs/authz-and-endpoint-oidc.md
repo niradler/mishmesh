@@ -1,6 +1,18 @@
 # Authz (Cedar) + Per-Endpoint OIDC — design & plan
 
-Status: planned, not started. Two approved features, build both.
+Status: BOTH features IMPLEMENTED + tested. `make check` green (fmt/vet/race). Web builds (tsc+vite).
+
+## Progress log
+- Feature A done: `internal/authz` (cedar-go v1.0.0, embedded `policy.cedar`, `Authorize`, `CompileMatrix`, `ProbeMatrix`); `store.OrgPolicy` + `GetOrgPolicy`/`SetOrgPolicy` (sqlite+postgres, `org_policies` table); API `require(action,…)` replaced `guard`/`writeGuard`; every route mapped to an action; `GET/PUT /api/v1/policy`; per-org authorizer cache invalidated on PUT. Member read-only by default. Tests: `internal/authz/*_test.go`, `controlplane/authz_routes_test.go`, sqlite policy round-trip.
+- `authz.New(src)` compiles src exactly (empty=deny-all); `authz.Default()` is the only path to the embedded default. authorizerFor: ErrNotFound→default, row→New(src).
+- Feature B done: `internal/ingress/oidc.go` (`oidcGate`: discovery+JWKS cache, signed state w/ nonce cookie, signed endpoint session cookie, allowlist) + `oidc_jwt.go` (hand-rolled RS256 verify, JWKS→rsa.PublicKey). Callback `/_mishmesh/oidc/callback` intercepted in `ServeHTTP`; `applyPolicyGate` takes `*oidcGate` (nil→503 fail-closed). Config `ENDPOINT_OIDC_KEY` (or derived from API_AUTH_TOKEN). Tests: `oidc_test.go` (state/session round-trip+tamper+expiry, RS256 verify valid/expired/wrong-aud/wrong-iss/forged, full mock-IdP callback flow, allowlist deny).
+- UI done: `Policy`/`PolicyUpdate` types, `usePolicy`/`useUpdatePolicy` hooks, Permissions matrix card on Settings (role×action switches, owner/admin-editable). OIDC editor already existed in EndpointDetail; no "not available" text in UI (was server-only 503).
+
+## Decisions (LOCKED)
+- owner == admin (identical permission sets).
+- empty allowed_emails+allowed_domains = allow-any-verified-identity.
+- raw-Cedar textarea editor: deferred (matrix only for now).
+- email_verified required for OIDC pass.
 
 ## Decisions
 
