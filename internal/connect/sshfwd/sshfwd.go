@@ -172,11 +172,11 @@ func (s *Server) handleConn(nConn net.Conn) {
 		s.log.Info("ssh session disconnected", "agent_id", ag.ID)
 	}()
 
-	go s.serveChannels(chans)
+	go s.serveChannels(ac, chans)
 	s.serveGlobalRequests(ctx, ag, orgID, ac, reqs)
 }
 
-func (s *Server) serveChannels(chans <-chan ssh.NewChannel) {
+func (s *Server) serveChannels(ac *agentConn, chans <-chan ssh.NewChannel) {
 	for nc := range chans {
 		if nc.ChannelType() != "session" {
 			_ = nc.Reject(ssh.UnknownChannelType, "only remote forwarding is supported")
@@ -186,12 +186,14 @@ func (s *Server) serveChannels(chans <-chan ssh.NewChannel) {
 		if err != nil {
 			continue
 		}
-		go s.serveSession(ch, reqs)
+		go s.serveSession(ac, ch, reqs)
 	}
 }
 
-func (s *Server) serveSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
-	banner := "mishmesh: connected. forwarded endpoints stay live while this session is open.\r\n"
+func (s *Server) serveSession(ac *agentConn, ch ssh.Channel, reqs <-chan *ssh.Request) {
+	ac.addSession(ch)
+	defer ac.removeSession(ch)
+	const banner = "mishmesh: connected. your public endpoints (live while this session stays open):\r\n"
 	for req := range reqs {
 		switch req.Type {
 		case "shell", "pty-req", "env":
@@ -241,6 +243,7 @@ func (s *Server) serveGlobalRequests(ctx context.Context, ag *store.Agent, orgID
 				continue
 			}
 			ac.setForward(ep.ID, fr.BindAddr, boundPort)
+			ac.announce(s.publicURL(ep))
 			s.log.Info("ssh remote forward bound", "agent_id", ag.ID, "endpoint_id", ep.ID, "url", s.publicURL(ep))
 			if req.WantReply {
 				_ = req.Reply(true, ssh.Marshal(forwardReply{BoundPort: uint32(boundPort)}))

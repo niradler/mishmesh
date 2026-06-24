@@ -126,6 +126,94 @@ func TestRemoteForwardHTTPRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSessionAnnouncesURL(t *testing.T) {
+	data := newTestStore(t)
+	conns := memory.NewConnStore()
+	token := seedAgent(t, data)
+
+	srv, err := New(Options{Data: data, Conns: conns, BaseDomain: "localhost:8080", PublicScheme: "http"})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	ln, err := srv.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer srv.Shutdown()
+
+	client, err := ssh.Dial("tcp", ln.Addr().String(), &ssh.ClientConfig{
+		User:            "demo",
+		Auth:            []ssh.AuthMethod{ssh.Password(token)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("ssh dial: %v", err)
+	}
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	defer sess.Close()
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := sess.Shell(); err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+
+	fwd, err := client.Listen("tcp", "0.0.0.0:80")
+	if err != nil {
+		t.Fatalf("remote forward: %v", err)
+	}
+	defer fwd.Close()
+
+	got := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		var acc []byte
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				acc = append(acc, buf[:n]...)
+				if bytesContains(acc, "demo.localhost") {
+					got <- string(acc)
+					return
+				}
+			}
+			if err != nil {
+				got <- string(acc)
+				return
+			}
+		}
+	}()
+
+	select {
+	case out := <-got:
+		if !bytesContains([]byte(out), "demo.localhost") {
+			t.Fatalf("session did not receive public URL, got: %q", out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for URL announcement")
+	}
+}
+
+func bytesContains(b []byte, sub string) bool {
+	return len(b) >= len(sub) && stringIndex(string(b), sub) >= 0
+}
+
+func stringIndex(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestRejectsBadToken(t *testing.T) {
 	data := newTestStore(t)
 	conns := memory.NewConnStore()

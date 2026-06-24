@@ -30,6 +30,8 @@ type agentConn struct {
 	metrics  Metrics
 	mu       sync.Mutex
 	forwards map[string]forwardSpec
+	sessions map[ssh.Channel]struct{}
+	urls     []string
 }
 
 var _ store.AgentConn = (*agentConn)(nil)
@@ -41,6 +43,36 @@ func newAgentConn(agentID string, conn *ssh.ServerConn, metrics Metrics) *agentC
 		conn:     conn,
 		metrics:  metrics,
 		forwards: make(map[string]forwardSpec),
+		sessions: make(map[ssh.Channel]struct{}),
+	}
+}
+
+func (a *agentConn) addSession(ch ssh.Channel) {
+	a.mu.Lock()
+	a.sessions[ch] = struct{}{}
+	known := append([]string(nil), a.urls...)
+	a.mu.Unlock()
+	for _, u := range known {
+		_, _ = ch.Write([]byte("  " + u + "\r\n"))
+	}
+}
+
+func (a *agentConn) removeSession(ch ssh.Channel) {
+	a.mu.Lock()
+	delete(a.sessions, ch)
+	a.mu.Unlock()
+}
+
+func (a *agentConn) announce(url string) {
+	a.mu.Lock()
+	a.urls = append(a.urls, url)
+	sessions := make([]ssh.Channel, 0, len(a.sessions))
+	for ch := range a.sessions {
+		sessions = append(sessions, ch)
+	}
+	a.mu.Unlock()
+	for _, ch := range sessions {
+		_, _ = ch.Write([]byte("  " + url + "\r\n"))
 	}
 }
 

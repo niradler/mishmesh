@@ -3,15 +3,19 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +23,32 @@ import (
 
 	"github.com/mishmesh/mishmesh/internal/config"
 )
+
+func defaultHostKeyPath(cfg config.Server) string {
+	if strings.Contains(cfg.DataDSN, "://") {
+		return "ssh_host_ed25519.pem"
+	}
+	return filepath.Join(filepath.Dir(cfg.DataDSN), "ssh_host_ed25519.pem")
+}
+
+func loadOrCreateHostKey(path string) ([]byte, error) {
+	if b, err := os.ReadFile(path); err == nil {
+		return b, nil
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate ssh host key: %w", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return nil, fmt.Errorf("marshal ssh host key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	if err := os.WriteFile(path, keyPEM, 0o600); err != nil {
+		return nil, fmt.Errorf("persist ssh host key %s: %w", path, err)
+	}
+	return keyPEM, nil
+}
 
 func buildTLSConfig(cfg config.Server) (*tls.Config, http.Handler, error) {
 	if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {

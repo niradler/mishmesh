@@ -189,13 +189,16 @@ func serve(_ []string) error {
 		if mx != nil {
 			sshOpts.Metrics = mx
 		}
-		if cfg.SSHHostKeyFile != "" {
-			pem, err := os.ReadFile(cfg.SSHHostKeyFile)
-			if err != nil {
-				return fmt.Errorf("ssh host key: %w", err)
-			}
-			sshOpts.HostKeyPEM = pem
+		keyPath := cfg.SSHHostKeyFile
+		if keyPath == "" {
+			keyPath = defaultHostKeyPath(cfg)
 		}
+		keyPEM, err := loadOrCreateHostKey(keyPath)
+		if err != nil {
+			return fmt.Errorf("ssh host key: %w", err)
+		}
+		sshOpts.HostKeyPEM = keyPEM
+		log.Info("ssh host key", "path", keyPath)
 		sshSrv, err := sshfwd.New(sshOpts)
 		if err != nil {
 			return err
