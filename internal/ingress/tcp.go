@@ -13,6 +13,7 @@ import (
 
 type TCPOptions struct {
 	Conns    store.ConnectionStore
+	Data     store.DataStore
 	Log      *slog.Logger
 	BindHost string
 	PortMin  int
@@ -22,6 +23,7 @@ type TCPOptions struct {
 
 type TCP struct {
 	conns    store.ConnectionStore
+	data     store.DataStore
 	log      *slog.Logger
 	bindHost string
 	portMin  int
@@ -49,6 +51,7 @@ func NewTCP(opts TCPOptions) *TCP {
 	}
 	return &TCP{
 		conns:     opts.Conns,
+		data:      opts.Data,
 		log:       log,
 		bindHost:  opts.BindHost,
 		portMin:   opts.PortMin,
@@ -144,6 +147,15 @@ func (t *TCP) handle(client net.Conn, endpointID string) {
 	go func() { n, e := io.Copy(stream, client); up = n; errc <- e }()
 	go func() { n, e := io.Copy(client, stream); down = n; errc <- e }()
 	<-errc
+	t.meterUsage(endpointID, up, down)
+}
+
+func (t *TCP) meterUsage(endpointID string, up, down int64) {
+	if t.data != nil {
+		if ep, err := t.data.GetEndpoint(context.Background(), endpointID); err == nil && ep.OrgID != "" {
+			t.conns.AddUsage(ep.OrgID, up+down)
+		}
+	}
 	if t.meter != nil {
 		t.meter.AddBytes(store.KindTCP, up, down)
 	}

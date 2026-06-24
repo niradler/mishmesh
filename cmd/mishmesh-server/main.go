@@ -80,6 +80,7 @@ func serve(_ []string) error {
 	if cfg.IngressEnabled && cfg.TCPEnabled {
 		tcpIngress = ingress.NewTCP(ingress.TCPOptions{
 			Conns:    conns,
+			Data:     data,
 			Log:      log,
 			BindHost: cfg.TCPBindHost,
 			PortMin:  cfg.TCPPortMin,
