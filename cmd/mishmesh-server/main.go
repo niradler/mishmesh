@@ -150,13 +150,14 @@ func serve(_ []string) error {
 
 	if cfg.IngressEnabled {
 		ing := ingress.New(ingress.Options{
-			Data:         data,
-			Conns:        conns,
-			Log:          log,
-			BaseDomain:   cfg.BaseDomain,
-			Meter:        mx,
-			OIDCSignKey:  endpointOIDCKey(cfg),
-			CookieSecure: cfg.PublicScheme == "https",
+			Data:             data,
+			Conns:            conns,
+			Log:              log,
+			BaseDomain:       cfg.BaseDomain,
+			Meter:            mx,
+			OIDCSignKey:      endpointOIDCKey(cfg),
+			CookieSecure:     cfg.PublicScheme == "https",
+			OIDCAllowPrivate: cfg.OIDCAllowPrivate,
 		})
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg)

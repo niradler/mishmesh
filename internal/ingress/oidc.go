@@ -49,7 +49,7 @@ type oidcProvider struct {
 	keysAt                time.Time
 }
 
-func newOIDCGate(data store.DataStore, signKey []byte, cookieSecure, allowLoopback bool, log *slog.Logger) *oidcGate {
+func newOIDCGate(data store.DataStore, signKey []byte, cookieSecure, allowLoopback, allowPrivate bool, log *slog.Logger) *oidcGate {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -59,21 +59,32 @@ func newOIDCGate(data store.DataStore, signKey []byte, cookieSecure, allowLoopba
 		cookieSecure:  cookieSecure,
 		allowLoopback: allowLoopback,
 		log:           log,
-		httpClient:    ssrfSafeHTTPClient(allowLoopback),
+		httpClient:    ssrfSafeHTTPClient(allowLoopback, allowPrivate),
 		providers:     make(map[string]*oidcProvider),
 	}
 }
 
 var oidcMetadataIP = net.IPv4(169, 254, 169, 254)
 
-func oidcBlockedTarget(ip net.IP, allowLoopback bool) bool {
+func oidcBlockedTarget(ip net.IP, allowLoopback, allowPrivate bool) bool {
 	if ip.Equal(oidcMetadataIP) || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
 		return true
 	}
-	return ip.IsLoopback() && !allowLoopback
+	if ip.IsLoopback() {
+		return !allowLoopback
+	}
+	if !allowPrivate {
+		if ip.IsPrivate() {
+			return true
+		}
+		if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1]&0xc0 == 64 {
+			return true
+		}
+	}
+	return false
 }
 
-func ssrfSafeHTTPClient(allowLoopback bool) *http.Client {
+func ssrfSafeHTTPClient(allowLoopback, allowPrivate bool) *http.Client {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
 		ForceAttemptHTTP2: true,
@@ -87,7 +98,7 @@ func ssrfSafeHTTPClient(allowLoopback bool) *http.Client {
 				return nil, err
 			}
 			for _, ip := range ips {
-				if oidcBlockedTarget(ip.IP, allowLoopback) {
+				if oidcBlockedTarget(ip.IP, allowLoopback, allowPrivate) {
 					return nil, fmt.Errorf("oidc: host %q resolves to blocked address %s", host, ip.IP)
 				}
 			}

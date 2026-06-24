@@ -20,13 +20,14 @@ type Meter interface {
 }
 
 type Options struct {
-	Data         store.DataStore
-	Conns        store.ConnectionStore
-	Log          *slog.Logger
-	BaseDomain   string
-	Meter        Meter
-	OIDCSignKey  []byte
-	CookieSecure bool
+	Data             store.DataStore
+	Conns            store.ConnectionStore
+	Log              *slog.Logger
+	BaseDomain       string
+	Meter            Meter
+	OIDCSignKey      []byte
+	CookieSecure     bool
+	OIDCAllowPrivate bool
 }
 
 type Ingress struct {
@@ -51,7 +52,7 @@ func New(opts Options) *Ingress {
 		meter:    opts.Meter,
 	}
 	if len(opts.OIDCSignKey) > 0 {
-		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.CookieSecure, false, log)
+		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.CookieSecure, false, opts.OIDCAllowPrivate, log)
 	}
 	return i
 }

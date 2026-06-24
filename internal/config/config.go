@@ -55,6 +55,7 @@ type Server struct {
 	GoogleClientSecret string
 	OIDCRedirectURL    string
 	EndpointOIDCKey    string
+	OIDCAllowPrivate   bool
 
 	QuotaMaxAgents         int
 	QuotaMaxEndpoints      int
@@ -119,6 +120,7 @@ func LoadServer() Server {
 		GoogleClientSecret: env("GOOGLE_CLIENT_SECRET", ""),
 		OIDCRedirectURL:    env("OIDC_REDIRECT_URL", ""),
 		EndpointOIDCKey:    env("ENDPOINT_OIDC_KEY", ""),
+		OIDCAllowPrivate:   envBool("OIDC_ALLOW_PRIVATE_ISSUERS", false),
 
 		QuotaMaxAgents:         envInt("QUOTA_MAX_AGENTS", 0),
 		QuotaMaxEndpoints:      envInt("QUOTA_MAX_ENDPOINTS", 0),

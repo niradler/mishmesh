@@ -26,7 +26,7 @@ import (
 )
 
 func testGate() *oidcGate {
-	return newOIDCGate(nil, []byte("test-signing-key-0123456789abcdef"), false, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newOIDCGate(nil, []byte("test-signing-key-0123456789abcdef"), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestStateRoundTrip(t *testing.T) {
@@ -98,38 +98,47 @@ func TestSSRFBlockedTargets(t *testing.T) {
 	cases := []struct {
 		ip            string
 		allowLoopback bool
+		allowPrivate  bool
 		blocked       bool
 	}{
-		{"169.254.169.254", false, true},
-		{"127.0.0.1", false, true},
-		{"::1", false, true},
-		{"169.254.1.2", false, true},
-		{"0.0.0.0", false, true},
-		{"224.0.0.1", false, true},
-		{"127.0.0.1", true, false},
-		{"8.8.8.8", false, false},
-		{"203.0.113.10", false, false},
+		{"169.254.169.254", false, false, true},
+		{"169.254.169.254", true, true, true},
+		{"127.0.0.1", false, false, true},
+		{"::1", false, false, true},
+		{"169.254.1.2", false, false, true},
+		{"0.0.0.0", false, false, true},
+		{"224.0.0.1", false, false, true},
+		{"127.0.0.1", true, false, false},
+		{"10.0.0.5", false, false, true},
+		{"172.16.0.1", false, false, true},
+		{"192.168.1.1", false, false, true},
+		{"100.64.0.1", false, false, true},
+		{"fc00::1", false, false, true},
+		{"10.0.0.5", false, true, false},
+		{"192.168.1.1", false, true, false},
+		{"8.8.8.8", false, false, false},
+		{"203.0.113.10", false, false, false},
 	}
 	for _, tc := range cases {
 		ip := net.ParseIP(tc.ip)
 		if ip == nil {
 			t.Fatalf("bad test IP %q", tc.ip)
 		}
-		if got := oidcBlockedTarget(ip, tc.allowLoopback); got != tc.blocked {
-			t.Errorf("oidcBlockedTarget(%s, allowLoopback=%v) = %v want %v", tc.ip, tc.allowLoopback, got, tc.blocked)
+		if got := oidcBlockedTarget(ip, tc.allowLoopback, tc.allowPrivate); got != tc.blocked {
+			t.Errorf("oidcBlockedTarget(%s, loopback=%v, private=%v) = %v want %v", tc.ip, tc.allowLoopback, tc.allowPrivate, got, tc.blocked)
 		}
 	}
 }
 
 func TestProviderRejectsInsecureIssuer(t *testing.T) {
-	g := newOIDCGate(nil, []byte("k"), false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(nil, []byte("k"), false, false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := g.provider(context.Background(), "http://accounts.google.com"); err == nil {
 		t.Fatal("non-https issuer must be rejected when loopback is disallowed")
 	}
 }
 
 func TestProviderBlocksMetadataIssuer(t *testing.T) {
-	g := newOIDCGate(nil, []byte("k"), false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(nil, []byte("k"), false, false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_, err := g.provider(context.Background(), "https://169.254.169.254")
 	if err == nil {
 		t.Fatal("metadata-IP issuer must be blocked by the SSRF dialer")
@@ -234,7 +243,7 @@ func TestOIDCFullCallbackFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), false, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	w1 := httptest.NewRecorder()
 	r1 := httptest.NewRequest("GET", "http://app.local/secret", nil)
@@ -315,7 +324,7 @@ func TestOIDCCallbackDeniesDisallowedDomain(t *testing.T) {
 	}
 	_ = data.CreateEndpoint(ctx, ep)
 
-	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), false, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	w1 := httptest.NewRecorder()
 	g.authenticate(w1, httptest.NewRequest("GET", "http://app.local/x", nil), ep)
 	loc, _ := url.Parse(w1.Result().Header.Get("Location"))
