@@ -95,3 +95,7 @@ resources:
     memory: 256Mi
   limits:
     memory: 1Gi
+
+extraEnv:
+  - name: MISHMESH_SIGNUP_MODE
+    value: invite

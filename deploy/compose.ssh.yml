@@ -11,9 +11,9 @@ services:
       MISHMESH_SSH_ENABLED: "true"
       MISHMESH_SSH_ADDR: 0.0.0.0:2222
     ports:
-      - "38080:8080"
-      - "38081:8081"
-      - "2222:2222"
+      - "127.0.0.1:38080:8080"
+      - "127.0.0.1:38081:8081"
+      - "127.0.0.1:2222:2222"
 
   backend:
     image: traefik/whoami
