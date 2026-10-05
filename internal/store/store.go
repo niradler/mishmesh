@@ -228,10 +228,15 @@ type AgentConn interface {
 	Close() error
 }
 
+type ClusterLocal interface {
+	ClusterLocal() bool
+}
+
 type ConnectionStore interface {
 	AddAgent(conn AgentConn) (superseded AgentConn)
 	RemoveAgent(conn AgentConn)
 	GetAgent(agentID string) (AgentConn, bool)
+	OwnedElsewhere(agentID string) bool
 
 	BindEndpoint(endpointID, agentID string)
 	UnbindEndpoint(endpointID string)

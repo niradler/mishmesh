@@ -111,3 +111,5 @@ func (c *conn) isBlocked(ip net.IP) bool {
 	}
 	return false
 }
+
+func (c *conn) ClusterLocal() bool { return true }

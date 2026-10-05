@@ -92,3 +92,5 @@ func (c *ConnStore) Usage(orgID string) int64 {
 	defer c.mu.RUnlock()
 	return c.usage[orgID]
 }
+
+func (c *ConnStore) OwnedElsewhere(string) bool { return false }

@@ -133,6 +133,7 @@ func (nopConns) GetAgent(string) (store.AgentConn, bool)        { return nil, fa
 func (nopConns) BindEndpoint(string, string)                    {}
 func (nopConns) UnbindEndpoint(string)                          {}
 func (nopConns) ResolveEndpoint(string) (store.AgentConn, bool) { return nil, false }
+func (nopConns) OwnedElsewhere(string) bool                     { return false }
 func (nopConns) AddUsage(string, int64)                         {}
 func (nopConns) Usage(string) int64                             { return 0 }
 

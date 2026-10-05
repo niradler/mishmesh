@@ -144,3 +144,5 @@ func (c *ConnStore) Usage(orgID string) int64 {
 	}
 	return v.(*atomic.Int64).Load()
 }
+
+func (c *ConnStore) OwnedElsewhere(string) bool { return false }
