@@ -183,7 +183,10 @@ func (a *API) routes() []route {
 		)
 	}
 	if a.reachInEnabled {
-		routes = append(routes, route{"POST /api/v1/reach/{agent_id}/http", a.require(authz.ActionAgentWrite, a.reachInHTTPHandler)})
+		routes = append(routes,
+			route{"POST /api/v1/reach/{agent_id}/http", a.require(authz.ActionAgentWrite, a.reachInHTTPHandler)},
+			route{"GET /api/v1/reach/{agent_id}/stream", a.require(authz.ActionAgentWrite, a.reachInStreamHandler)},
+		)
 	}
 	return routes
 }

@@ -108,4 +108,17 @@ Enabled by `MISHMESH_DOMAIN_VERIFICATION` (default `true` when `MISHMESH_SIGNUP_
 
 ## Reach-in data-plane (enterprise; `MISHMESH_REACHIN_ENABLED`)
 
-| POST | `/api/v1/reach/{agent_id}` | `{target:"host:port", kind:"tcp"|"http", ...}` opens an API-initiated stream to the agent's allowlisted target. HTTP variant proxies a single request; TCP variant hijacks for raw bytes. Subject to agent-side allowlist. |
+| POST | `/api/v1/reach/{agent_id}/http` | `{target:"host:port", tls?, insecure?, method?, path?, headers?, body?}` sends one HTTP request through the agent to an allowlisted target and returns `{status, headers, body}` (body capped at 8MB). If the agent cannot dial the target the response is `502` with the agent's reason. |
+| GET | `/api/v1/reach/{agent_id}/stream` | Raw bidirectional TCP stream. Send `Connection: Upgrade` and `Upgrade: mishmesh-stream`, with query `target=host:port` and optional `tls=true`, `insecure=true`. The server answers `101 Switching Protocols`, after which the connection carries raw bytes to and from the target. Half-close is propagated in both directions: closing the write side of your socket half-closes the target, and the target's close ends your read side. |
+
+Both routes need an authenticated caller allowed to write agents in the agent's organization; an agent in another organization returns `404`. Targets are subject to the agent-side allowlist. Raw stream example:
+
+```bash
+printf 'GET /api/v1/reach/ag_123/stream?target=db.internal:5432 HTTP/1.1
+Host: api
+Authorization: Bearer $TOKEN
+Connection: Upgrade
+Upgrade: mishmesh-stream
+
+' | nc 127.0.0.1 8080
+```
