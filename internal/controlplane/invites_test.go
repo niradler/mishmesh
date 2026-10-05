@@ -233,3 +233,23 @@ func TestOIDCInviteRedeemedOnlyWithVerifiedEmail(t *testing.T) {
 		t.Fatalf("verified OIDC login must redeem: %q %v", role, ok)
 	}
 }
+
+func TestOIDCDoesNotLinkPreRegisteredPasswordAccount(t *testing.T) {
+	_, api := newInviteAPI(t, "org")
+	ctx := context.Background()
+	squatter := &store.User{ID: store.NewID("usr"), Email: "victim@example.com", PasswordHash: "x", CreatedAt: time.Now()}
+	if err := api.data.CreateUser(ctx, squatter); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	if _, err := api.upsertOIDCUser(ctx, &oidcProfile{Sub: "victim-sub", Email: "victim@example.com", EmailVerified: &yes}); !errors.Is(err, errPasswordAccountExists) {
+		t.Fatalf("google login must not take over a password account: %v", err)
+	}
+	got, err := api.data.GetUserByID(ctx, squatter.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GoogleSub != "" {
+		t.Fatalf("google sub linked: %q", got.GoogleSub)
+	}
+}

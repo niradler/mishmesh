@@ -518,6 +518,10 @@ func (a *API) googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "registration is by invitation only")
 		return
 	}
+	if errors.Is(err, errPasswordAccountExists) {
+		writeError(w, http.StatusConflict, "an account with this email already exists; sign in with your password")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "user upsert failed")
 		return
@@ -541,7 +545,10 @@ type oidcProfile struct {
 	Name          string `json:"name"`
 }
 
-var errEmailUnverified = errors.New("oidc provider did not assert a verified email")
+var (
+	errEmailUnverified       = errors.New("oidc provider did not assert a verified email")
+	errPasswordAccountExists = errors.New("password account with this email exists")
+)
 
 func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, error) {
 	verified := p.EmailVerified != nil && *p.EmailVerified
@@ -560,6 +567,9 @@ func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, 
 	if u, err := a.data.GetUserByEmail(ctx, email); err == nil {
 		if u.GoogleSub != "" && u.GoogleSub != p.Sub {
 			return nil, errEmailUnverified
+		}
+		if u.PasswordHash != "" {
+			return nil, errPasswordAccountExists
 		}
 		u.GoogleSub = p.Sub
 		_ = a.data.UpdateUser(ctx, u)
