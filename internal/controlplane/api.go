@@ -144,6 +144,8 @@ func (a *API) routes() []route {
 		{"POST /api/v1/members", a.require(authz.ActionMemberManage, a.addMemberHandler)},
 		{"PATCH /api/v1/members/{user_id}", a.require(authz.ActionMemberManage, a.updateMemberHandler)},
 		{"DELETE /api/v1/members/{user_id}", a.require(authz.ActionMemberManage, a.removeMemberHandler)},
+		{"GET /api/v1/invites", a.require(authz.ActionMemberManage, a.listInvitesHandler)},
+		{"DELETE /api/v1/invites/{id}", a.require(authz.ActionMemberManage, a.revokeInviteHandler)},
 
 		{"POST /api/v1/agents", a.require(authz.ActionAgentWrite, a.createAgentHandler)},
 		{"GET /api/v1/agents", a.require(authz.ActionAgentRead, a.listAgentsHandler)},

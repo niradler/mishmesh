@@ -1,7 +1,6 @@
 package controlplane
 
 import (
-	"errors"
 	"net/http"
 	"time"
 
@@ -73,20 +72,22 @@ func (a *API) addMemberHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "valid email required")
 		return
 	}
-	user, err := a.data.GetUserByEmail(r.Context(), email)
-	if errors.Is(err, store.ErrNotFound) {
-		user = &store.User{ID: store.NewID("usr"), Email: email, CreatedAt: time.Now()}
-		err = a.data.CreateUser(r.Context(), user)
-	}
-	if a.handleErr(w, err) {
+	if !a.canGrant(r, req.Role) {
+		writeError(w, http.StatusForbidden, "cannot grant a role above your own")
 		return
 	}
-	orgID := a.orgScope(r)
-	if err := a.data.CreateMembership(r.Context(), &store.Membership{OrgID: orgID, UserID: user.ID, Role: req.Role, CreatedAt: time.Now()}); a.handleErr(w, err) {
+	actor, _ := r.Context().Value(ctxActor).(string)
+	inv, token, err := a.createInvite(r.Context(), a.orgScope(r), email, req.Role, actor)
+	if err != nil {
+		a.log.Warn("create invite failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	a.audit(r, "member.add", user.ID, req.Role)
-	writeJSON(w, http.StatusCreated, memberDTO{User: userDTO(user), Role: req.Role, CreatedAt: time.Now()})
+	a.audit(r, "invite.create", inv.ID, req.Role)
+	dto := toInviteDTO(inv)
+	dto.InviteToken = token
+	dto.InviteURL = inviteURL(token)
+	writeJSON(w, http.StatusCreated, dto)
 }
 
 func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +99,10 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validRole(req.Role) {
 		writeError(w, http.StatusBadRequest, "invalid role")
+		return
+	}
+	if !a.canGrant(r, req.Role) {
+		writeError(w, http.StatusForbidden, "cannot grant a role above your own")
 		return
 	}
 	orgID := a.orgScope(r)

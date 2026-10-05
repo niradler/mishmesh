@@ -32,16 +32,22 @@ func newAuthAPI(t *testing.T) *httptest.Server {
 
 func inviteAndRegister(t *testing.T, srv *httptest.Server, owner *http.Client, email, role string) *http.Client {
 	t.Helper()
-	doc(t, owner, srv, http.MethodPost, "/api/v1/members", `{"email":"`+email+`","role":"`+role+`"}`, http.StatusCreated, nil)
-	return registerClient(t, srv, email, role)
+	var inv inviteDTO
+	doc(t, owner, srv, http.MethodPost, "/api/v1/members", `{"email":"`+email+`","role":"`+role+`"}`, http.StatusCreated, &inv)
+	return registerWithToken(t, srv, email, role, inv.InviteToken)
 }
 
 func registerClient(t *testing.T, srv *httptest.Server, email, role string) *http.Client {
 	t.Helper()
+	return registerWithToken(t, srv, email, role, "")
+}
+
+func registerWithToken(t *testing.T, srv *httptest.Server, email, role, token string) *http.Client {
+	t.Helper()
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar}
 	doc(t, client, srv, http.MethodPost, "/api/v1/auth/register",
-		`{"email":"`+email+`","password":"supersecret","name":"x"}`, http.StatusCreated, nil)
+		`{"email":"`+email+`","password":"supersecret","name":"x","invite_token":"`+token+`"}`, http.StatusCreated, nil)
 	var me struct {
 		Role string `json:"role"`
 	}

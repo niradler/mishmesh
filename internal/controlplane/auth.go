@@ -93,6 +93,7 @@ func (a *API) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logoutHandler)
 	mux.HandleFunc("GET /api/v1/auth/me", a.meHandler)
 	mux.HandleFunc("POST /api/v1/auth/switch-org", a.switchOrgHandler)
+	mux.HandleFunc("POST /api/v1/auth/accept-invite", a.acceptInviteHandler)
 	mux.HandleFunc("POST /api/v1/auth/register", a.registerHandler)
 	mux.HandleFunc("GET /api/v1/auth/google/start", a.googleStartHandler)
 	mux.HandleFunc("GET /api/v1/auth/google/callback", a.googleCallbackHandler)
@@ -215,9 +216,10 @@ func (a *API) registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-		Name     string `json:"name"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		Name        string `json:"name"`
+		InviteToken string `json:"invite_token"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -240,10 +242,13 @@ func (a *API) registerHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "hash failed")
 		return
 	}
-	user, err := a.registerPasswordUser(r.Context(), email, req.Name, string(hash))
+	user, err := a.registerPasswordUser(r.Context(), email, req.Name, string(hash), req.InviteToken)
 	switch {
 	case errors.Is(err, errEmailTaken):
 		writeError(w, http.StatusConflict, "email already registered")
+		return
+	case errors.Is(err, errInvalidInvite):
+		writeError(w, http.StatusForbidden, "invalid or expired invite")
 		return
 	case errors.Is(err, errSignupClosed):
 		writeError(w, http.StatusForbidden, "registration is by invitation only")
@@ -369,30 +374,32 @@ func validEmail(email string) bool {
 	return at > 0 && strings.Contains(email[at+1:], ".") && !strings.HasSuffix(email, ".")
 }
 
-func isPendingInvite(u *store.User) bool {
-	return u.PasswordHash == "" && u.GoogleSub == ""
-}
-
-func (a *API) registerPasswordUser(ctx context.Context, email, name, hash string) (*store.User, error) {
-	existing, err := a.data.GetUserByEmail(ctx, email)
+func (a *API) registerPasswordUser(ctx context.Context, email, name, hash, inviteToken string) (*store.User, error) {
+	_, err := a.data.GetUserByEmail(ctx, email)
 	if err == nil {
-		if !isPendingInvite(existing) {
-			return nil, errEmailTaken
-		}
-		existing.PasswordHash = hash
-		if name != "" {
-			existing.Name = name
-		}
-		if err := a.data.UpdateUser(ctx, existing); err != nil {
-			return nil, fmt.Errorf("claim invite: %w", err)
-		}
-		return existing, nil
+		return nil, errEmailTaken
 	}
 	if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
 	user := &store.User{ID: store.NewID("usr"), Email: email, Name: name, PasswordHash: hash, CreatedAt: time.Now()}
-	return a.provisionNewUser(ctx, user)
+	if inviteToken == "" {
+		return a.provisionNewUser(ctx, user)
+	}
+	inv, err := a.lookupInvite(ctx, inviteToken, email)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.claimInvite(ctx, inv); err != nil {
+		return nil, err
+	}
+	if err := a.data.CreateUser(ctx, user); err != nil {
+		return nil, fmt.Errorf("create user: %w", err)
+	}
+	if err := a.grantInviteMembership(ctx, user.ID, inv); err != nil {
+		return nil, err
+	}
+	return user, nil
 }
 
 func (a *API) provisionNewUser(ctx context.Context, user *store.User) (*store.User, error) {
@@ -537,10 +544,16 @@ type oidcProfile struct {
 var errEmailUnverified = errors.New("oidc provider did not assert a verified email")
 
 func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, error) {
+	verified := p.EmailVerified != nil && *p.EmailVerified
 	if u, err := a.data.GetUserByGoogleSub(ctx, p.Sub); err == nil {
+		if verified && normalizeEmail(p.Email) == u.Email {
+			if _, err := a.redeemVerifiedEmailInvites(ctx, u); err != nil {
+				return nil, err
+			}
+		}
 		return u, nil
 	}
-	if p.EmailVerified == nil || !*p.EmailVerified {
+	if !verified {
 		return nil, errEmailUnverified
 	}
 	email := normalizeEmail(p.Email)
@@ -550,9 +563,21 @@ func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, 
 		}
 		u.GoogleSub = p.Sub
 		_ = a.data.UpdateUser(ctx, u)
+		if _, err := a.redeemVerifiedEmailInvites(ctx, u); err != nil {
+			return nil, err
+		}
 		return u, nil
 	}
 	user := &store.User{ID: store.NewID("usr"), Email: email, Name: p.Name, GoogleSub: p.Sub, CreatedAt: time.Now()}
+	if a.hasLiveInviteFor(ctx, email) {
+		if err := a.data.CreateUser(ctx, user); err != nil {
+			return nil, fmt.Errorf("create user: %w", err)
+		}
+		if _, err := a.redeemVerifiedEmailInvites(ctx, user); err != nil {
+			return nil, err
+		}
+		return user, nil
+	}
 	return a.provisionNewUser(ctx, user)
 }
 

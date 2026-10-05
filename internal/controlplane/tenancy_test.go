@@ -25,6 +25,8 @@ type tenantFixture struct {
 	agentA   string
 	tokenA   string
 	endpoint string
+	inviteA  string
+	inviteTk string
 }
 
 func newTenantFixture(t *testing.T) *tenantFixture {
@@ -58,6 +60,8 @@ func newTenantFixture(t *testing.T) *tenantFixture {
 	var ep endpointDTO
 	doc(t, f.alice, srv, http.MethodPost, "/api/v1/endpoints", `{"agent_id":"`+f.agentA+`","subdomain":"alice-sub"}`, http.StatusCreated, &ep)
 	f.endpoint = ep.ID
+	inv := invite(t, f.alice, srv, "dave@example.com", "member")
+	f.inviteA, f.inviteTk = inv.ID, inv.InviteToken
 	return f
 }
 
@@ -67,6 +71,7 @@ func (f *tenantFixture) fill(pattern string) (string, string) {
 		"/agents/{id}", "/agents/"+f.agentA,
 		"/endpoints/{id}", "/endpoints/"+f.endpoint,
 		"/orgs/{id}", "/orgs/"+f.orgA,
+		"/invites/{id}", "/invites/"+f.inviteA,
 		"{user_id}", f.userA,
 		"{agent_id}", f.agentA,
 	)
@@ -120,6 +125,8 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"PATCH /api/v1/endpoints/{id}":       {`{"subdomain":"pwned"}`, notFound},
 		"DELETE /api/v1/endpoints/{id}":      {"", notFound},
 		"POST /api/v1/reach/{agent_id}/http": {`{"target":"127.0.0.1:1"}`, notFound},
+		"GET /api/v1/invites":                {"", http.StatusOK},
+		"DELETE /api/v1/invites/{id}":        {"", notFound},
 		"GET /api/v1/agents":                 {"", http.StatusOK},
 		"GET /api/v1/endpoints":              {"", http.StatusOK},
 		"GET /api/v1/members":                {"", http.StatusOK},
@@ -134,7 +141,7 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"PUT /api/v1/policy":                 {`{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"],"member":["agent:read"]}}`, http.StatusOK},
 	}
 
-	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, "alice", "alice-sub", "alice-agent"}
+	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent"}
 
 	for _, rt := range f.api.routes() {
 		pr, ok := probes[rt.pattern]
@@ -184,6 +191,11 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/members", "", http.StatusOK, &members)
 	if len(members) != 1 {
 		t.Fatalf("alice members tampered: %+v", members)
+	}
+	var invites []inviteDTO
+	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/invites", "", http.StatusOK, &invites)
+	if len(invites) != 1 || invites[0].ID != f.inviteA {
+		t.Fatalf("alice invites tampered: %+v", invites)
 	}
 }
 

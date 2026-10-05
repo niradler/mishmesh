@@ -117,6 +117,17 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS invites (
+  id         TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  org_id     TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  email      TEXT NOT NULL,
+  role       TEXT NOT NULL,
+  invited_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_invites_email ON invites(email);
 CREATE TABLE IF NOT EXISTS audit (
   id         TEXT PRIMARY KEY,
   org_id     TEXT NOT NULL,
@@ -581,6 +592,67 @@ func (s *Store) DeleteSession(ctx context.Context, idHash string) error {
 func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`, ns(now))
 	return wrap("delete expired sessions", err)
+}
+
+const inviteCols = `id, token_hash, org_id, email, role, invited_by, created_at, expires_at`
+
+func (s *Store) CreateInvite(ctx context.Context, i *store.Invite) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO invites (`+inviteCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		i.ID, i.TokenHash, i.OrgID, i.Email, i.Role, i.InvitedBy, ns(i.CreatedAt), ns(i.ExpiresAt))
+	return wrap("create invite", err)
+}
+
+func (s *Store) GetInviteByTokenHash(ctx context.Context, tokenHash string) (*store.Invite, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+inviteCols+` FROM invites WHERE token_hash = ?`, tokenHash)
+	return scanInvite(row)
+}
+
+func (s *Store) ListInvitesByOrg(ctx context.Context, orgID string) ([]*store.Invite, error) {
+	return s.queryInvites(ctx, `SELECT `+inviteCols+` FROM invites WHERE org_id = ? ORDER BY created_at`, orgID)
+}
+
+func (s *Store) ListInvitesByEmail(ctx context.Context, email string) ([]*store.Invite, error) {
+	return s.queryInvites(ctx, `SELECT `+inviteCols+` FROM invites WHERE email = ? ORDER BY created_at`, email)
+}
+
+func (s *Store) DeleteInvite(ctx context.Context, orgID, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM invites WHERE id = ? AND org_id = ?`, id, orgID)
+	if err != nil {
+		return wrap("delete invite", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) queryInvites(ctx context.Context, query string, args ...any) ([]*store.Invite, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, wrap("list invites", err)
+	}
+	defer rows.Close()
+	var out []*store.Invite
+	for rows.Next() {
+		inv, err := scanInvite(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, wrap("list invites", rows.Err())
+}
+
+func scanInvite(row interface{ Scan(...any) error }) (*store.Invite, error) {
+	var inv store.Invite
+	var created, expires int64
+	if err := row.Scan(&inv.ID, &inv.TokenHash, &inv.OrgID, &inv.Email, &inv.Role, &inv.InvitedBy, &created, &expires); err != nil {
+		return nil, scanErr("scan invite", err)
+	}
+	inv.CreatedAt = fromNS(created)
+	inv.ExpiresAt = fromNS(expires)
+	return &inv, nil
 }
 
 func (s *Store) GetOrgPolicy(ctx context.Context, orgID string) (*store.OrgPolicy, error) {

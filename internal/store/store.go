@@ -138,6 +138,17 @@ type Membership struct {
 	CreatedAt time.Time
 }
 
+type Invite struct {
+	ID        string
+	TokenHash string
+	OrgID     string
+	Email     string
+	Role      string
+	InvitedBy string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
 type Session struct {
 	IDHash    string
 	UserID    string
@@ -197,6 +208,12 @@ type DataStore interface {
 	ListMembershipsByOrg(ctx context.Context, orgID string) ([]*Membership, error)
 	UpdateMembership(ctx context.Context, m *Membership) error
 	DeleteMembership(ctx context.Context, orgID, userID string) error
+
+	CreateInvite(ctx context.Context, i *Invite) error
+	GetInviteByTokenHash(ctx context.Context, tokenHash string) (*Invite, error)
+	ListInvitesByOrg(ctx context.Context, orgID string) ([]*Invite, error)
+	ListInvitesByEmail(ctx context.Context, email string) ([]*Invite, error)
+	DeleteInvite(ctx context.Context, orgID, id string) error
 
 	CreateSession(ctx context.Context, s *Session) error
 	GetSession(ctx context.Context, idHash string) (*Session, error)

@@ -50,10 +50,22 @@ func newJarClient() *http.Client {
 
 func register(t *testing.T, srv *httptest.Server, email string, want int) (*http.Client, meBody) {
 	t.Helper()
+	return registerTok(t, srv, email, "", want)
+}
+
+func registerTok(t *testing.T, srv *httptest.Server, email, token string, want int) (*http.Client, meBody) {
+	t.Helper()
 	c := newJarClient()
 	var me meBody
-	doc(t, c, srv, http.MethodPost, "/api/v1/auth/register", `{"email":"`+email+`","password":"supersecret","name":"N"}`, want, &me)
+	doc(t, c, srv, http.MethodPost, "/api/v1/auth/register", `{"email":"`+email+`","password":"supersecret","name":"N","invite_token":"`+token+`"}`, want, &me)
 	return c, me
+}
+
+func invite(t *testing.T, owner *http.Client, srv *httptest.Server, email, role string) inviteDTO {
+	t.Helper()
+	var inv inviteDTO
+	doc(t, owner, srv, http.MethodPost, "/api/v1/members", `{"email":"`+email+`","role":"`+role+`"}`, http.StatusCreated, &inv)
+	return inv
 }
 
 func TestSignupModeOrgCreatesOrgPerUser(t *testing.T) {
@@ -79,8 +91,8 @@ func TestSignupModeInvite(t *testing.T) {
 	}
 	register(t, srv, "stranger@example.com", http.StatusForbidden)
 
-	doc(t, owner, srv, http.MethodPost, "/api/v1/members", `{"email":"invitee@example.com","role":"member"}`, http.StatusCreated, nil)
-	invitee, me := register(t, srv, "invitee@example.com", http.StatusCreated)
+	inv := invite(t, owner, srv, "invitee@example.com", "member")
+	invitee, me := registerTok(t, srv, "invitee@example.com", inv.InviteToken, http.StatusCreated)
 	if me.ActiveOrgID != defaultOrgID || me.Role != "member" {
 		t.Fatalf("invitee: %+v", me)
 	}
@@ -90,15 +102,15 @@ func TestSignupModeInvite(t *testing.T) {
 func TestInviteeCannotLoginBeforeRegistering(t *testing.T) {
 	srv := newModeAPI(t, "invite")
 	owner, _ := register(t, srv, "owner@example.com", http.StatusCreated)
-	doc(t, owner, srv, http.MethodPost, "/api/v1/members", `{"email":"invitee@example.com","role":"member"}`, http.StatusCreated, nil)
+	invite(t, owner, srv, "invitee@example.com", "member")
 	doc(t, newJarClient(), srv, http.MethodPost, "/api/v1/auth/login", `{"email":"invitee@example.com","password":""}`, http.StatusUnauthorized, nil)
 }
 
 func TestRemovedMemberLosesAccess(t *testing.T) {
 	srv := newModeAPI(t, "invite")
 	owner, _ := register(t, srv, "owner@example.com", http.StatusCreated)
-	doc(t, owner, srv, http.MethodPost, "/api/v1/members", `{"email":"m@example.com","role":"member"}`, http.StatusCreated, nil)
-	member, me := register(t, srv, "m@example.com", http.StatusCreated)
+	inv := invite(t, owner, srv, "m@example.com", "member")
+	member, me := registerTok(t, srv, "m@example.com", inv.InviteToken, http.StatusCreated)
 	doc(t, member, srv, http.MethodGet, "/api/v1/agents", "", http.StatusOK, nil)
 
 	doc(t, owner, srv, http.MethodDelete, "/api/v1/members/"+me.ID, "", http.StatusNoContent, nil)
