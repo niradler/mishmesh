@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -17,11 +18,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/mishmesh/mishmesh/internal/config"
+	"github.com/mishmesh/mishmesh/internal/store"
 )
 
 func defaultHostKeyPath(cfg config.Server) string {
@@ -50,7 +53,7 @@ func loadOrCreateHostKey(path string) ([]byte, error) {
 	return keyPEM, nil
 }
 
-func buildTLSConfig(cfg config.Server) (*tls.Config, http.Handler, error) {
+func buildTLSConfig(cfg config.Server, data store.DataStore) (*tls.Config, http.Handler, error) {
 	if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
 		if err != nil {
@@ -64,7 +67,7 @@ func buildTLSConfig(cfg config.Server) (*tls.Config, http.Handler, error) {
 			Prompt:     autocert.AcceptTOS,
 			Cache:      autocert.DirCache(cfg.ACMECacheDir),
 			Email:      cfg.ACMEEmail,
-			HostPolicy: acmeHostPolicy(apex),
+			HostPolicy: acmeHostPolicy(apex, customDomainLookup(cfg, data)),
 		}
 		tc := m.TLSConfig()
 		tc.MinVersion = tls.VersionTLS12
@@ -121,11 +124,88 @@ func dedupe(in []string) []string {
 	return out
 }
 
-func acmeHostPolicy(apex string) autocert.HostPolicy {
-	return func(_ context.Context, host string) error {
+const customDomainCacheTTL = 30 * time.Second
+
+type hostLookup func(ctx context.Context, host string) (bool, error)
+
+func customDomainLookup(cfg config.Server, data store.DataStore) hostLookup {
+	if data == nil {
+		return nil
+	}
+	if cfg.DomainVerification {
+		return func(ctx context.Context, host string) (bool, error) {
+			_, err := data.GetVerifiedDomain(ctx, host)
+			return foundOrNotFound(err)
+		}
+	}
+	return func(ctx context.Context, host string) (bool, error) {
+		_, err := data.GetEndpointByDomain(ctx, host)
+		return foundOrNotFound(err)
+	}
+}
+
+func foundOrNotFound(err error) (bool, error) {
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	return false, err
+}
+
+type cachedLookup struct {
+	lookup hostLookup
+	ttl    time.Duration
+	now    func() time.Time
+	mu     sync.Mutex
+	seen   map[string]cachedVerdict
+}
+
+type cachedVerdict struct {
+	allowed bool
+	expires time.Time
+}
+
+func newCachedLookup(lookup hostLookup, ttl time.Duration) *cachedLookup {
+	return &cachedLookup{lookup: lookup, ttl: ttl, now: time.Now, seen: make(map[string]cachedVerdict)}
+}
+
+func (c *cachedLookup) allowed(ctx context.Context, host string) (bool, error) {
+	c.mu.Lock()
+	v, ok := c.seen[host]
+	c.mu.Unlock()
+	if ok && c.now().Before(v.expires) {
+		return v.allowed, nil
+	}
+	allowed, err := c.lookup(ctx, host)
+	if err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	c.seen[host] = cachedVerdict{allowed: allowed, expires: c.now().Add(c.ttl)}
+	c.mu.Unlock()
+	return allowed, nil
+}
+
+func acmeHostPolicy(apex string, custom hostLookup) autocert.HostPolicy {
+	var cache *cachedLookup
+	if custom != nil {
+		cache = newCachedLookup(custom, customDomainCacheTTL)
+	}
+	return func(ctx context.Context, host string) error {
 		host = strings.ToLower(host)
 		if host == apex || strings.HasSuffix(host, "."+apex) {
 			return nil
+		}
+		if cache != nil {
+			allowed, err := cache.allowed(ctx, host)
+			if err != nil {
+				return fmt.Errorf("acme: lookup host %q: %w", host, err)
+			}
+			if allowed {
+				return nil
+			}
 		}
 		return fmt.Errorf("acme: host %q not permitted", host)
 	}

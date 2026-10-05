@@ -209,7 +209,7 @@ func serve() error {
 			TrustedProxies:   trustedProxies,
 		})
 		if cfg.TLSEnabled {
-			tc, acmeHTTP, err := buildTLSConfig(cfg)
+			tc, acmeHTTP, err := buildTLSConfig(cfg, data)
 			if err != nil {
 				return err
 			}

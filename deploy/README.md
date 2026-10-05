@@ -40,6 +40,7 @@ Two options:
   MISHMESH_ACME_EMAIL=ops@example.com
   ```
   ACME needs ports 80 and 443 publicly reachable.
+  Certificates are issued for the base domain, its subdomains, and custom domains: verified domains when `MISHMESH_DOMAIN_VERIFICATION` is on, otherwise domains bound to an endpoint (lookups cached for 30s). ACME is single-pod only; clusters use a wildcard secret.
 
 ### 3. Run the server
 

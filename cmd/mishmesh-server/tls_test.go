@@ -17,7 +17,7 @@ import (
 )
 
 func TestAcmeHostPolicy(t *testing.T) {
-	p := acmeHostPolicy("mishmesh.io")
+	p := acmeHostPolicy("mishmesh.io", nil)
 	ok := []string{"mishmesh.io", "abc.mishmesh.io", "ABC.MISHMESH.IO"}
 	bad := []string{"evil.com", "mishmesh.io.evil.com", "a.b.mishmesh.io.x"}
 	for _, h := range ok {
@@ -33,14 +33,14 @@ func TestAcmeHostPolicy(t *testing.T) {
 }
 
 func TestBuildTLSConfigNoSource(t *testing.T) {
-	if _, _, err := buildTLSConfig(config.Server{TLSEnabled: true}); err == nil {
+	if _, _, err := buildTLSConfig(config.Server{TLSEnabled: true}, nil); err == nil {
 		t.Fatal("expected error when no cert source configured")
 	}
 }
 
 func TestBuildTLSConfigBYO(t *testing.T) {
 	certFile, keyFile := writeSelfSigned(t)
-	tc, acmeHTTP, err := buildTLSConfig(config.Server{TLSEnabled: true, TLSCertFile: certFile, TLSKeyFile: keyFile})
+	tc, acmeHTTP, err := buildTLSConfig(config.Server{TLSEnabled: true, TLSCertFile: certFile, TLSKeyFile: keyFile}, nil)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
