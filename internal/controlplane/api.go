@@ -220,17 +220,30 @@ func (a *API) guard(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+var operatorOnlyActions = map[authz.Action]struct{}{
+	authz.ActionQuotaWrite: {},
+}
+
 func (a *API) require(action authz.Action, h http.HandlerFunc) http.HandlerFunc {
 	return a.guard(func(w http.ResponseWriter, r *http.Request) {
-		role, _ := r.Context().Value(ctxRole).(string)
-		org := a.orgScope(r)
-		az := a.authorizerFor(r.Context(), org)
-		if !az.Authorize(authz.Principal{ID: a.actor(r), Role: role, Org: org}, action) {
+		if !a.permitted(r, action) {
 			writeError(w, http.StatusForbidden, "permission denied: "+string(action))
 			return
 		}
 		h(w, r)
 	})
+}
+
+func (a *API) permitted(r *http.Request, action authz.Action) bool {
+	if a.isAdmin(r) {
+		return true
+	}
+	if _, restricted := operatorOnlyActions[action]; restricted {
+		return false
+	}
+	role, _ := r.Context().Value(ctxRole).(string)
+	org := a.orgScope(r)
+	return a.authorizerFor(r.Context(), org).Authorize(authz.Principal{ID: a.actor(r), Role: role, Org: org}, action)
 }
 
 func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context, bool) {

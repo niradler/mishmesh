@@ -35,7 +35,7 @@ function Flag({ label, on }: { label: string; on: boolean }) {
 
 function QuotaForm({ orgId, quota }: { orgId?: string; quota: Quota }) {
   const update = useUpdateQuota(orgId);
-  const { isOwnerOrAdmin } = useSession();
+  const { isOperator } = useSession();
   const [form, setForm] = useState<QuotaUpdate>({
     max_agents: quota.max_agents,
     max_endpoints: quota.max_endpoints,
@@ -68,21 +68,21 @@ function QuotaForm({ orgId, quota }: { orgId?: string; quota: Quota }) {
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Max agents</Label>
-          <Input type="number" value={form.max_agents} onChange={num("max_agents")} disabled={!isOwnerOrAdmin} />
+          <Input type="number" value={form.max_agents} onChange={num("max_agents")} disabled={!isOperator} />
         </div>
         <div className="space-y-1.5">
           <Label>Max endpoints</Label>
-          <Input type="number" value={form.max_endpoints} onChange={num("max_endpoints")} disabled={!isOwnerOrAdmin} />
+          <Input type="number" value={form.max_endpoints} onChange={num("max_endpoints")} disabled={!isOperator} />
         </div>
         <div className="space-y-1.5">
           <Label>Max bandwidth</Label>
-          <Input type="number" value={form.max_bandwidth_bytes} onChange={num("max_bandwidth_bytes")} disabled={!isOwnerOrAdmin} />
+          <Input type="number" value={form.max_bandwidth_bytes} onChange={num("max_bandwidth_bytes")} disabled={!isOperator} />
           <p className="text-xs text-muted-foreground">
             {form.max_bandwidth_bytes > 0 ? formatBytes(form.max_bandwidth_bytes) : "unlimited"}
           </p>
         </div>
       </div>
-      {isOwnerOrAdmin && (
+      {isOperator && (
         <div className="flex justify-end">
           <Button type="submit" disabled={update.isPending}>
             {update.isPending ? "Saving…" : "Save quota"}

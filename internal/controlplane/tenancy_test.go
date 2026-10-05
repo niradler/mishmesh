@@ -135,7 +135,7 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"GET /api/v1/orgs":                    {"", http.StatusOK},
 		"POST /api/v1/orgs":                   {`{"name":"bobs-second"}`, http.StatusCreated},
 		"GET /api/v1/quota":                   {"", http.StatusOK},
-		"PUT /api/v1/quota":                   {`{"max_agents":1,"max_endpoints":1,"max_bandwidth_bytes":1}`, http.StatusOK},
+		"PUT /api/v1/quota":                   {`{"max_agents":1,"max_endpoints":1,"max_bandwidth_bytes":1}`, http.StatusForbidden},
 		"GET /api/v1/audit":                   {"", http.StatusOK},
 		"GET /api/v1/status":                  {"", http.StatusOK},
 		"GET /api/v1/policy":                  {"", http.StatusOK},
@@ -225,6 +225,41 @@ func TestUnknownAPIPathIsJSON404(t *testing.T) {
 	if status != http.StatusNotFound || !strings.Contains(body, `"error"`) {
 		t.Fatalf("got %d %s", status, body)
 	}
+}
+
+const allActionsPolicy = `{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"]}}`
+
+func TestTenantOwnerCannotWriteQuota(t *testing.T) {
+	f := newTenantFixture(t)
+
+	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/quota", `{"max_agents":0,"max_endpoints":0,"max_bandwidth_bytes":0}`, http.StatusForbidden, nil)
+	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/policy", allActionsPolicy, http.StatusOK, nil)
+	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/quota", `{"max_agents":0,"max_endpoints":0,"max_bandwidth_bytes":0}`, http.StatusForbidden, nil)
+	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/quota", "", http.StatusOK, nil)
+
+	admin := &http.Client{Transport: bearerTransport{token: "admin-secret"}}
+	doc(t, admin, f.srv, http.MethodPut, "/api/v1/quota?org_id="+f.orgA, `{"max_agents":7,"max_endpoints":8,"max_bandwidth_bytes":9}`, http.StatusOK, nil)
+	var q quotaDTO
+	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/quota", "", http.StatusOK, &q)
+	if q.MaxAgents != 7 || q.MaxEndpoints != 8 || q.MaxBandwidthBytes != 9 {
+		t.Fatalf("operator quota write not applied: %+v", q)
+	}
+}
+
+func TestOperatorBypassesHostileOrgPolicy(t *testing.T) {
+	f := newTenantFixture(t)
+	admin := &http.Client{Transport: bearerTransport{token: "admin-secret"}}
+
+	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/policy", `{"matrix":{"member":["agent:read"]}}`, http.StatusOK, nil)
+	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/agents", "", http.StatusForbidden, nil)
+	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/policy", allActionsPolicy, http.StatusForbidden, nil)
+
+	q := "?org_id=" + f.orgA
+	doc(t, admin, f.srv, http.MethodGet, "/api/v1/agents"+q, "", http.StatusOK, nil)
+	doc(t, admin, f.srv, http.MethodPost, "/api/v1/agents"+q, `{"name":"op-agent"}`, http.StatusCreated, nil)
+	doc(t, admin, f.srv, http.MethodPut, "/api/v1/quota"+q, `{"max_agents":5}`, http.StatusOK, nil)
+	doc(t, admin, f.srv, http.MethodPut, "/api/v1/policy"+q, allActionsPolicy, http.StatusOK, nil)
+	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/agents", "", http.StatusOK, nil)
 }
 
 type bearerTransport struct{ token string }

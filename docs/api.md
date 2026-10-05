@@ -20,7 +20,7 @@ Content-Type `application/json`. Errors: `{"error": "message"}` with the matchin
 
 The server refuses to start unless `MISHMESH_API_AUTH_TOKEN` is set or `MISHMESH_API_AUTH_DISABLED=true` is set explicitly.
 
-- **Programmatic:** `Authorization: Bearer <MISHMESH_API_AUTH_TOKEN>`. This is the operator's admin token. It acts as `owner` of whichever org it targets: `?org_id=` picks any org, otherwise it uses `org_default`. Its permissions are the owner row of that org's policy (see [Roles and policy](#roles-and-policy)).
+- **Programmatic:** `Authorization: Bearer <MISHMESH_API_AUTH_TOKEN>`. This is the operator's admin token. It acts as the platform operator: `?org_id=` picks any org, otherwise it uses `org_default`. The operator bypasses the org's policy on every org-scoped route, so a tenant cannot lock the operator out by editing its own policy (see [Roles and policy](#roles-and-policy)).
 - **Browser:** httpOnly cookie `mm_session` (`Secure` when `PUBLIC_SCHEME=https`, `SameSite=Lax`), set by login or registration. Accepted only when `MISHMESH_AUTH_ENABLED=true`. The org is the session's active org, and the user's role in it gates every route.
 
 | `API_AUTH_TOKEN` | `AUTH_ENABLED` | What `/api/v1` accepts |
@@ -34,7 +34,7 @@ Every resource is scoped to the caller's active org. A resource outside that org
 
 ## Roles and policy
 
-Roles: `owner`, `admin`, `member`. Each route requires one action. A caller without it gets `403 permission denied: <action>`.
+Roles: `owner`, `admin`, `member`. Each route requires one action. A caller without it gets `403 permission denied: <action>`. The platform operator (admin bearer token) bypasses the policy entirely; `quota:write` is the one action that only the operator may use.
 
 | Action | Routes | Default roles |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ Roles: `owner`, `admin`, `member`. Each route requires one action. A caller with
 | `agent:write` | agent create/patch/delete/rotate/revoke, reach-in | owner, admin |
 | `endpoint:read` | `GET /endpoints`, `/endpoints/{id}`, `/agents/{id}/endpoints`, `GET /domains` | owner, admin, member |
 | `endpoint:write` | endpoint create/patch/delete, domain create/verify/delete | owner, admin |
-| `quota:read` / `quota:write` | `GET` / `PUT /quota` | all / owner, admin |
+| `quota:read` / `quota:write` | `GET` / `PUT /quota` | all / operator only (see below) |
 | `member:read` | `GET /members` | owner, admin, member |
 | `member:manage` | `POST`/`PATCH`/`DELETE /members`, `GET`/`DELETE /invites` | owner, admin |
 | `audit:read` | `GET /audit` | owner, admin, member |
@@ -149,7 +149,7 @@ Proof of ownership is the TXT record only. `cname_target` is the base-domain hos
 | GET | `/quota` | → `{max_agents, max_endpoints, max_bandwidth_bytes, usage:{agents, endpoints, bandwidth_bytes}}` |
 | PUT | `/quota` | `quota:write`: `{max_agents, max_endpoints, max_bandwidth_bytes}` → the GET shape. 0 means unlimited |
 
-New orgs start from the server defaults `MISHMESH_QUOTA_MAX_*`. Under the default policy an org owner holds `quota:write` for their own org.
+New orgs start from the server defaults `MISHMESH_QUOTA_MAX_*`. Quota writes are platform-operator-only in every mode: `PUT /quota` with an org session returns `403 permission denied: quota:write`, whatever the org's policy says. Org owners can still read their quota. The operator sets one org's quota with the admin bearer token: `PUT /quota?org_id=...`.
 
 ## Org & members
 

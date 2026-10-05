@@ -11,6 +11,7 @@ interface SessionValue {
   role: Role | null;
   canWrite: boolean;
   isOwnerOrAdmin: boolean;
+  isOperator: boolean;
 }
 
 const SessionContext = createContext<SessionValue | null>(null);
@@ -49,6 +50,7 @@ export function SessionProvider({
       role,
       canWrite: !authConfig.auth_enabled || isOwnerOrAdmin,
       isOwnerOrAdmin: !authConfig.auth_enabled || isOwnerOrAdmin,
+      isOperator: !authConfig.auth_enabled,
     };
   }, [authConfig, me, memberships, currentOrgId, setCurrentOrgId]);
 
