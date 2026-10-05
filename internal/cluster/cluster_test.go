@@ -7,9 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/yamux"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
@@ -17,6 +19,7 @@ import (
 var testSecret = []byte("0123456789abcdef0123456789abcdef")
 
 type echoAgent struct {
+	mu       sync.Mutex
 	id       string
 	gotEP    string
 	gotKind  string
@@ -30,7 +33,9 @@ func (e *echoAgent) OpenStream(_ context.Context, endpointID, kind string, meta 
 	if e.openFail {
 		return nil, errors.New("boom")
 	}
+	e.mu.Lock()
 	e.gotEP, e.gotKind, e.gotMeta = endpointID, kind, meta
+	e.mu.Unlock()
 	server, client := net.Pipe()
 	go func() {
 		defer server.Close()
@@ -59,19 +64,45 @@ func startServer(t *testing.T, local LocalResolver, now func() time.Time) string
 	return addr.String()
 }
 
-func rawExchange(t *testing.T, addr string, hdr Header) (status byte, closedWithoutStatus bool) {
+func rawSession(t *testing.T, addr string) *yamux.Session {
 	t.Helper()
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	if err := WriteHeader(conn, hdr); err != nil {
+	hello, err := NewHello(testSecret, time.Now())
+	if err != nil {
 		t.Fatal(err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := writeHello(conn, hello); err != nil {
+		t.Fatal(err)
+	}
+	var ack [1]byte
+	if _, err := io.ReadFull(conn, ack[:]); err != nil || ack[0] != StatusOK {
+		t.Fatalf("session ack: %v %v", ack, err)
+	}
+	cfg := yamuxConfig()
+	sess, err := yamux.Client(conn, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	return sess
+}
+
+func rawExchange(t *testing.T, addr string, hdr Header) (status byte, closedWithoutStatus bool) {
+	t.Helper()
+	stream, err := rawSession(t, addr).OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if err := WriteHeader(stream, hdr); err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var b [1]byte
-	if _, err := io.ReadFull(conn, b[:]); err != nil {
+	if _, err := io.ReadFull(stream, b[:]); err != nil {
 		return 0, true
 	}
 	return b[0], false
@@ -130,19 +161,51 @@ func TestRelayHeaderAuth(t *testing.T) {
 	}
 }
 
-func TestRelayRejectsOversizedHeader(t *testing.T) {
+func TestRelayRejectsBadHello(t *testing.T) {
 	addr := startServer(t, fixedResolver{}, nil)
+	good, _ := NewHello(testSecret, time.Now())
+	stale, _ := NewHello(testSecret, time.Now().Add(-5*time.Minute))
+	wrong, _ := NewHello([]byte("ffffffffffffffffffffffffffffffff"), time.Now())
+	tests := []struct {
+		name  string
+		hello Hello
+		raw   []byte
+	}{
+		{"wrong secret", wrong, nil},
+		{"stale", stale, nil},
+		{"oversized", Hello{}, []byte{0x7f, 0xff, 0xff, 0xff}},
+		{"replay", good, nil},
+	}
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	if _, err := conn.Write([]byte{0x7f, 0xff, 0xff, 0xff}); err != nil {
+	if err := writeHello(conn, good); err != nil {
 		t.Fatal(err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := io.ReadAll(conn); err != nil && !strings.Contains(err.Error(), "reset") {
-		t.Fatalf("expected server to close connection, got %v", err)
+	var ack [1]byte
+	if _, err := io.ReadFull(conn, ack[:]); err != nil || ack[0] != StatusOK {
+		t.Fatalf("first hello should be accepted: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := net.Dial("tcp", addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			if tt.raw != nil {
+				_, _ = c.Write(tt.raw)
+			} else if err := writeHello(c, tt.hello); err != nil {
+				t.Fatal(err)
+			}
+			_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			var b [1]byte
+			if n, err := io.ReadFull(c, b[:]); err == nil {
+				t.Fatalf("expected connection close, got status byte %v (n=%d)", b, n)
+			}
+		})
 	}
 }
 

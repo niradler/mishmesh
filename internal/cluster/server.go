@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/yamux"
+
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
@@ -39,6 +41,7 @@ type Server struct {
 	active map[net.Conn]struct{}
 	closed bool
 	wg     sync.WaitGroup
+	nonces *nonceCache
 }
 
 func NewServer(opts ServerOptions) *Server {
@@ -56,6 +59,7 @@ func NewServer(opts ServerOptions) *Server {
 		log:    log,
 		now:    now,
 		active: make(map[net.Conn]struct{}),
+		nonces: newNonceCache(),
 	}
 }
 
@@ -87,7 +91,7 @@ func (s *Server) acceptLoop(ln net.Listener) {
 		go func() {
 			defer s.wg.Done()
 			defer s.untrack(conn)
-			s.handle(conn)
+			s.serveSession(conn)
 		}()
 	}
 }
@@ -127,7 +131,49 @@ func (s *Server) Shutdown() {
 	s.wg.Wait()
 }
 
-func (s *Server) handle(conn net.Conn) {
+func (s *Server) serveSession(conn net.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(headerReadTimeout))
+	hello, err := readHello(conn)
+	if err != nil {
+		s.log.Warn("relay hello rejected", "remote", conn.RemoteAddr().String(), "err", err)
+		return
+	}
+	now := s.now()
+	if err := hello.Verify(s.secret, now); err != nil {
+		s.log.Warn("relay auth failed", "remote", conn.RemoteAddr().String(), "err", err)
+		return
+	}
+	if err := s.nonces.use(hello.Nonce, now); err != nil {
+		s.log.Warn("relay auth failed", "remote", conn.RemoteAddr().String(), "err", err)
+		return
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	if !writeStatus(conn, StatusOK) {
+		return
+	}
+	sess, err := yamux.Server(conn, yamuxConfig())
+	if err != nil {
+		s.log.Warn("relay session failed", "remote", conn.RemoteAddr().String(), "err", err)
+		return
+	}
+	defer sess.Close()
+	var streams sync.WaitGroup
+	defer streams.Wait()
+	for {
+		stream, err := sess.AcceptStream()
+		if err != nil {
+			return
+		}
+		streams.Add(1)
+		go func() {
+			defer streams.Done()
+			defer stream.Close()
+			s.handle(stream)
+		}()
+	}
+}
+
+func (s *Server) handle(conn *yamux.Stream) {
 	_ = conn.SetReadDeadline(time.Now().Add(headerReadTimeout))
 	hdr, err := ReadHeader(conn)
 	if err != nil {
