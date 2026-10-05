@@ -28,10 +28,11 @@ import (
 )
 
 func defaultHostKeyPath(cfg config.Server) string {
+	dir := filepath.Dir(cfg.DataDSN)
 	if strings.Contains(cfg.DataDSN, "://") {
-		return "ssh_host_ed25519.pem"
+		dir = filepath.Dir(filepath.Clean(cfg.ACMECacheDir))
 	}
-	return filepath.Join(filepath.Dir(cfg.DataDSN), "ssh_host_ed25519.pem")
+	return filepath.Join(dir, "ssh_host_ed25519.pem")
 }
 
 func loadOrCreateHostKey(path string) ([]byte, error) {
@@ -48,7 +49,7 @@ func loadOrCreateHostKey(path string) ([]byte, error) {
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 	if err := os.WriteFile(path, keyPEM, 0o600); err != nil {
-		return nil, fmt.Errorf("persist ssh host key %s: %w", path, err)
+		return nil, fmt.Errorf("persist ssh host key %s (set MISHMESH_SSH_HOST_KEY_FILE to a writable path): %w", path, err)
 	}
 	return keyPEM, nil
 }

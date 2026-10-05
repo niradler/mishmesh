@@ -89,7 +89,7 @@ docker run -d --name mishmesh-server --network mishmesh --restart unless-stopped
 - Private: the control listener `8081` (agent connect, `/api/v1`, web UI, `/metrics`) is published on `127.0.0.1` only.
 - The server refuses to start without `MISHMESH_API_AUTH_TOKEN`, unless `MISHMESH_API_AUTH_DISABLED=true` is set explicitly. Use the latter only for local demos.
 - Postgres is selected because the DSN starts with `postgres://` (`MISHMESH_DATA_BACKEND=postgres` does the same explicitly). For a managed database, use its DSN with `sslmode=require` and drop the Postgres container.
-- `/data` holds certificates, the ACME cache and, if SSH is enabled, the SSH host key. Keep it on a volume.
+- `/data` holds certificates, the ACME cache and, if SSH is enabled, the SSH host key. Keep it on a volume. Without `MISHMESH_SSH_HOST_KEY_FILE` the host key is created next to the SQLite file, or, with a Postgres DSN, next to the ACME cache directory (`/data` in the image). If that directory is not writable the server stops at startup and names the path.
 
 Check it:
 
