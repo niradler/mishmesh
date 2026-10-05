@@ -160,6 +160,7 @@ func serve() error {
 	cp.ConfigureAuth(controlplane.AuthOptions{
 		Enabled:            cfg.AuthEnabled,
 		PasswordEnabled:    cfg.AuthPasswordEnabled,
+		SignupMode:         cfg.SignupMode,
 		CookieSecure:       cfg.PublicScheme == "https",
 		SessionTTL:         time.Duration(cfg.SessionTTLHours) * time.Hour,
 		GoogleClientID:     cfg.GoogleClientID,
@@ -172,7 +173,7 @@ func serve() error {
 		log.Info("reach-in data-plane api enabled")
 	}
 	if mx != nil {
-		apiMux.Handle("GET /metrics", mx.Handler())
+		apiMux.Handle("GET /metrics", metricsAuth(cfg.MetricsToken, cfg.APIAuthToken, mx.Handler()))
 		log.Info("metrics enabled", "path", "/metrics")
 	}
 	if cfg.WebUIEnabled && cfg.WebUIDir != "" {
