@@ -2,16 +2,28 @@ package ingress
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
+type PortClaims interface {
+	Claim(ctx context.Context, endpointID string, requested int) (int, error)
+	Release(ctx context.Context, endpointID string) error
+	Lookup(ctx context.Context, port int) (endpointID string, ok bool)
+}
+
+const claimOpTimeout = 2 * time.Second
+
 type TCPOptions struct {
+	Claims   PortClaims
 	Conns    store.ConnectionStore
 	Data     store.DataStore
 	Log      *slog.Logger
@@ -22,13 +34,15 @@ type TCPOptions struct {
 }
 
 type TCP struct {
-	conns    store.ConnectionStore
-	data     store.DataStore
-	log      *slog.Logger
-	bindHost string
-	portMin  int
-	portMax  int
-	meter    Meter
+	claims     PortClaims
+	clusterLns []net.Listener
+	conns      store.ConnectionStore
+	data       store.DataStore
+	log        *slog.Logger
+	bindHost   string
+	portMin    int
+	portMax    int
+	meter      Meter
 
 	mu        sync.Mutex
 	listeners map[string]*tcpListener
@@ -50,6 +64,7 @@ func NewTCP(opts TCPOptions) *TCP {
 		opts.BindHost = "127.0.0.1"
 	}
 	return &TCP{
+		claims:    opts.Claims,
 		conns:     opts.Conns,
 		data:      opts.Data,
 		log:       log,
@@ -63,6 +78,11 @@ func NewTCP(opts TCPOptions) *TCP {
 }
 
 func (t *TCP) Open(endpointID string, requestedPort int) (int, error) {
+	if t.claims != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), claimOpTimeout)
+		defer cancel()
+		return t.claims.Claim(ctx, endpointID, requestedPort)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -107,6 +127,14 @@ func (t *TCP) listen(requestedPort int) (net.Listener, int, error) {
 }
 
 func (t *TCP) Close(endpointID string) {
+	if t.claims != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), claimOpTimeout)
+		defer cancel()
+		if err := t.claims.Release(ctx, endpointID); err != nil {
+			t.log.Warn("tcp port release failed", "endpoint_id", endpointID, "err", err)
+		}
+		return
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	l, ok := t.listeners[endpointID]
@@ -161,9 +189,54 @@ func (t *TCP) meterUsage(endpointID string, up, down int64) {
 	}
 }
 
+func (t *TCP) ListenCluster() error {
+	if t.claims == nil {
+		return errors.New("tcp: cluster listen requires port claims")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for p := t.portMin; p <= t.portMax; p++ {
+		ln, err := net.Listen("tcp", net.JoinHostPort(t.bindHost, strconv.Itoa(p)))
+		if err != nil {
+			t.log.Warn("tcp cluster port bind failed", "port", p, "err", err)
+			continue
+		}
+		t.clusterLns = append(t.clusterLns, ln)
+		go t.acceptClaimed(ln, p)
+	}
+	if len(t.clusterLns) == 0 {
+		return fmt.Errorf("tcp: no port bound in range %d-%d", t.portMin, t.portMax)
+	}
+	t.log.Info("tcp cluster ports listening", "bind", t.bindHost, "count", len(t.clusterLns), "range", fmt.Sprintf("%d-%d", t.portMin, t.portMax))
+	return nil
+}
+
+func (t *TCP) acceptClaimed(ln net.Listener, port int) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), claimOpTimeout)
+			endpointID, ok := t.claims.Lookup(ctx, port)
+			cancel()
+			if !ok {
+				_ = conn.Close()
+				return
+			}
+			t.handle(conn, endpointID)
+		}()
+	}
+}
+
 func (t *TCP) Shutdown() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	for _, ln := range t.clusterLns {
+		_ = ln.Close()
+	}
+	t.clusterLns = nil
 	for id, l := range t.listeners {
 		_ = l.ln.Close()
 		delete(t.listeners, id)

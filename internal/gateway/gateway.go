@@ -115,7 +115,11 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 	defer func() {
 		g.conns.RemoveAgent(ac)
 		_ = ac.Close()
-		g.cleanupEphemeral(ctx, agent.ID)
+		if g.conns.OwnedElsewhere(agent.ID) {
+			g.log.Info("agent now owned by another node; skipping endpoint cleanup", "agent_id", agent.ID)
+		} else {
+			g.cleanupEphemeral(ctx, agent.ID)
+		}
 		if g.metrics != nil {
 			g.metrics.AgentDisconnected()
 		}
