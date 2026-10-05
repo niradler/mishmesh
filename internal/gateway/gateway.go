@@ -134,8 +134,8 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 	defer func() {
 		g.conns.RemoveAgent(ac)
 		_ = ac.Close()
-		if g.conns.OwnedElsewhere(agent.ID) {
-			g.log.Info("agent now owned by another node; skipping endpoint cleanup", "agent_id", agent.ID)
+		if g.agentHasLiveSession(agent.ID) {
+			g.log.Info("agent has a newer live session; skipping endpoint cleanup", "agent_id", agent.ID)
 		} else {
 			g.cleanupEphemeral(ctx, agent.ID)
 		}
@@ -176,6 +176,9 @@ func (g *Gateway) cleanupEphemeral(ctx context.Context, agentID string) {
 		return
 	}
 	for _, ep := range eps {
+		if g.agentHasLiveSession(agentID) {
+			return
+		}
 		if ep.Kind == store.KindTCP && g.ports != nil {
 			g.ports.Close(ep.ID)
 		}

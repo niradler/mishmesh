@@ -336,8 +336,19 @@ func (c *ClusterConnStore) ResolveEndpoint(endpointID string) (store.AgentConn, 
 func (c *ClusterConnStore) OwnedElsewhere(agentID string) bool {
 	ctx, cancel := c.opCtx()
 	defer cancel()
-	info, ok := c.lookupOwner(ctx, agentID)
-	return ok && info.Node != c.node
+	raw, err := c.rdb.Get(ctx, agentKeyPrefix+agentID).Result()
+	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			return false
+		}
+		c.log.Warn("redis lookup agent owner failed; assuming owned elsewhere", "agent_id", agentID, "err", err)
+		return true
+	}
+	var info ownerInfo
+	if json.Unmarshal([]byte(raw), &info) != nil || info.Node == "" {
+		return false
+	}
+	return info.Node != c.node
 }
 
 func (c *ClusterConnStore) kickLoop(ctx context.Context) {

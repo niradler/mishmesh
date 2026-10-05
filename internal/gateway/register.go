@@ -103,12 +103,23 @@ func (g *Gateway) registerHostBased(ctx context.Context, agent *store.Agent, req
 		CreatedAt: time.Now(),
 	}
 	if err := g.data.CreateEndpoint(ctx, ep); err != nil {
+		if existing := g.ownSubdomainEndpoint(ctx, agent, sub, kind); existing != nil {
+			return g.bindExisting(agent, req, existing), nil
+		}
 		g.log.Warn("create endpoint failed", "agent_id", agent.ID, "err", err)
 		return tunnel.EndpointBinding{}, errors.New("internal error creating endpoint")
 	}
 	g.conns.BindEndpoint(ep.ID, agent.ID)
 	g.log.Info("endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "kind", kind, "url", g.publicURL(ep))
 	return g.binding(req.Ref, ep), nil
+}
+
+func (g *Gateway) ownSubdomainEndpoint(ctx context.Context, agent *store.Agent, sub, kind string) *store.Endpoint {
+	existing, err := g.data.GetEndpointBySubdomain(ctx, sub)
+	if err != nil || existing.AgentID != agent.ID || existing.Kind != kind {
+		return nil
+	}
+	return existing
 }
 
 func (g *Gateway) rebindDomain(ctx context.Context, agent *store.Agent, req tunnel.EndpointRequest, kind, domain string) (tunnel.EndpointBinding, error) {
