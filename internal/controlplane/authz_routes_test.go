@@ -30,6 +30,12 @@ func newAuthAPI(t *testing.T) *httptest.Server {
 	return srv
 }
 
+func inviteAndRegister(t *testing.T, srv *httptest.Server, owner *http.Client, email, role string) *http.Client {
+	t.Helper()
+	doc(t, owner, srv, http.MethodPost, "/api/v1/members", `{"email":"`+email+`","role":"`+role+`"}`, http.StatusCreated, nil)
+	return registerClient(t, srv, email, role)
+}
+
 func registerClient(t *testing.T, srv *httptest.Server, email, role string) *http.Client {
 	t.Helper()
 	jar, _ := cookiejar.New(nil)
@@ -49,7 +55,7 @@ func registerClient(t *testing.T, srv *httptest.Server, email, role string) *htt
 func TestMemberReadOnlyByDefault(t *testing.T) {
 	srv := newAuthAPI(t)
 	owner := registerClient(t, srv, "owner@example.com", "owner")
-	member := registerClient(t, srv, "member@example.com", "member")
+	member := inviteAndRegister(t, srv, owner, "member@example.com", "member")
 
 	doc(t, owner, srv, http.MethodPost, "/api/v1/agents", `{"name":"web"}`, http.StatusCreated, nil)
 
@@ -81,7 +87,7 @@ func TestPolicyDefaultMatrix(t *testing.T) {
 func TestPolicyEditGrantsMemberWrite(t *testing.T) {
 	srv := newAuthAPI(t)
 	owner := registerClient(t, srv, "owner@example.com", "owner")
-	member := registerClient(t, srv, "member@example.com", "member")
+	member := inviteAndRegister(t, srv, owner, "member@example.com", "member")
 
 	doc(t, member, srv, http.MethodPost, "/api/v1/agents", `{"name":"nope"}`, http.StatusForbidden, nil)
 

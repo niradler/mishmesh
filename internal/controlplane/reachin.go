@@ -44,7 +44,7 @@ func (a *API) reachInHTTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ag.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusForbidden, "agent not in org")
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	conn, ok := a.conns.GetAgent(agentID)

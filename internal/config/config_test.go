@@ -84,3 +84,22 @@ func TestClusterDisabledSkipsClusterValidation(t *testing.T) {
 		t.Fatalf("cluster off must not require cluster settings: %v", err)
 	}
 }
+
+func TestValidateSignupMode(t *testing.T) {
+	tests := []struct {
+		mode    string
+		wantErr bool
+	}{
+		{"", false},
+		{"org", false},
+		{"invite", false},
+		{"open", true},
+	}
+	for _, tc := range tests {
+		s := baseValid()
+		s.SignupMode = tc.mode
+		if err := s.Validate(); (err != nil) != tc.wantErr {
+			t.Errorf("mode %q: err=%v wantErr=%v", tc.mode, err, tc.wantErr)
+		}
+	}
+}

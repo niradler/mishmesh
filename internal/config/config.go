@@ -15,6 +15,8 @@ type Server struct {
 	DataDSN               string
 	AuthEnabled           bool
 	AuthPasswordEnabled   bool
+	SignupMode            string
+	MetricsToken          string
 	WebUIEnabled          bool
 	IngressEnabled        bool
 	TLSEnabled            bool
@@ -86,6 +88,8 @@ func LoadServer() Server {
 		DataDSN:               env("DATA_DSN", "mishmesh.db"),
 		AuthEnabled:           envBool("AUTH_ENABLED", false),
 		AuthPasswordEnabled:   envBool("AUTH_PASSWORD_ENABLED", true),
+		SignupMode:            env("SIGNUP_MODE", "org"),
+		MetricsToken:          env("METRICS_TOKEN", ""),
 		WebUIEnabled:          envBool("WEBUI_ENABLED", false),
 		IngressEnabled:        envBool("INGRESS_ENABLED", true),
 		TLSEnabled:            envBool("TLS_ENABLED", false),
@@ -200,6 +204,9 @@ func (s Server) Validate() error {
 	}
 	if s.PublicScheme != "http" && s.PublicScheme != "https" {
 		return fmt.Errorf("config: PUBLIC_SCHEME must be http or https, got %q", s.PublicScheme)
+	}
+	if s.SignupMode != "" && s.SignupMode != "org" && s.SignupMode != "invite" {
+		return fmt.Errorf("config: SIGNUP_MODE must be org or invite, got %q", s.SignupMode)
 	}
 	if s.APIAuthToken == "" && !s.APIAuthDisabled {
 		return fmt.Errorf("config: API_AUTH_TOKEN must be set to protect the control API (or set API_AUTH_DISABLED=true to explicitly run it without auth)")

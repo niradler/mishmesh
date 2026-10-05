@@ -155,7 +155,7 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ag.OrgID != orgID {
-			writeError(w, http.StatusForbidden, "agent not in org")
+			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
 		agentID = ag.ID

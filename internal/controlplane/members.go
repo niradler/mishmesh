@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -13,10 +14,10 @@ func (a *API) listOrgsHandler(w http.ResponseWriter, r *http.Request) {
 		if a.handleErr(w, err) {
 			return
 		}
-		out := make([]*store.Org, 0, len(memberships))
+		out := make([]orgDTO, 0, len(memberships))
 		for _, m := range memberships {
 			if org, err := a.data.GetOrg(r.Context(), m.OrgID); err == nil {
-				out = append(out, org)
+				out = append(out, toOrgDTO(org))
 			}
 		}
 		writeJSON(w, http.StatusOK, out)
@@ -26,7 +27,11 @@ func (a *API) listOrgsHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, orgs)
+	out := make([]orgDTO, 0, len(orgs))
+	for _, org := range orgs {
+		out = append(out, toOrgDTO(org))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type memberDTO struct {
@@ -63,7 +68,16 @@ func (a *API) addMemberHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid role")
 		return
 	}
-	user, err := a.data.GetUserByEmail(r.Context(), req.Email)
+	email := normalizeEmail(req.Email)
+	if !validEmail(email) {
+		writeError(w, http.StatusBadRequest, "valid email required")
+		return
+	}
+	user, err := a.data.GetUserByEmail(r.Context(), email)
+	if errors.Is(err, store.ErrNotFound) {
+		user = &store.User{ID: store.NewID("usr"), Email: email, CreatedAt: time.Now()}
+		err = a.data.CreateUser(r.Context(), user)
+	}
 	if a.handleErr(w, err) {
 		return
 	}
@@ -101,6 +115,9 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := a.orgScope(r)
 	userID := r.PathValue("user_id")
+	if _, err := a.data.GetMembership(r.Context(), orgID, userID); a.handleErr(w, err) {
+		return
+	}
 	if err := a.data.DeleteMembership(r.Context(), orgID, userID); a.handleErr(w, err) {
 		return
 	}

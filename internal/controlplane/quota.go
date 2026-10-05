@@ -83,5 +83,5 @@ func (a *API) putQuotaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "quota.update", orgID, "")
-	writeJSON(w, http.StatusOK, q)
+	a.getQuotaHandler(w, r)
 }

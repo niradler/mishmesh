@@ -26,6 +26,7 @@ type API struct {
 	reachInEnabled bool
 	draining       atomic.Bool
 	auth           *authConfig
+	limiter        *rateLimiter
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
@@ -50,6 +51,7 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 		conns:        conns,
 		log:          log,
 		adminToken:   adminToken,
+		limiter:      newRateLimiter(),
 		defaultAuthz: authz.Default(),
 		authzCache:   make(map[string]*authz.Authorizer),
 	}
@@ -87,6 +89,7 @@ const (
 	ctxOrgID ctxKey = iota
 	ctxActor
 	ctxRole
+	ctxAdmin
 )
 
 func (a *API) orgScope(r *http.Request) string {
@@ -97,6 +100,11 @@ func (a *API) orgScope(r *http.Request) string {
 		return v
 	}
 	return defaultOrgID
+}
+
+func (a *API) isAdmin(r *http.Request) bool {
+	v, _ := r.Context().Value(ctxAdmin).(bool)
+	return v
 }
 
 func (a *API) actor(r *http.Request) string {
@@ -121,49 +129,67 @@ func (a *API) audit(r *http.Request, action, target, detail string) {
 	}
 }
 
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+func (a *API) routes() []route {
+	routes := []route{
+		{"GET /api/v1/orgs", a.guard(a.listOrgsHandler)},
+		{"POST /api/v1/orgs", a.guard(a.createOrgHandler)},
+		{"GET /api/v1/orgs/{id}", a.guard(a.getOrgHandler)},
+
+		{"GET /api/v1/members", a.require(authz.ActionMemberRead, a.listMembersHandler)},
+		{"POST /api/v1/members", a.require(authz.ActionMemberManage, a.addMemberHandler)},
+		{"PATCH /api/v1/members/{user_id}", a.require(authz.ActionMemberManage, a.updateMemberHandler)},
+		{"DELETE /api/v1/members/{user_id}", a.require(authz.ActionMemberManage, a.removeMemberHandler)},
+
+		{"POST /api/v1/agents", a.require(authz.ActionAgentWrite, a.createAgentHandler)},
+		{"GET /api/v1/agents", a.require(authz.ActionAgentRead, a.listAgentsHandler)},
+		{"GET /api/v1/agents/{id}", a.require(authz.ActionAgentRead, a.getAgentHandler)},
+		{"PATCH /api/v1/agents/{id}", a.require(authz.ActionAgentWrite, a.patchAgentHandler)},
+		{"DELETE /api/v1/agents/{id}", a.require(authz.ActionAgentWrite, a.deleteAgentHandler)},
+		{"POST /api/v1/agents/{id}/rotate", a.require(authz.ActionAgentWrite, a.rotateTokenHandler)},
+		{"POST /api/v1/agents/{id}/revoke", a.require(authz.ActionAgentWrite, a.revokeAgentHandler)},
+		{"GET /api/v1/agents/{id}/endpoints", a.require(authz.ActionEndpointRead, a.listEndpointsHandler)},
+		{"GET /api/v1/agents/{id}/tokens", a.require(authz.ActionAgentRead, a.listTokensHandler)},
+
+		{"GET /api/v1/endpoints", a.require(authz.ActionEndpointRead, a.listOrgEndpointsHandler)},
+		{"POST /api/v1/endpoints", a.require(authz.ActionEndpointWrite, a.createEndpointHandler)},
+		{"GET /api/v1/endpoints/{id}", a.require(authz.ActionEndpointRead, a.getEndpointHandler)},
+		{"PATCH /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.patchEndpointHandler)},
+		{"DELETE /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.deleteEndpointHandler)},
+
+		{"GET /api/v1/quota", a.require(authz.ActionQuotaRead, a.getQuotaHandler)},
+		{"PUT /api/v1/quota", a.require(authz.ActionQuotaWrite, a.putQuotaHandler)},
+
+		{"GET /api/v1/audit", a.require(authz.ActionAuditRead, a.listAuditHandler)},
+		{"GET /api/v1/status", a.require(authz.ActionStatusRead, a.statusHandler)},
+
+		{"GET /api/v1/policy", a.require(authz.ActionPolicyRead, a.getPolicyHandler)},
+		{"PUT /api/v1/policy", a.require(authz.ActionPolicyWrite, a.putPolicyHandler)},
+	}
+	if a.reachInEnabled {
+		routes = append(routes, route{"POST /api/v1/reach/{agent_id}/http", a.require(authz.ActionAgentWrite, a.reachInHTTPHandler)})
+	}
+	return routes
+}
+
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", a.health)
 	mux.HandleFunc("GET /readyz", a.ready)
 
 	a.registerAuthRoutes(mux)
 
-	mux.HandleFunc("GET /api/v1/orgs", a.guard(a.listOrgsHandler))
-	mux.HandleFunc("POST /api/v1/orgs", a.guard(a.createOrgHandler))
-	mux.HandleFunc("GET /api/v1/orgs/{id}", a.guard(a.getOrgHandler))
-
-	mux.HandleFunc("GET /api/v1/members", a.require(authz.ActionMemberRead, a.listMembersHandler))
-	mux.HandleFunc("POST /api/v1/members", a.require(authz.ActionMemberManage, a.addMemberHandler))
-	mux.HandleFunc("PATCH /api/v1/members/{user_id}", a.require(authz.ActionMemberManage, a.updateMemberHandler))
-	mux.HandleFunc("DELETE /api/v1/members/{user_id}", a.require(authz.ActionMemberManage, a.removeMemberHandler))
-
-	mux.HandleFunc("POST /api/v1/agents", a.require(authz.ActionAgentWrite, a.createAgentHandler))
-	mux.HandleFunc("GET /api/v1/agents", a.require(authz.ActionAgentRead, a.listAgentsHandler))
-	mux.HandleFunc("GET /api/v1/agents/{id}", a.require(authz.ActionAgentRead, a.getAgentHandler))
-	mux.HandleFunc("PATCH /api/v1/agents/{id}", a.require(authz.ActionAgentWrite, a.patchAgentHandler))
-	mux.HandleFunc("DELETE /api/v1/agents/{id}", a.require(authz.ActionAgentWrite, a.deleteAgentHandler))
-	mux.HandleFunc("POST /api/v1/agents/{id}/rotate", a.require(authz.ActionAgentWrite, a.rotateTokenHandler))
-	mux.HandleFunc("POST /api/v1/agents/{id}/revoke", a.require(authz.ActionAgentWrite, a.revokeAgentHandler))
-	mux.HandleFunc("GET /api/v1/agents/{id}/endpoints", a.require(authz.ActionEndpointRead, a.listEndpointsHandler))
-	mux.HandleFunc("GET /api/v1/agents/{id}/tokens", a.require(authz.ActionAgentRead, a.listTokensHandler))
-
-	mux.HandleFunc("GET /api/v1/endpoints", a.require(authz.ActionEndpointRead, a.listOrgEndpointsHandler))
-	mux.HandleFunc("POST /api/v1/endpoints", a.require(authz.ActionEndpointWrite, a.createEndpointHandler))
-	mux.HandleFunc("GET /api/v1/endpoints/{id}", a.require(authz.ActionEndpointRead, a.getEndpointHandler))
-	mux.HandleFunc("PATCH /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.patchEndpointHandler))
-	mux.HandleFunc("DELETE /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.deleteEndpointHandler))
-
-	mux.HandleFunc("GET /api/v1/quota", a.require(authz.ActionQuotaRead, a.getQuotaHandler))
-	mux.HandleFunc("PUT /api/v1/quota", a.require(authz.ActionQuotaWrite, a.putQuotaHandler))
-
-	mux.HandleFunc("GET /api/v1/audit", a.require(authz.ActionAuditRead, a.listAuditHandler))
-	mux.HandleFunc("GET /api/v1/status", a.require(authz.ActionStatusRead, a.statusHandler))
-
-	mux.HandleFunc("GET /api/v1/policy", a.require(authz.ActionPolicyRead, a.getPolicyHandler))
-	mux.HandleFunc("PUT /api/v1/policy", a.require(authz.ActionPolicyWrite, a.putPolicyHandler))
-
-	if a.reachInEnabled {
-		mux.HandleFunc("POST /api/v1/reach/{agent_id}/http", a.require(authz.ActionAgentWrite, a.reachInHTTPHandler))
+	for _, rt := range a.routes() {
+		mux.HandleFunc(rt.pattern, rt.handler)
 	}
+	mux.HandleFunc("/api/", apiNotFound)
+}
+
+func apiNotFound(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusNotFound, "not found")
 }
 
 func (a *API) guard(h http.HandlerFunc) http.HandlerFunc {
@@ -196,7 +222,7 @@ func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return nil, false
 		}
-		return a.authContext(r, a.queryOrg(r), "admin", store.RoleOwner), true
+		return a.authContext(r, a.queryOrg(r), "admin", store.RoleOwner, true), true
 	}
 	if a.authEnabled() {
 		su, ok := a.resolveSession(r)
@@ -204,19 +230,20 @@ func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return nil, false
 		}
-		return a.authContext(r, su.orgID, su.user.Email, su.role), true
+		return a.authContext(r, su.orgID, su.user.Email, su.role, false), true
 	}
 	if a.adminToken != "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return nil, false
 	}
-	return a.authContext(r, a.queryOrg(r), "system", store.RoleOwner), true
+	return a.authContext(r, a.queryOrg(r), "system", store.RoleOwner, true), true
 }
 
-func (a *API) authContext(r *http.Request, orgID, actor, role string) context.Context {
+func (a *API) authContext(r *http.Request, orgID, actor, role string, admin bool) context.Context {
 	ctx := context.WithValue(r.Context(), ctxOrgID, orgID)
 	ctx = context.WithValue(ctx, ctxActor, actor)
 	ctx = context.WithValue(ctx, ctxRole, role)
+	ctx = context.WithValue(ctx, ctxAdmin, admin)
 	return ctx
 }
 
@@ -296,15 +323,27 @@ func (a *API) createOrgHandler(w http.ResponseWriter, r *http.Request) {
 		_ = a.data.CreateMembership(r.Context(), &store.Membership{OrgID: org.ID, UserID: su.user.ID, Role: store.RoleOwner, CreatedAt: time.Now()})
 	}
 	a.audit(r, "org.create", org.ID, org.Name)
-	writeJSON(w, http.StatusCreated, org)
+	writeJSON(w, http.StatusCreated, toOrgDTO(org))
 }
 
 func (a *API) getOrgHandler(w http.ResponseWriter, r *http.Request) {
-	org, err := a.data.GetOrg(r.Context(), r.PathValue("id"))
+	id := r.PathValue("id")
+	if !a.isAdmin(r) {
+		su, ok := a.resolveSession(r)
+		if !ok {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		if _, err := a.data.GetMembership(r.Context(), id, su.user.ID); err != nil {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+	}
+	org, err := a.data.GetOrg(r.Context(), id)
 	if a.handleErr(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, org)
+	writeJSON(w, http.StatusOK, toOrgDTO(org))
 }
 
 func (a *API) createAgentHandler(w http.ResponseWriter, r *http.Request) {
@@ -315,7 +354,15 @@ func (a *API) createAgentHandler(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	agent, raw, err := a.createAgent(r.Context(), req.OrgID, req.Name)
+	orgID := a.orgScope(r)
+	if req.OrgID != "" && req.OrgID != orgID {
+		if !a.isAdmin(r) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		orgID = req.OrgID
+	}
+	agent, raw, err := a.createAgent(r.Context(), orgID, req.Name)
 	if errors.Is(err, errQuotaAgents) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -331,11 +378,7 @@ func (a *API) createAgentHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listAgentsHandler(w http.ResponseWriter, r *http.Request) {
-	orgID := r.URL.Query().Get("org_id")
-	if orgID == "" {
-		orgID = defaultOrgID
-	}
-	agents, err := a.data.ListAgents(r.Context(), orgID)
+	agents, err := a.data.ListAgents(r.Context(), a.orgScope(r))
 	if a.handleErr(w, err) {
 		return
 	}
@@ -347,8 +390,8 @@ func (a *API) listAgentsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) getAgentHandler(w http.ResponseWriter, r *http.Request) {
-	ag, err := a.data.GetAgent(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
+	ag, ok := a.scopedAgent(w, r, r.PathValue("id"))
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, a.toAgentDTO(ag))
@@ -362,6 +405,9 @@ func (a *API) patchAgentHandler(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if _, ok := a.scopedAgent(w, r, r.PathValue("id")); !ok {
+		return
+	}
 	ag, err := a.updateAgent(r.Context(), r.PathValue("id"), req.Name, req.Status)
 	if a.handleErr(w, err) {
 		return
@@ -370,6 +416,9 @@ func (a *API) patchAgentHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) deleteAgentHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.scopedAgent(w, r, r.PathValue("id")); !ok {
+		return
+	}
 	err := a.deleteAgent(r.Context(), r.PathValue("id"))
 	if errors.Is(err, errAgentNotRevoked) {
 		writeError(w, http.StatusConflict, err.Error())
@@ -382,8 +431,8 @@ func (a *API) deleteAgentHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) rotateTokenHandler(w http.ResponseWriter, r *http.Request) {
-	ag, err := a.data.GetAgent(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
+	ag, ok := a.scopedAgent(w, r, r.PathValue("id"))
+	if !ok {
 		return
 	}
 	raw, err := a.issueToken(r.Context(), ag)
@@ -394,6 +443,9 @@ func (a *API) rotateTokenHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) revokeAgentHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.scopedAgent(w, r, r.PathValue("id")); !ok {
+		return
+	}
 	if a.handleErr(w, a.revokeAgent(r.Context(), r.PathValue("id"))) {
 		return
 	}
@@ -401,6 +453,9 @@ func (a *API) revokeAgentHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.scopedAgent(w, r, r.PathValue("id")); !ok {
+		return
+	}
 	eps, err := a.data.ListEndpointsByAgent(r.Context(), r.PathValue("id"))
 	if a.handleErr(w, err) {
 		return
@@ -413,6 +468,9 @@ func (a *API) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listTokensHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.scopedAgent(w, r, r.PathValue("id")); !ok {
+		return
+	}
 	toks, err := a.data.ListTokensByAgent(r.Context(), r.PathValue("id"))
 	if a.handleErr(w, err) {
 		return
@@ -422,6 +480,28 @@ func (a *API) listTokensHandler(w http.ResponseWriter, r *http.Request) {
 		out = append(out, tokenDTO{ID: t.ID, CreatedAt: t.CreatedAt, RevokedAt: t.RevokedAt})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+type orgDTO struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func toOrgDTO(o *store.Org) orgDTO {
+	return orgDTO{ID: o.ID, Name: o.Name, CreatedAt: o.CreatedAt}
+}
+
+func (a *API) scopedAgent(w http.ResponseWriter, r *http.Request, id string) (*store.Agent, bool) {
+	ag, err := a.data.GetAgent(r.Context(), id)
+	if a.handleErr(w, err) {
+		return nil, false
+	}
+	if !a.isAdmin(r) && ag.OrgID != a.orgScope(r) {
+		writeError(w, http.StatusNotFound, "not found")
+		return nil, false
+	}
+	return ag, true
 }
 
 func (a *API) handleErr(w http.ResponseWriter, err error) bool {

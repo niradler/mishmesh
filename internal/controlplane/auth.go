@@ -6,7 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"strings"
 	"sync"
@@ -20,11 +22,17 @@ import (
 const sessionCookie = "mm_session"
 const oauthStateCookie = "mm_oauth_state"
 
+const (
+	SignupModeOrg    = "org"
+	SignupModeInvite = "invite"
+)
+
 type authConfig struct {
 	enabled         bool
 	passwordEnabled bool
 	cookieSecure    bool
 	sessionTTL      time.Duration
+	signupMode      string
 
 	googleClientID     string
 	googleClientSecret string
@@ -46,6 +54,7 @@ type AuthOptions struct {
 	PasswordEnabled    bool
 	CookieSecure       bool
 	SessionTTL         time.Duration
+	SignupMode         string
 	GoogleClientID     string
 	GoogleClientSecret string
 	RedirectURL        string
@@ -56,7 +65,11 @@ func (a *API) ConfigureAuth(opts AuthOptions) {
 	if opts.SessionTTL <= 0 {
 		opts.SessionTTL = 168 * time.Hour
 	}
+	if opts.SignupMode != SignupModeInvite {
+		opts.SignupMode = SignupModeOrg
+	}
 	a.auth = &authConfig{
+		signupMode:         opts.SignupMode,
 		enabled:            opts.Enabled,
 		passwordEnabled:    opts.PasswordEnabled,
 		cookieSecure:       opts.CookieSecure,
@@ -79,16 +92,24 @@ func (a *API) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/login", a.loginHandler)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logoutHandler)
 	mux.HandleFunc("GET /api/v1/auth/me", a.meHandler)
+	mux.HandleFunc("POST /api/v1/auth/switch-org", a.switchOrgHandler)
 	mux.HandleFunc("POST /api/v1/auth/register", a.registerHandler)
 	mux.HandleFunc("GET /api/v1/auth/google/start", a.googleStartHandler)
 	mux.HandleFunc("GET /api/v1/auth/google/callback", a.googleCallbackHandler)
 }
 
 func (a *API) authConfigHandler(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{
+	mode := SignupModeOrg
+	if a.auth != nil {
+		mode = a.auth.signupMode
+	}
+	passwordEnabled := a.auth != nil && a.auth.passwordEnabled
+	writeJSON(w, http.StatusOK, map[string]any{
 		"auth_enabled":     a.authEnabled(),
-		"password_enabled": a.auth != nil && a.auth.passwordEnabled,
+		"password_enabled": passwordEnabled,
+		"password_signup":  a.authEnabled() && passwordEnabled,
 		"google_enabled":   a.googleEnabled(),
+		"signup_mode":      mode,
 	})
 }
 
@@ -115,11 +136,11 @@ func (a *API) resolveSession(r *http.Request) (*sessionUser, bool) {
 	if err != nil {
 		return nil, false
 	}
-	role := store.RoleMember
-	if m, err := a.data.GetMembership(r.Context(), sess.OrgID, user.ID); err == nil {
-		role = m.Role
+	m, err := a.data.GetMembership(r.Context(), sess.OrgID, user.ID)
+	if err != nil {
+		return nil, false
 	}
-	return &sessionUser{user: user, orgID: sess.OrgID, role: role}, true
+	return &sessionUser{user: user, orgID: sess.OrgID, role: m.Role}, true
 }
 
 func (a *API) issueSession(ctx context.Context, w http.ResponseWriter, userID, orgID string) error {
@@ -166,17 +187,26 @@ func (a *API) loginHandler(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	user, err := a.data.GetUserByEmail(r.Context(), req.Email)
+	email := normalizeEmail(req.Email)
+	if !a.authRateAllowed(r, email) {
+		writeError(w, http.StatusTooManyRequests, "too many attempts, try again later")
+		return
+	}
+	user, err := a.data.GetUserByEmail(r.Context(), email)
 	if err != nil || user.PasswordHash == "" || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	orgID, role := a.primaryOrg(r.Context(), user.ID)
+	orgID, ok := a.primaryOrg(r.Context(), user.ID)
+	if !ok {
+		writeError(w, http.StatusForbidden, "no organization membership")
+		return
+	}
 	if err := a.issueSession(r.Context(), w, user.ID, orgID); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": userDTO(user), "org": orgID, "role": role})
+	a.writeMe(w, r, http.StatusOK, user, orgID)
 }
 
 func (a *API) registerHandler(w http.ResponseWriter, r *http.Request) {
@@ -192,12 +222,17 @@ func (a *API) registerHandler(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Email == "" || len(req.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "email and password (>=8 chars) required")
+	email := normalizeEmail(req.Email)
+	if !a.authRateAllowed(r, email) {
+		writeError(w, http.StatusTooManyRequests, "too many attempts, try again later")
 		return
 	}
-	if _, err := a.data.GetUserByEmail(r.Context(), req.Email); err == nil {
-		writeError(w, http.StatusConflict, "email already registered")
+	if !validEmail(email) {
+		writeError(w, http.StatusBadRequest, "valid email required")
+		return
+	}
+	if len(req.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "password (>=8 chars) required")
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -205,17 +240,29 @@ func (a *API) registerHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "hash failed")
 		return
 	}
-	user := &store.User{ID: store.NewID("usr"), Email: req.Email, Name: req.Name, PasswordHash: string(hash), CreatedAt: time.Now()}
-	if err := a.data.CreateUser(r.Context(), user); err != nil {
-		writeError(w, http.StatusInternalServerError, "create user failed")
+	user, err := a.registerPasswordUser(r.Context(), email, req.Name, string(hash))
+	switch {
+	case errors.Is(err, errEmailTaken):
+		writeError(w, http.StatusConflict, "email already registered")
+		return
+	case errors.Is(err, errSignupClosed):
+		writeError(w, http.StatusForbidden, "registration is by invitation only")
+		return
+	case err != nil:
+		a.log.Warn("register failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "register failed")
 		return
 	}
-	orgID := a.bootstrapMembership(r.Context(), user.ID)
+	orgID, ok := a.primaryOrg(r.Context(), user.ID)
+	if !ok {
+		writeError(w, http.StatusForbidden, "no organization membership")
+		return
+	}
 	if err := a.issueSession(r.Context(), w, user.ID, orgID); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"user": userDTO(user), "org": orgID})
+	a.writeMe(w, r, http.StatusCreated, user, orgID)
 }
 
 func (a *API) logoutHandler(w http.ResponseWriter, r *http.Request) {
@@ -226,39 +273,186 @@ func (a *API) logoutHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type membershipDTO struct {
+	OrgID   string `json:"org_id"`
+	OrgName string `json:"org_name"`
+	Role    string `json:"role"`
+}
+
+type meDTO struct {
+	ID          string          `json:"id"`
+	Email       string          `json:"email"`
+	Name        string          `json:"name"`
+	ActiveOrgID string          `json:"active_org_id"`
+	Role        string          `json:"role"`
+	Memberships []membershipDTO `json:"memberships"`
+}
+
+func (a *API) writeMe(w http.ResponseWriter, r *http.Request, status int, user *store.User, activeOrgID string) {
+	memberships, err := a.data.ListMembershipsByUser(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	dto := meDTO{ID: user.ID, Email: user.Email, Name: user.Name, ActiveOrgID: activeOrgID, Memberships: make([]membershipDTO, 0, len(memberships))}
+	for _, m := range memberships {
+		name := m.OrgID
+		if org, err := a.data.GetOrg(r.Context(), m.OrgID); err == nil {
+			name = org.Name
+		}
+		if m.OrgID == activeOrgID {
+			dto.Role = m.Role
+		}
+		dto.Memberships = append(dto.Memberships, membershipDTO{OrgID: m.OrgID, OrgName: name, Role: m.Role})
+	}
+	writeJSON(w, status, dto)
+}
+
 func (a *API) meHandler(w http.ResponseWriter, r *http.Request) {
 	su, ok := a.resolveSession(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	memberships, _ := a.data.ListMembershipsByUser(r.Context(), su.user.ID)
-	mems := make([]map[string]string, 0, len(memberships))
-	for _, m := range memberships {
-		mems = append(mems, map[string]string{"org": m.OrgID, "role": m.Role})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": userDTO(su.user), "org": su.orgID, "role": su.role, "memberships": mems})
+	a.writeMe(w, r, http.StatusOK, su.user, su.orgID)
 }
 
-func (a *API) primaryOrg(ctx context.Context, userID string) (string, string) {
+func (a *API) switchOrgHandler(w http.ResponseWriter, r *http.Request) {
+	su, ok := a.resolveSession(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	var req struct {
+		OrgID string `json:"org_id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if _, err := a.data.GetMembership(r.Context(), req.OrgID, su.user.ID); err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		_ = a.data.DeleteSession(r.Context(), store.HashToken(c.Value))
+	}
+	if err := a.issueSession(r.Context(), w, su.user.ID, req.OrgID); err != nil {
+		writeError(w, http.StatusInternalServerError, "session failed")
+		return
+	}
+	a.writeMe(w, r, http.StatusOK, su.user, req.OrgID)
+}
+
+func (a *API) primaryOrg(ctx context.Context, userID string) (string, bool) {
 	memberships, err := a.data.ListMembershipsByUser(ctx, userID)
 	if err != nil || len(memberships) == 0 {
-		return a.bootstrapMembership(ctx, userID), store.RoleOwner
+		return "", false
 	}
-	return memberships[0].OrgID, memberships[0].Role
+	return memberships[0].OrgID, true
 }
 
-func (a *API) bootstrapMembership(ctx context.Context, userID string) string {
+var (
+	errEmailTaken   = errors.New("email already registered")
+	errSignupClosed = errors.New("signup closed")
+)
+
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func validEmail(email string) bool {
+	addr, err := mail.ParseAddress(email)
+	if err != nil || addr.Address != email {
+		return false
+	}
+	at := strings.LastIndex(email, "@")
+	return at > 0 && strings.Contains(email[at+1:], ".") && !strings.HasSuffix(email, ".")
+}
+
+func isPendingInvite(u *store.User) bool {
+	return u.PasswordHash == "" && u.GoogleSub == ""
+}
+
+func (a *API) registerPasswordUser(ctx context.Context, email, name, hash string) (*store.User, error) {
+	existing, err := a.data.GetUserByEmail(ctx, email)
+	if err == nil {
+		if !isPendingInvite(existing) {
+			return nil, errEmailTaken
+		}
+		existing.PasswordHash = hash
+		if name != "" {
+			existing.Name = name
+		}
+		if err := a.data.UpdateUser(ctx, existing); err != nil {
+			return nil, fmt.Errorf("claim invite: %w", err)
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+	user := &store.User{ID: store.NewID("usr"), Email: email, Name: name, PasswordHash: hash, CreatedAt: time.Now()}
+	return a.provisionNewUser(ctx, user)
+}
+
+func (a *API) provisionNewUser(ctx context.Context, user *store.User) (*store.User, error) {
+	if a.auth.signupMode == SignupModeInvite {
+		if a.hasDefaultOwner(ctx) {
+			return nil, errSignupClosed
+		}
+		if err := a.data.CreateUser(ctx, user); err != nil {
+			return nil, fmt.Errorf("create user: %w", err)
+		}
+		if err := a.joinDefaultOrg(ctx, user.ID, store.RoleOwner); err != nil {
+			return nil, err
+		}
+		return user, nil
+	}
+	if err := a.data.CreateUser(ctx, user); err != nil {
+		return nil, fmt.Errorf("create user: %w", err)
+	}
+	org, err := a.createOrg(ctx, orgNameFor(user))
+	if err != nil {
+		return nil, fmt.Errorf("create org: %w", err)
+	}
+	if err := a.data.CreateMembership(ctx, &store.Membership{OrgID: org.ID, UserID: user.ID, Role: store.RoleOwner, CreatedAt: time.Now()}); err != nil {
+		return nil, fmt.Errorf("create membership: %w", err)
+	}
+	return user, nil
+}
+
+func (a *API) hasDefaultOwner(ctx context.Context) bool {
+	ms, err := a.data.ListMembershipsByOrg(ctx, defaultOrgID)
+	if err != nil {
+		return true
+	}
+	for _, m := range ms {
+		if m.Role == store.RoleOwner {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *API) joinDefaultOrg(ctx context.Context, userID, role string) error {
 	org, err := a.ensureOrg(ctx, defaultOrgID)
 	if err != nil {
-		return defaultOrgID
+		return fmt.Errorf("ensure default org: %w", err)
 	}
-	role := store.RoleMember
-	if n, err := a.data.CountUsers(ctx); err == nil && n <= 1 {
-		role = store.RoleOwner
+	if err := a.data.CreateMembership(ctx, &store.Membership{OrgID: org.ID, UserID: userID, Role: role, CreatedAt: time.Now()}); err != nil {
+		return fmt.Errorf("create membership: %w", err)
 	}
-	_ = a.data.CreateMembership(ctx, &store.Membership{OrgID: org.ID, UserID: userID, Role: role, CreatedAt: time.Now()})
-	return org.ID
+	return nil
+}
+
+func orgNameFor(u *store.User) string {
+	if n := strings.TrimSpace(u.Name); n != "" {
+		return n
+	}
+	if at := strings.Index(u.Email, "@"); at > 0 {
+		return u.Email[:at]
+	}
+	return u.Email
 }
 
 func (a *API) googleStartHandler(w http.ResponseWriter, r *http.Request) {
@@ -313,11 +507,19 @@ func (a *API) googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "email not verified by provider; sign in with password and link from settings")
 		return
 	}
+	if errors.Is(err, errSignupClosed) {
+		writeError(w, http.StatusForbidden, "registration is by invitation only")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "user upsert failed")
 		return
 	}
-	orgID, _ := a.primaryOrg(r.Context(), user.ID)
+	orgID, ok := a.primaryOrg(r.Context(), user.ID)
+	if !ok {
+		writeError(w, http.StatusForbidden, "no organization membership")
+		return
+	}
 	if err := a.issueSession(r.Context(), w, user.ID, orgID); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		return
@@ -341,7 +543,8 @@ func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, 
 	if p.EmailVerified == nil || !*p.EmailVerified {
 		return nil, errEmailUnverified
 	}
-	if u, err := a.data.GetUserByEmail(ctx, p.Email); err == nil {
+	email := normalizeEmail(p.Email)
+	if u, err := a.data.GetUserByEmail(ctx, email); err == nil {
 		if u.GoogleSub != "" && u.GoogleSub != p.Sub {
 			return nil, errEmailUnverified
 		}
@@ -349,12 +552,8 @@ func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, 
 		_ = a.data.UpdateUser(ctx, u)
 		return u, nil
 	}
-	user := &store.User{ID: store.NewID("usr"), Email: p.Email, Name: p.Name, GoogleSub: p.Sub, CreatedAt: time.Now()}
-	if err := a.data.CreateUser(ctx, user); err != nil {
-		return nil, err
-	}
-	a.bootstrapMembership(ctx, user.ID)
-	return user, nil
+	user := &store.User{ID: store.NewID("usr"), Email: email, Name: p.Name, GoogleSub: p.Sub, CreatedAt: time.Now()}
+	return a.provisionNewUser(ctx, user)
 }
 
 func (c *authConfig) discover(ctx context.Context) (*oidcDiscovery, error) {

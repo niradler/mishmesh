@@ -35,7 +35,7 @@ func TestPasswordAuthSessionFlow(t *testing.T) {
 	doc(t, client, srv, http.MethodGet, "/api/v1/agents", "", http.StatusUnauthorized, nil)
 
 	var reg struct {
-		Org string `json:"org"`
+		Org string `json:"active_org_id"`
 	}
 	doc(t, client, srv, http.MethodPost, "/api/v1/auth/register", `{"email":"owner@example.com","password":"supersecret","name":"Owner"}`, http.StatusCreated, &reg)
 	if reg.Org == "" {
@@ -66,9 +66,9 @@ func TestAuthConfigEndpoint(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	var cfg map[string]bool
+	var cfg map[string]any
 	doc(t, &http.Client{}, srv, http.MethodGet, "/api/v1/auth/config", "", http.StatusOK, &cfg)
-	if !cfg["auth_enabled"] || !cfg["password_enabled"] || cfg["google_enabled"] {
+	if cfg["auth_enabled"] != true || cfg["password_enabled"] != true || cfg["google_enabled"] != false {
 		t.Fatalf("auth config: %+v", cfg)
 	}
 }
