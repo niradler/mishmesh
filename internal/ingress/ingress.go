@@ -93,13 +93,6 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (i *Ingress) resolve(r *http.Request) (ep *store.Endpoint, outPath string, ok bool) {
-	if id, rest, isPath := pathEndpoint(r.URL.Path); isPath {
-		e, err := i.data.GetEndpoint(r.Context(), id)
-		if err != nil {
-			return nil, "", false
-		}
-		return e, rest, true
-	}
 	host := hostOnly(r.Host)
 	if sub, isSub := i.subdomain(host); isSub {
 		e, err := i.data.GetEndpointBySubdomain(r.Context(), sub)
@@ -112,6 +105,13 @@ func (i *Ingress) resolve(r *http.Request) (ep *store.Endpoint, outPath string, 
 		if e, err := i.data.GetEndpointByDomain(r.Context(), host); err == nil {
 			return e, r.URL.Path, true
 		}
+	}
+	if id, rest, isPath := pathEndpoint(r.URL.Path); isPath {
+		e, err := i.data.GetEndpoint(r.Context(), id)
+		if err != nil {
+			return nil, "", false
+		}
+		return e, rest, true
 	}
 	return nil, "", false
 }
