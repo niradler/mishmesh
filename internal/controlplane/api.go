@@ -256,9 +256,13 @@ func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context
 		return a.authContext(r, a.queryOrg(r), "admin", store.RoleOwner, true), true
 	}
 	if a.authEnabled() {
-		su, ok := a.resolveSession(r)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+		su, err := a.lookupSession(r)
+		if err != nil {
+			if errors.Is(err, errNoSession) {
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+			} else {
+				writeStoreUnavailable(w)
+			}
 			return nil, false
 		}
 		return a.authContext(r, su.orgID, su.user.Email, su.role, false), true

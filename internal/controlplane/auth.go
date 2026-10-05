@@ -120,28 +120,47 @@ type sessionUser struct {
 	role  string
 }
 
+var errNoSession = errors.New("no valid session")
+
 func (a *API) resolveSession(r *http.Request) (*sessionUser, bool) {
+	su, err := a.lookupSession(r)
+	return su, err == nil
+}
+
+func (a *API) lookupSession(r *http.Request) (*sessionUser, error) {
 	c, err := r.Cookie(sessionCookie)
 	if err != nil || c.Value == "" {
-		return nil, false
+		return nil, errNoSession
 	}
 	sess, err := a.data.GetSession(r.Context(), store.HashToken(c.Value))
 	if err != nil {
-		return nil, false
+		return nil, sessionLookupErr(err)
 	}
 	if time.Now().After(sess.ExpiresAt) {
 		_ = a.data.DeleteSession(r.Context(), sess.IDHash)
-		return nil, false
+		return nil, errNoSession
 	}
 	user, err := a.data.GetUserByID(r.Context(), sess.UserID)
 	if err != nil {
-		return nil, false
+		return nil, sessionLookupErr(err)
 	}
 	m, err := a.data.GetMembership(r.Context(), sess.OrgID, user.ID)
 	if err != nil {
-		return nil, false
+		return nil, sessionLookupErr(err)
 	}
-	return &sessionUser{user: user, orgID: sess.OrgID, role: m.Role}, true
+	return &sessionUser{user: user, orgID: sess.OrgID, role: m.Role}, nil
+}
+
+func sessionLookupErr(err error) error {
+	if errors.Is(err, store.ErrNotFound) {
+		return errNoSession
+	}
+	return err
+}
+
+func writeStoreUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	writeError(w, http.StatusServiceUnavailable, "temporarily unavailable, retry shortly")
 }
 
 func (a *API) issueSession(ctx context.Context, w http.ResponseWriter, userID, orgID string) error {
@@ -194,6 +213,10 @@ func (a *API) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := a.data.GetUserByEmail(r.Context(), email)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		writeStoreUnavailable(w)
+		return
+	}
 	if err != nil || user.PasswordHash == "" || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return

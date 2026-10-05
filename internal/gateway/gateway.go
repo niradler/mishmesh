@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -75,10 +76,18 @@ func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	tok, err := g.data.GetTokenByHash(ctx, store.HashToken(raw))
 	if err != nil {
-		http.Error(w, "invalid token", http.StatusUnauthorized)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		g.unavailable503(w, "token lookup failed", err)
 		return
 	}
 	agent, err := g.data.GetAgent(ctx, tok.AgentID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		g.unavailable503(w, "agent lookup failed", err)
+		return
+	}
 	if err != nil || agent.Status != store.AgentActive {
 		http.Error(w, "agent not active", http.StatusForbidden)
 		return
@@ -113,6 +122,12 @@ func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
 	g.log.Info("agent connected", "agent_id", agent.ID, "org_id", agent.OrgID)
 
 	g.serve(context.WithoutCancel(ctx), agent, ac)
+}
+
+func (g *Gateway) unavailable503(w http.ResponseWriter, msg string, err error) {
+	g.log.Error("agent connect: "+msg, "err", err)
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, "temporarily unavailable, retry shortly", http.StatusServiceUnavailable)
 }
 
 func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) {

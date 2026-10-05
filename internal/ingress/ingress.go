@@ -3,6 +3,7 @@ package ingress
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -81,9 +82,9 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		i.oidc.handleCallback(w, r)
 		return
 	}
-	ep, outPath, ok := i.resolve(r)
-	if !ok {
-		http.Error(w, "tunnel not found", http.StatusNotFound)
+	ep, outPath, err := i.resolve(r)
+	if err != nil {
+		i.writeResolveError(w, err)
 		return
 	}
 	limit, exceeded := i.bandwidthLimit(r, ep)
@@ -112,28 +113,55 @@ func (i *Ingress) gateDeps() gateDeps {
 	return gateDeps{oidc: i.oidc, trusted: i.trusted, limiter: i.limiter}
 }
 
-func (i *Ingress) resolve(r *http.Request) (ep *store.Endpoint, outPath string, ok bool) {
+var (
+	errTunnelNotFound   = errors.New("tunnel not found")
+	errStoreUnavailable = errors.New("store unavailable")
+)
+
+func (i *Ingress) writeResolveError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errStoreUnavailable) {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "temporarily unavailable, retry shortly", http.StatusServiceUnavailable)
+		i.recordCode(http.StatusServiceUnavailable)
+		return
+	}
+	http.Error(w, "tunnel not found", http.StatusNotFound)
+}
+
+func (i *Ingress) lookupFailed(op string, err error) error {
+	if errors.Is(err, store.ErrNotFound) {
+		return errTunnelNotFound
+	}
+	i.log.Error("endpoint lookup failed", "op", op, "err", err)
+	return errStoreUnavailable
+}
+
+func (i *Ingress) resolve(r *http.Request) (ep *store.Endpoint, outPath string, err error) {
 	host := hostOnly(r.Host)
 	if sub, isSub := i.subdomain(host); isSub {
 		e, err := i.data.GetEndpointBySubdomain(r.Context(), sub)
 		if err != nil {
-			return nil, "", false
+			return nil, "", i.lookupFailed("subdomain", err)
 		}
-		return e, r.URL.Path, true
+		return e, r.URL.Path, nil
 	}
 	if host != "" && host != i.apexHost {
-		if e, err := i.data.GetEndpointByDomain(r.Context(), host); err == nil {
-			return e, r.URL.Path, true
+		e, err := i.data.GetEndpointByDomain(r.Context(), host)
+		if err == nil {
+			return e, r.URL.Path, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return nil, "", i.lookupFailed("domain", err)
 		}
 	}
 	if id, rest, isPath := pathEndpoint(r.URL.Path); isPath {
 		e, err := i.data.GetEndpoint(r.Context(), id)
 		if err != nil {
-			return nil, "", false
+			return nil, "", i.lookupFailed("id", err)
 		}
-		return e, rest, true
+		return e, rest, nil
 	}
-	return nil, "", false
+	return nil, "", errTunnelNotFound
 }
 
 func pathEndpoint(p string) (id, outPath string, ok bool) {
