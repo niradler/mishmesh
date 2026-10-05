@@ -12,6 +12,19 @@ import (
 
 var halfCloseIdleTimeout = 2 * time.Minute
 
+const spliceBufSize = 32 * 1024
+
+var spliceBufs = sync.Pool{New: func() any {
+	b := make([]byte, spliceBufSize)
+	return &b
+}}
+
+func copyPooled(dst io.Writer, src io.Reader) (int64, error) {
+	bp := spliceBufs.Get().(*[]byte)
+	defer spliceBufs.Put(bp)
+	return io.CopyBuffer(dst, struct{ io.Reader }{src}, *bp)
+}
+
 type closeWriter interface {
 	CloseWrite() error
 }
@@ -60,7 +73,7 @@ func Splice(a, b net.Conn) (aToB, bToA int64) {
 	var wg sync.WaitGroup
 	pump := func(dst, src net.Conn, n *int64) {
 		defer wg.Done()
-		copied, err := io.Copy(activityWriter{w: dst, last: &last}, src)
+		copied, err := copyPooled(activityWriter{w: dst, last: &last}, src)
 		*n = copied
 		finished.Add(1)
 		if err != nil {
