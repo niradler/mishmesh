@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
+	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -28,7 +30,8 @@ type API struct {
 	resolver           DNSResolver
 	draining           atomic.Bool
 	auth               *authConfig
-	limiter            *rateLimiter
+	limiter            ratelimit.Limiter
+	trustedProxies     []*net.IPNet
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
@@ -53,7 +56,7 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 		conns:        conns,
 		log:          log,
 		adminToken:   adminToken,
-		limiter:      newRateLimiter(),
+		limiter:      ratelimit.NewMemory(),
 		defaultAuthz: authz.Default(),
 		authzCache:   make(map[string]*authz.Authorizer),
 	}

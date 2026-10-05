@@ -24,6 +24,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/gateway"
 	"github.com/mishmesh/mishmesh/internal/ingress"
 	"github.com/mishmesh/mishmesh/internal/metrics"
+	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/postgres"
@@ -97,6 +98,11 @@ func serve() error {
 		return err
 	}
 	defer clusterRT.close()
+	limiter := newLimiter(clusterRT, log)
+	trustedProxies, err := ingress.ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return fmt.Errorf("trusted proxies: %w", err)
+	}
 	proxy.Register(context.Background(), data, conns, log, cfg.ProxyAllowLoopback)
 
 	var mx *metrics.Metrics
@@ -151,6 +157,8 @@ func serve() error {
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
 	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
 	cp.SetPublicConfig(cfg.BaseDomain, cfg.PublicScheme)
+	cp.SetLimiter(limiter)
+	cp.SetTrustedProxies(trustedProxies)
 	cp.SetDefaultQuota(store.Quota{
 		MaxAgents:         cfg.QuotaMaxAgents,
 		MaxEndpoints:      cfg.QuotaMaxEndpoints,
@@ -193,10 +201,6 @@ func serve() error {
 	log.Info("api listener", "addr", cfg.APIAddr)
 
 	if cfg.IngressEnabled {
-		trustedProxies, err := ingress.ParseTrustedProxies(cfg.TrustedProxies)
-		if err != nil {
-			return fmt.Errorf("trusted proxies: %w", err)
-		}
 		ing := ingress.New(ingress.Options{
 			Data:             data,
 			Conns:            conns,
@@ -207,6 +211,7 @@ func serve() error {
 			CookieSecure:     cfg.PublicScheme == "https",
 			OIDCAllowPrivate: cfg.OIDCAllowPrivate,
 			TrustedProxies:   trustedProxies,
+			Limiter:          limiter,
 		})
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg, data)
@@ -305,6 +310,14 @@ func (c *clusterRuntime) drain(ctx context.Context) {
 	}
 	c.store.Drain(ctx)
 	c.relay.Shutdown()
+}
+
+func newLimiter(c *clusterRuntime, log *slog.Logger) ratelimit.Limiter {
+	if c == nil {
+		return ratelimit.NewMemory()
+	}
+	log.Info("rate limits are cluster-wide (redis)")
+	return c.store.Limiter(log)
 }
 
 func (c *clusterRuntime) close() {
