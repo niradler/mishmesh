@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
+import { useSwitchOrg } from "@/api/hooks";
 import type { AuthConfig, Me, Membership, Role } from "@/api/types";
 
 interface SessionValue {
@@ -14,8 +15,6 @@ interface SessionValue {
 
 const SessionContext = createContext<SessionValue | null>(null);
 
-const STORAGE_KEY = "mishmesh.org";
-
 export function SessionProvider({
   authConfig,
   me,
@@ -26,16 +25,16 @@ export function SessionProvider({
   children: ReactNode;
 }) {
   const memberships = me?.memberships ?? [];
-  const [currentOrgId, setOrgState] = useState<string | undefined>(() => {
-    const stored = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
-    if (stored && memberships.some((m) => m.org_id === stored)) return stored;
-    return memberships[0]?.org_id;
-  });
+  const currentOrgId = me?.active_org_id ?? memberships[0]?.org_id;
+  const switchOrg = useSwitchOrg();
 
-  const setCurrentOrgId = useCallback((id: string) => {
-    setOrgState(id);
-    window.localStorage.setItem(STORAGE_KEY, id);
-  }, []);
+  const setCurrentOrgId = useCallback(
+    (id: string) => {
+      if (id === currentOrgId) return;
+      switchOrg.mutate(id, { onSuccess: () => window.location.reload() });
+    },
+    [currentOrgId, switchOrg],
+  );
 
   const value = useMemo<SessionValue>(() => {
     const currentMembership = memberships.find((m) => m.org_id === currentOrgId) ?? null;

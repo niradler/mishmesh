@@ -77,6 +77,21 @@ export function useLogin() {
   });
 }
 
+export function useRegister() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { email: string; password: string; name: string }) =>
+      api.post<Me>("/auth/register", vars),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.me }),
+  });
+}
+
+export function useSwitchOrg() {
+  return useMutation({
+    mutationFn: (orgId: string) => api.post<Me>("/auth/switch-org", { org_id: orgId }),
+  });
+}
+
 export function useStatus(orgId?: string) {
   return useQuery({
     queryKey: qk.status(orgId),

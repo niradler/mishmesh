@@ -9,7 +9,9 @@ export type EndpointLifecycle = "ephemeral" | "reserved";
 export interface AuthConfig {
   auth_enabled: boolean;
   password_enabled: boolean;
+  password_signup: boolean;
   google_enabled: boolean;
+  signup_mode: "org" | "invite";
 }
 
 export interface Policy {
@@ -34,6 +36,8 @@ export interface Me {
   id: string;
   email: string;
   name: string;
+  active_org_id: string;
+  role: Role;
   memberships: Membership[];
 }
 

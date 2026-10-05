@@ -7,6 +7,7 @@ import { ApiError } from "@/api/client";
 import { useLogin } from "@/api/hooks";
 import type { AuthConfig } from "@/api/types";
 import { API_BASE } from "@/api/client";
+import { Register } from "@/pages/Register";
 
 const GoogleIcon = () => (
   <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
@@ -20,6 +21,7 @@ const GoogleIcon = () => (
 export function Login({ authConfig }: { authConfig: AuthConfig }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [mode, setMode] = useState<"login" | "register">("login");
   const login = useLogin();
 
   const onSubmit = (e: FormEvent) => {
@@ -45,12 +47,18 @@ export function Login({ authConfig }: { authConfig: AuthConfig }) {
           </div>
           <div>
             <h1 className="text-2xl font-semibold tracking-heading">mishmesh</h1>
-            <p className="mt-1 text-sm text-muted-foreground">Sign in to your control plane</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {mode === "register" ? "Create your account" : "Sign in to your control plane"}
+            </p>
           </div>
         </div>
 
         <div className="rounded-card border border-border bg-card p-6 shadow-sm">
-          {authConfig.password_enabled && (
+          {mode === "register" && authConfig.password_signup && (
+            <Register authConfig={authConfig} onBack={() => setMode("login")} />
+          )}
+
+          {mode === "login" && authConfig.password_enabled && (
             <form onSubmit={onSubmit} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="email">Email</Label>
@@ -84,10 +92,15 @@ export function Login({ authConfig }: { authConfig: AuthConfig }) {
               <Button type="submit" className="w-full" disabled={login.isPending}>
                 {login.isPending ? "Signing in…" : "Sign in"}
               </Button>
+              {authConfig.password_signup && (
+                <Button type="button" variant="ghost" className="w-full" onClick={() => setMode("register")}>
+                  Create an account
+                </Button>
+              )}
             </form>
           )}
 
-          {authConfig.password_enabled && authConfig.google_enabled && (
+          {mode === "login" && authConfig.password_enabled && authConfig.google_enabled && (
             <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
               <span className="h-px flex-1 bg-border" />
               OR
@@ -95,7 +108,7 @@ export function Login({ authConfig }: { authConfig: AuthConfig }) {
             </div>
           )}
 
-          {authConfig.google_enabled && (
+          {mode === "login" && authConfig.google_enabled && (
             <Button variant="outline" className="w-full" asChild>
               <a href={`${API_BASE}/auth/google/start`}>
                 <GoogleIcon />

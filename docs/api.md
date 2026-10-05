@@ -10,19 +10,22 @@ Content-Type `application/json`. Errors: `{"error": "message"}` with appropriate
 - When `MISHMESH_AUTH_ENABLED=false`: no auth required; everything operates on the default org (`org_default`).
 - When enabled: session or admin bearer required. Org is taken from the session's active org; role gates writes.
 
+Every resource is scoped to the caller's active org. A resource outside that org returns 404 (never 403), for sessions. The admin bearer token is a super-admin: it may pass `org_id` to target any org. A session whose user has no membership in any org gets 401. Unknown `/api/*` paths return a JSON 404.
+
 Roles: `owner` > `admin` > `member`. Writes to org/members/quota require `admin`+; agent/endpoint CRUD requires `member`+.
 
 ## Auth & identity
 
 | Method | Path | Body / Notes |
 |---|---|---|
-| POST | `/auth/register` | `{email, password, name}` → 201 `{user, org}`; only when `AUTH_PASSWORD_ENABLED`. First user of a new org becomes `owner`. Sets cookie. |
-| POST | `/auth/login` | `{email, password}` → 200 `{user, org, role}`; sets cookie. |
+| POST | `/auth/register` | `{email, password, name}` → 201 me; only when `AUTH_PASSWORD_ENABLED`. Email is normalised and validated; rate limited per IP and per email (429). Signup mode `MISHMESH_SIGNUP_MODE`: `org` (default) creates a new org with the user as owner; `invite` lets only the first user self-register (owner of `org_default`), later registrations need a prior invite via `POST /members` else 403. Sets cookie. |
+| POST | `/auth/login` | `{email, password}` → 200 me; sets cookie; rate limited per IP and per email (429). |
 | POST | `/auth/logout` | clears cookie → 204 |
-| GET | `/auth/me` | → `{user, org, role, memberships:[{org, role}]}` or 401 |
+| GET | `/auth/me` | → `{id, email, name, active_org_id, role, memberships:[{org_id, org_name, role}]}` or 401 |
+| POST | `/auth/switch-org` | `{org_id}` → me; changes the session's active org; 404 if not a member |
 | GET | `/auth/google/start` | 302 → Google consent (state cookie) |
 | GET | `/auth/google/callback` | `?code&state` → sets cookie, 302 → web UI |
-| GET | `/auth/config` | public → `{password_enabled, google_enabled, auth_enabled}` (for the login screen) |
+| GET | `/auth/config` | public → `{password_enabled, google_enabled, auth_enabled, password_signup, signup_mode}` (for the login screen) |
 
 ## Status (dashboard summary)
 
@@ -37,7 +40,7 @@ Roles: `owner` > `admin` > `member`. Writes to org/members/quota require `admin`
 | GET | `/agents/{id}` | agentDTO |
 | PATCH | `/agents/{id}` | `{name?, status?}` |
 | DELETE | `/agents/{id}` | must be revoked first → 204 |
-| POST | `/agents/{id}/rotate` | → `{token}` |
+| POST | `/agents/{id}/rotate` | → 201 `{token}`; revokes all previous tokens and closes the live session |
 | POST | `/agents/{id}/revoke` | live-kills connection → `{status:"revoked"}` |
 | GET | `/agents/{id}/endpoints` | `[endpointDTO]` |
 | GET | `/agents/{id}/tokens` | `[tokenDTO]` |
@@ -66,14 +69,15 @@ are created implicitly by the clientless SSH remote-forward server (see deploy g
 ## Quota
 
 | GET | `/quota` | → `{max_agents, max_endpoints, max_bandwidth_bytes, usage:{agents, endpoints, bandwidth_bytes}}` |
-| PUT | `/quota` | admin+ `{max_agents, max_endpoints, max_bandwidth_bytes}` |
+| PUT | `/quota` | admin+ `{max_agents, max_endpoints, max_bandwidth_bytes}` → same shape as GET |
 
 ## Org & members
 
-| GET | `/orgs` | orgs the caller belongs to |
+| GET | `/orgs` | orgs the caller belongs to → `[{id, name, created_at}]` |
+| GET | `/orgs/{id}` | member only, else 404 |
 | POST | `/orgs` | `{name}` → creates org, caller becomes owner |
 | GET | `/members` | current org memberships → `[{user:{id,email,name}, role, created_at}]` |
-| POST | `/members` | admin+ `{email, role}` — add existing user to org |
+| POST | `/members` | admin+ `{email, role}` — add a user to the org; an unknown email becomes a pending invite that can register in either signup mode |
 | PATCH | `/members/{user_id}` | admin+ `{role}` |
 | DELETE | `/members/{user_id}` | admin+ |
 
@@ -84,7 +88,7 @@ are created implicitly by the clientless SSH remote-forward server (see deploy g
 ## Ops (not under /api/v1)
 
 | GET | `/healthz`, `/readyz` | liveness/readiness |
-| GET | `/metrics` | Prometheus exposition (control listener) |
+| GET | `/metrics` | Prometheus exposition (control listener); requires `Authorization: Bearer` of `MISHMESH_METRICS_TOKEN` if set, else the API auth token |
 
 ## Reach-in data-plane (enterprise; `MISHMESH_REACHIN_ENABLED`)
 

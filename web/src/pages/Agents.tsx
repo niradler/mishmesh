@@ -26,7 +26,7 @@ import { formatRelativeTime } from "@/lib/utils";
 import { ApiError } from "@/api/client";
 
 function agentRunCommand(token: string): string {
-  return `mishmesh-agent --token ${token} http 3000`;
+  return `mishmesh-agent http 3000 --token ${token}`;
 }
 
 function CreateAgentDialog({ orgId }: { orgId?: string }) {
