@@ -9,18 +9,22 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
 type EndpointSpec struct {
+	Name           string
 	Kind           string
 	Lifecycle      string
 	Subdomain      string
+	Domain         string
 	Port           int
 	LocalTarget    string
 	TargetTLS      bool
@@ -41,14 +45,17 @@ type Options struct {
 	Log        *slog.Logger
 	Endpoints  []EndpointSpec
 	Allowlist  []string
+	Out        io.Writer
 }
 
 type Agent struct {
 	opts    Options
 	log     *slog.Logger
 	allow   *Allowlist
+	out     io.Writer
 	mu      sync.RWMutex
 	targets map[string]localTarget
+	acked   atomic.Bool
 }
 
 func New(opts Options) *Agent {
@@ -56,16 +63,34 @@ func New(opts Options) *Agent {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Agent{opts: opts, log: log, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget)}
+	out := opts.Out
+	if out == nil {
+		out = os.Stdout
+	}
+	return &Agent{opts: opts, log: log, out: out, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget)}
 }
 
-func (a *Agent) Run(ctx context.Context) error {
+func (a *Agent) Run(parent context.Context) error {
+	gatewayURL, err := NormalizeGatewayURL(a.opts.GatewayURL)
+	if err != nil {
+		return err
+	}
+	a.opts.GatewayURL = gatewayURL
+	ctx, cancel := context.WithCancelCause(parent)
+	defer cancel(nil)
+
 	backoff := initialBackoff
 	for {
 		started := time.Now()
-		err := a.connectOnce(ctx)
+		err := a.connectOnce(ctx, cancel)
+		if fatal := fatalCause(ctx); fatal != nil {
+			return fatal
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if fatal := classifyDialError(err); fatal != nil {
+			return fatal
 		}
 		if time.Since(started) >= stableSessionAfter {
 			backoff = initialBackoff
@@ -74,6 +99,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.log.Warn("tunnel session ended; reconnecting", "err", err, "retry_in", delay)
 		select {
 		case <-ctx.Done():
+			if fatal := fatalCause(ctx); fatal != nil {
+				return fatal
+			}
 			return ctx.Err()
 		case <-time.After(delay):
 		}
@@ -86,7 +114,7 @@ func (a *Agent) Run(ctx context.Context) error {
 const (
 	initialBackoff     = time.Second
 	maxBackoff         = 30 * time.Second
-	stableSessionAfter = 10 * time.Second
+	stableSessionAfter = 30 * time.Second
 )
 
 func jittered(d time.Duration) time.Duration {
@@ -94,7 +122,7 @@ func jittered(d time.Duration) time.Duration {
 	return half + time.Duration(rand.Int64N(int64(half)+1))
 }
 
-func (a *Agent) connectOnce(parent context.Context) error {
+func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
@@ -109,6 +137,10 @@ func (a *Agent) connectOnce(parent context.Context) error {
 		return fmt.Errorf("session: %w", err)
 	}
 	defer sess.Close()
+	go func() {
+		<-ctx.Done()
+		_ = sess.Close()
+	}()
 
 	ctrl, err := sess.OpenControl()
 	if err != nil {
@@ -116,15 +148,18 @@ func (a *Agent) connectOnce(parent context.Context) error {
 	}
 
 	refTarget := make(map[string]localTarget, len(a.opts.Endpoints))
+	refSpec := make(map[string]EndpointSpec, len(a.opts.Endpoints))
 	var reg tunnel.RegisterPayload
 	for idx, sp := range a.opts.Endpoints {
 		ref := strconv.Itoa(idx)
 		refTarget[ref] = localTarget{addr: sp.LocalTarget, useTLS: sp.TargetTLS, insecure: sp.TargetInsecure}
+		refSpec[ref] = sp
 		reg.Endpoints = append(reg.Endpoints, tunnel.EndpointRequest{
 			Ref:       ref,
 			Kind:      sp.Kind,
 			Lifecycle: sp.Lifecycle,
 			Subdomain: sp.Subdomain,
+			Domain:    sp.Domain,
 			Port:      sp.Port,
 			Policy:    sp.Policy,
 		})
@@ -133,7 +168,7 @@ func (a *Agent) connectOnce(parent context.Context) error {
 		return fmt.Errorf("send register: %w", err)
 	}
 
-	go a.readControl(ctx, ctrl, refTarget)
+	go a.readControl(ctx, ctrl, refTarget, refSpec, fail)
 	go a.pingLoop(ctx, ctrl)
 
 	a.log.Info("tunnel connected", "gateway", a.opts.GatewayURL)
@@ -146,24 +181,38 @@ func (a *Agent) connectOnce(parent context.Context) error {
 	}
 }
 
-func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, refTarget map[string]localTarget) {
+func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, refTarget map[string]localTarget, refSpec map[string]EndpointSpec, fail context.CancelCauseFunc) {
 	for ctx.Err() == nil {
 		msg, err := ctrl.Recv()
 		if err != nil {
 			return
 		}
 		if msg.Type == tunnel.MsgRegisterAck && msg.RegisterAck != nil {
-			for _, b := range msg.RegisterAck.Endpoints {
-				if b.EndpointID == "" {
-					a.log.Warn("endpoint registration failed", "ref", b.Ref)
-					continue
-				}
-				tgt := refTarget[b.Ref]
-				a.setTarget(b.EndpointID, tgt)
-				fmt.Printf("  %s  ->  %s\n", b.PublicURL, tgt.addr)
-			}
+			a.handleAck(msg.RegisterAck, refTarget, refSpec, fail)
 		}
 	}
+}
+
+func (a *Agent) handleAck(ack *tunnel.RegisterAckPayload, refTarget map[string]localTarget, refSpec map[string]EndpointSpec, fail context.CancelCauseFunc) {
+	results := make([]TunnelResult, 0, len(ack.Endpoints))
+	failed := 0
+	for _, b := range ack.Endpoints {
+		tgt := refTarget[b.Ref]
+		spec := refSpec[b.Ref]
+		results = append(results, TunnelResult{Name: spec.Name, Kind: spec.Kind, LocalTarget: tgt.addr, Binding: b})
+		if b.EndpointID == "" {
+			failed++
+			a.log.Warn("endpoint registration failed", "tunnel", spec.Name, "ref", b.Ref, "reason", b.Error)
+			continue
+		}
+		a.setTarget(b.EndpointID, tgt)
+	}
+	fmt.Fprint(a.out, FormatResults(a.opts.GatewayURL, results))
+	if failed > 0 && !a.acked.Swap(true) {
+		fail(&RegistrationError{Failed: failed, Total: len(ack.Endpoints), Results: results})
+		return
+	}
+	a.acked.Store(true)
 }
 
 func (a *Agent) pingLoop(ctx context.Context, ctrl *tunnel.Control) {
