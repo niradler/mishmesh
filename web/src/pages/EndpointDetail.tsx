@@ -73,8 +73,9 @@ function fromPolicy(p?: EndpointPolicy | null): PolicyForm {
   };
 }
 
-function toPolicy(f: PolicyForm): EndpointPolicy {
+function toPolicy(f: PolicyForm, base?: EndpointPolicy | null): EndpointPolicy {
   const policy: EndpointPolicy = {
+    ...base,
     request_headers_add: pairsToRecord(f.reqAdd),
     request_headers_remove: f.reqRemove.filter(Boolean),
     response_headers_add: pairsToRecord(f.resAdd),
@@ -89,6 +90,7 @@ function toPolicy(f: PolicyForm): EndpointPolicy {
     force_https: f.forceHttps,
     max_body_bytes: f.maxBodyBytes ? Number(f.maxBodyBytes) : undefined,
     compression: f.compression,
+    oidc: undefined,
   };
   if (f.oidcEnabled || f.oidcIssuer || f.oidcClientId) {
     policy.oidc = {
@@ -136,7 +138,7 @@ export function EndpointDetail() {
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
     update.mutate(
-      { id, policy: toPolicy(form) },
+      { id, policy: toPolicy(form, ep.policy) },
       {
         onSuccess: () => toast({ title: "Policy saved" }),
         onError: (err) =>
