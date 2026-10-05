@@ -198,6 +198,12 @@ func decodePolicy(raw json.RawMessage, log *slog.Logger) *store.EndpointPolicy {
 		log.Warn("ignoring invalid endpoint policy", "err", err)
 		return nil
 	}
+	if p.RateLimit != nil {
+		if err := p.RateLimit.Validate(); err != nil {
+			log.Warn("ignoring invalid endpoint rate limit", "err", err)
+			p.RateLimit = nil
+		}
+	}
 	return &p
 }
 

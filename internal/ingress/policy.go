@@ -5,14 +5,24 @@ import (
 	"crypto/x509"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/mishmesh/mishmesh/internal/clientip"
+	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, oidc *oidcGate) bool {
+type gateDeps struct {
+	oidc    *oidcGate
+	trusted []*net.IPNet
+	limiter ratelimit.Limiter
+}
+
+func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, deps gateDeps) bool {
 	if ep == nil || ep.Policy == nil {
 		return true
 	}
@@ -24,13 +34,17 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 		return false
 	}
 
-	ip := clientIP(r)
+	ip := clientip.Resolve(r, deps.trusted)
 	if len(p.IPDeny) > 0 && cidrMatch(p.IPDeny, ip) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return false
 	}
 	if len(p.IPAllow) > 0 && !cidrMatch(p.IPAllow, ip) {
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+
+	if !allowRate(w, r, ep, ip, deps.limiter) {
 		return false
 	}
 
@@ -50,11 +64,11 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 	}
 
 	if p.OIDC != nil {
-		if oidc == nil {
+		if deps.oidc == nil {
 			http.Error(w, "endpoint oidc auth not configured", http.StatusServiceUnavailable)
 			return false
 		}
-		if !oidc.authenticate(w, r, ep) {
+		if !deps.oidc.authenticate(w, r, ep) {
 			return false
 		}
 	}
@@ -96,12 +110,37 @@ func requestIsHTTPS(r *http.Request) bool {
 	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-func clientIP(r *http.Request) net.IP {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
+func allowRate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, ip net.IP, limiter ratelimit.Limiter) bool {
+	rl := ep.Policy.RateLimit
+	if rl == nil || limiter == nil {
+		return true
 	}
-	return net.ParseIP(host)
+	limit := ratelimit.Limit{
+		Requests: rl.Requests,
+		Period:   time.Duration(rl.PeriodSeconds) * time.Second,
+		Burst:    rl.Burst,
+	}
+	d := limiter.Allow(r.Context(), rateLimitKey(ep.ID, rl, ip), limit)
+	if d.Allowed {
+		return true
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(d.RetryAfter)))
+	http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+	return false
+}
+
+func rateLimitKey(endpointID string, rl *store.RateLimit, ip net.IP) string {
+	if rl.PerEndpoint() || ip == nil {
+		return "ep:" + endpointID
+	}
+	return "ip:" + endpointID + ":" + rateLimitIPKey(ip)
+}
+
+func rateLimitIPKey(ip net.IP) string {
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String()
 }
 
 func cidrMatch(cidrs []string, ip net.IP) bool {

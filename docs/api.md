@@ -62,7 +62,20 @@ Roles: `owner` > `admin` > `member`. Writes to org/members/quota require `admin`
 `method` (default `native`): `native | ssh | proxy | tailscale | cloudflare`. For `method=proxy` omit `agent_id`
 and set `policy.proxy_target` (`host:port`); mishmesh reverse-proxies it directly (no agent). `ssh` endpoints
 are created implicitly by the clientless SSH remote-forward server (see deploy guide), not via this API.
-`policy` (all optional): `{request_headers_add:{}, request_headers_remove:[], response_headers_add:{}, response_headers_remove:[], host_header, strip_path_prefix, add_path_prefix, basic_auth_user, basic_auth_password (write-only, hashed server-side), ip_allow:[cidr], ip_deny:[cidr], force_https, max_body_bytes, compression, oidc:{...}, mtls:{client_ca_pem, allowed_cns:[]}, proxy_target}`
+`policy` (all optional): `{request_headers_add:{}, request_headers_remove:[], response_headers_add:{}, response_headers_remove:[], host_header, strip_path_prefix, add_path_prefix, basic_auth_user, basic_auth_password (write-only, hashed server-side), ip_allow:[cidr], ip_deny:[cidr], force_https, max_body_bytes, compression, oidc:{...}, mtls:{client_ca_pem, allowed_cns:[]}, rate_limit:{requests, period_seconds, burst?, scope?}, proxy_target}`
+
+`rate_limit`: token-bucket limit on HTTP(S) ingress requests. `requests` per `period_seconds` refill steadily;
+`burst` (default = `requests`) is the bucket size. `scope` is `ip` (default, one bucket per client IP; IPv6 clients
+share a bucket per /64) or `endpoint` (one bucket for the whole endpoint). Exceeding it returns `429` with a
+`Retry-After` header (seconds). Invalid values (`requests`/`period_seconds` < 1, unknown `scope`) are rejected with 400.
+It runs after `force_https` and `ip_allow`/`ip_deny` and before authentication, so credential guessing is throttled.
+TCP/TLS endpoints are not rate limited. With `MISHMESH_CLUSTER_ENABLED=true` the buckets live in Redis and are shared
+by every node; if Redis errors the limiter fails open and logs a warning. Otherwise buckets are per node, in memory.
+
+Client IP for `ip_allow`/`ip_deny`/`rate_limit` and `X-Forwarded-For`: the socket peer, unless the peer is inside
+`MISHMESH_TRUSTED_PROXIES` (comma-separated IPs/CIDRs), in which case the rightmost `X-Forwarded-For` hop that is not
+itself a trusted proxy is used. Set it whenever ingress sits behind a load balancer, otherwise every client appears as
+the balancer's address.
 
 `mtls`: when set, the HTTPS edge requires a client certificate that chains to `client_ca_pem`
 (and whose CN is in `allowed_cns`, if given); otherwise 403. Requires the HTTPS ingress (`TLS_ENABLED`).

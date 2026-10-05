@@ -305,6 +305,11 @@ func encodePolicy(m map[string]any) (json.RawMessage, error) {
 	if err := dec.Decode(&pol); err != nil {
 		return nil, err
 	}
+	if pol.RateLimit != nil {
+		if err := pol.RateLimit.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	return raw, nil
 }
 

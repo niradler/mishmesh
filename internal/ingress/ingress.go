@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
@@ -31,6 +32,7 @@ type Options struct {
 	OIDCAllowPrivate bool
 
 	TrustedProxies          []*net.IPNet
+	Limiter                 ratelimit.Limiter
 	UpstreamResponseTimeout time.Duration
 }
 
@@ -42,6 +44,7 @@ type Ingress struct {
 	meter    Meter
 	oidc     *oidcGate
 	trusted  []*net.IPNet
+	limiter  ratelimit.Limiter
 	proxy    *httputil.ReverseProxy
 }
 
@@ -57,6 +60,10 @@ func New(opts Options) *Ingress {
 		apexHost: hostOnly(opts.BaseDomain),
 		meter:    opts.Meter,
 		trusted:  opts.TrustedProxies,
+		limiter:  opts.Limiter,
+	}
+	if i.limiter == nil {
+		i.limiter = ratelimit.NewMemory()
 	}
 	i.proxy = i.newProxy(opts.UpstreamResponseTimeout)
 	if len(opts.OIDCSignKey) > 0 {
@@ -85,7 +92,7 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		i.recordCode(http.StatusTooManyRequests)
 		return
 	}
-	if !applyPolicyGate(w, r, ep, i.oidc) {
+	if !applyPolicyGate(w, r, ep, i.gateDeps()) {
 		return
 	}
 	conn, ok := i.conns.ResolveEndpoint(ep.ID)
@@ -99,6 +106,10 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.proxyHTTP(w, r, conn, ep, outPath, limit)
+}
+
+func (i *Ingress) gateDeps() gateDeps {
+	return gateDeps{oidc: i.oidc, trusted: i.trusted, limiter: i.limiter}
 }
 
 func (i *Ingress) resolve(r *http.Request) (ep *store.Endpoint, outPath string, ok bool) {

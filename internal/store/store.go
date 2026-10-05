@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"time"
 )
@@ -92,7 +93,43 @@ type EndpointPolicy struct {
 	Compression           bool              `json:"compression,omitempty"`
 	OIDC                  *OIDCEndpointAuth `json:"oidc,omitempty"`
 	MTLS                  *MTLSConfig       `json:"mtls,omitempty"`
+	RateLimit             *RateLimit        `json:"rate_limit,omitempty"`
 	ProxyTarget           string            `json:"proxy_target,omitempty"`
+}
+
+type RateLimit struct {
+	Requests      int    `json:"requests"`
+	PeriodSeconds int    `json:"period_seconds"`
+	Burst         int    `json:"burst,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+}
+
+const (
+	RateLimitScopeIP       = "ip"
+	RateLimitScopeEndpoint = "endpoint"
+
+	maxRateLimitRequests = 1_000_000
+	maxRateLimitPeriod   = 86400
+)
+
+func (r *RateLimit) Validate() error {
+	switch {
+	case r.Requests < 1 || r.Requests > maxRateLimitRequests:
+		return fmt.Errorf("rate_limit.requests must be between 1 and %d", maxRateLimitRequests)
+	case r.PeriodSeconds < 1 || r.PeriodSeconds > maxRateLimitPeriod:
+		return fmt.Errorf("rate_limit.period_seconds must be between 1 and %d", maxRateLimitPeriod)
+	case r.Burst < 0 || r.Burst > maxRateLimitRequests:
+		return fmt.Errorf("rate_limit.burst must be between 0 and %d", maxRateLimitRequests)
+	}
+	switch r.Scope {
+	case "", RateLimitScopeIP, RateLimitScopeEndpoint:
+		return nil
+	}
+	return fmt.Errorf("rate_limit.scope must be %q or %q", RateLimitScopeIP, RateLimitScopeEndpoint)
+}
+
+func (r *RateLimit) PerEndpoint() bool {
+	return r.Scope == RateLimitScopeEndpoint
 }
 
 type MTLSConfig struct {

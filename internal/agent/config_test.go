@@ -27,6 +27,7 @@ tunnels:
     policy:
       request_headers_add: { X-From: mishmesh }
       force_https: true
+      rate_limit: { requests: 100, period_seconds: 60, burst: 20, scope: ip }
   db:
     proto: tcp
     addr: db.internal:5432
@@ -62,6 +63,9 @@ func TestParseConfigValid(t *testing.T) {
 	}
 	if !strings.Contains(string(web.Policy), `"force_https":true`) || !strings.Contains(string(web.Policy), "X-From") {
 		t.Fatalf("web policy = %s", web.Policy)
+	}
+	if !strings.Contains(string(web.Policy), `"rate_limit":{"burst":20,"period_seconds":60,"requests":100,"scope":"ip"}`) {
+		t.Fatalf("web policy missing rate limit: %s", web.Policy)
 	}
 	if db.Kind != store.KindTCP || db.LocalTarget != "db.internal:5432" || db.Port != 10005 {
 		t.Fatalf("db = %+v", db)
@@ -143,6 +147,8 @@ func TestParseConfigValidation(t *testing.T) {
 		{name: "tls target_https", yaml: "tunnels:\n  a: {proto: tls, addr: 1, subdomain: x, target_https: true}", want: []string{"target_https does not apply to tls"}},
 		{name: "port out of range", yaml: "tunnels:\n  a: {proto: tcp, addr: 1, port: 70000}", want: []string{"out of range"}},
 		{name: "bad policy key", yaml: "tunnels:\n  a: {proto: http, addr: 1, policy: {nope: 1}}", want: []string{"policy:", "nope"}},
+		{name: "rate limit missing period", yaml: "tunnels:\n  a: {proto: http, addr: 1, policy: {rate_limit: {requests: 5}}}", want: []string{"policy:", "rate_limit.period_seconds"}},
+		{name: "rate limit bad scope", yaml: "tunnels:\n  a: {proto: http, addr: 1, policy: {rate_limit: {requests: 5, period_seconds: 1, scope: org}}}", want: []string{"policy:", "rate_limit.scope"}},
 		{name: "port not a number", yaml: "tunnels:\n  a: {proto: tcp, addr: 1, port: abc}", want: []string{`tunnel "a"`}},
 		{
 			name: "several problems reported together",

@@ -274,6 +274,11 @@ func buildPolicy(in *policyInput, existing *store.EndpointPolicy) (*store.Endpoi
 		return existing, nil
 	}
 	p := in.EndpointPolicy
+	if p.RateLimit != nil {
+		if err := p.RateLimit.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	switch {
 	case in.BasicAuthPassword != "":
 		h, err := bcrypt.GenerateFromPassword([]byte(in.BasicAuthPassword), bcrypt.DefaultCost)
