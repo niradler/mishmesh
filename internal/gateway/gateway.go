@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -34,6 +33,8 @@ type Options struct {
 	PublicScheme string
 	Ports        PortOpener
 	Metrics      Metrics
+
+	KindUnavailable map[string]string
 }
 
 type Gateway struct {
@@ -44,6 +45,7 @@ type Gateway struct {
 	publicScheme string
 	ports        PortOpener
 	metrics      Metrics
+	unavailable  map[string]string
 }
 
 func New(opts Options) *Gateway {
@@ -59,6 +61,7 @@ func New(opts Options) *Gateway {
 		publicScheme: opts.PublicScheme,
 		ports:        opts.Ports,
 		metrics:      opts.Metrics,
+		unavailable:  opts.KindUnavailable,
 	}
 }
 
@@ -151,109 +154,6 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 	}
 }
 
-func (g *Gateway) handleRegister(ctx context.Context, agent *store.Agent, p *tunnel.RegisterPayload) *tunnel.RegisterAckPayload {
-	ack := &tunnel.RegisterAckPayload{}
-	if p == nil {
-		return ack
-	}
-	for _, req := range p.Endpoints {
-		kind := req.Kind
-		if kind == "" {
-			kind = store.KindHTTP
-		}
-		lifecycle := req.Lifecycle
-		if lifecycle == "" {
-			lifecycle = store.LifecycleEphemeral
-		}
-		if kind == store.KindTCP {
-			ack.Endpoints = append(ack.Endpoints, g.registerTCP(ctx, agent, req, lifecycle))
-			continue
-		}
-		sub := strings.ToLower(strings.TrimSpace(req.Subdomain))
-		if sub == "" {
-			sub = store.NewID("")
-		} else if existing, err := g.data.GetEndpointBySubdomain(ctx, sub); err == nil {
-			if existing.AgentID != agent.ID {
-				g.log.Warn("subdomain owned by another agent", "subdomain", sub, "agent_id", agent.ID)
-				ack.Endpoints = append(ack.Endpoints, tunnel.EndpointBinding{Ref: req.Ref})
-				continue
-			}
-			g.conns.BindEndpoint(existing.ID, agent.ID)
-			ack.Endpoints = append(ack.Endpoints, tunnel.EndpointBinding{
-				Ref:        req.Ref,
-				EndpointID: existing.ID,
-				PublicURL:  g.publicURL(existing),
-				Kind:       existing.Kind,
-			})
-			continue
-		}
-		if !g.quotaAllowsEndpoint(ctx, agent.OrgID) {
-			g.log.Warn("endpoint quota exceeded", "agent_id", agent.ID, "org_id", agent.OrgID)
-			ack.Endpoints = append(ack.Endpoints, tunnel.EndpointBinding{Ref: req.Ref})
-			continue
-		}
-		ep := &store.Endpoint{
-			ID:        store.NewID("ep"),
-			AgentID:   agent.ID,
-			OrgID:     agent.OrgID,
-			Kind:      kind,
-			Lifecycle: lifecycle,
-			Subdomain: sub,
-			Policy:    decodePolicy(req.Policy, g.log),
-			CreatedAt: time.Now(),
-		}
-		if err := g.data.CreateEndpoint(ctx, ep); err != nil {
-			g.log.Warn("create endpoint failed", "agent_id", agent.ID, "err", err)
-			ack.Endpoints = append(ack.Endpoints, tunnel.EndpointBinding{Ref: req.Ref})
-			continue
-		}
-		g.conns.BindEndpoint(ep.ID, agent.ID)
-		ack.Endpoints = append(ack.Endpoints, tunnel.EndpointBinding{
-			Ref:        req.Ref,
-			EndpointID: ep.ID,
-			PublicURL:  g.publicURL(ep),
-			Kind:       ep.Kind,
-		})
-		g.log.Info("endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "url", g.publicURL(ep))
-	}
-	return ack
-}
-
-func (g *Gateway) registerTCP(ctx context.Context, agent *store.Agent, req tunnel.EndpointRequest, lifecycle string) tunnel.EndpointBinding {
-	if g.ports == nil {
-		g.log.Warn("tcp endpoint requested but tcp ingress is disabled", "agent_id", agent.ID)
-		return tunnel.EndpointBinding{Ref: req.Ref}
-	}
-	if !g.quotaAllowsEndpoint(ctx, agent.OrgID) {
-		g.log.Warn("endpoint quota exceeded", "agent_id", agent.ID, "org_id", agent.OrgID)
-		return tunnel.EndpointBinding{Ref: req.Ref}
-	}
-	ep := &store.Endpoint{
-		ID:        store.NewID("ep"),
-		AgentID:   agent.ID,
-		OrgID:     agent.OrgID,
-		Kind:      store.KindTCP,
-		Lifecycle: lifecycle,
-		Policy:    decodePolicy(req.Policy, g.log),
-		CreatedAt: time.Now(),
-	}
-	port, err := g.ports.Open(ep.ID, req.Port)
-	if err != nil {
-		g.log.Warn("tcp port allocation failed", "agent_id", agent.ID, "err", err)
-		return tunnel.EndpointBinding{Ref: req.Ref}
-	}
-	ep.Port = port
-	if err := g.data.CreateEndpoint(ctx, ep); err != nil {
-		g.ports.Close(ep.ID)
-		g.log.Warn("create tcp endpoint failed", "agent_id", agent.ID, "err", err)
-		return tunnel.EndpointBinding{Ref: req.Ref}
-	}
-	g.conns.BindEndpoint(ep.ID, agent.ID)
-	url := fmt.Sprintf("tcp://%s:%d", g.publicHost(), port)
-	g.log.Info("tcp endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "url", url)
-	return tunnel.EndpointBinding{Ref: req.Ref, EndpointID: ep.ID, Kind: store.KindTCP, Port: port, PublicURL: url}
-}
-
 func (g *Gateway) cleanupEphemeral(ctx context.Context, agentID string) {
 	eps, err := g.data.ListEndpointsByAgent(ctx, agentID)
 	if err != nil {
@@ -267,13 +167,6 @@ func (g *Gateway) cleanupEphemeral(ctx context.Context, agentID string) {
 			_ = g.data.DeleteEndpoint(ctx, ep.ID)
 		}
 	}
-}
-
-func (g *Gateway) publicURL(ep *store.Endpoint) string {
-	if ep.Subdomain != "" {
-		return fmt.Sprintf("%s://%s.%s", g.publicScheme, ep.Subdomain, g.baseDomain)
-	}
-	return fmt.Sprintf("%s://%s/tunnel/%s", g.publicScheme, g.baseDomain, ep.ID)
 }
 
 func (g *Gateway) publicHost() string {

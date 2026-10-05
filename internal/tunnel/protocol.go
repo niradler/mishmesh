@@ -33,6 +33,7 @@ type EndpointRequest struct {
 	Kind      string          `json:"kind"`
 	Lifecycle string          `json:"lifecycle"`
 	Subdomain string          `json:"subdomain,omitempty"`
+	Domain    string          `json:"domain,omitempty"`
 	Port      int             `json:"port,omitempty"`
 	Policy    json.RawMessage `json:"policy,omitempty"`
 }
@@ -41,8 +42,10 @@ type EndpointBinding struct {
 	Ref        string `json:"ref"`
 	EndpointID string `json:"endpoint_id"`
 	PublicURL  string `json:"public_url"`
+	PathURL    string `json:"path_url,omitempty"`
 	Kind       string `json:"kind"`
 	Port       int    `json:"port,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 type RegisterPayload struct {
