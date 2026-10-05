@@ -231,6 +231,12 @@ spec:
               value: {{ $v.dataPool.connMaxLifetime | quote }}
             - name: MISHMESH_DATA_CONN_MAX_IDLE_TIME
               value: {{ $v.dataPool.connMaxIdleTime | quote }}
+            - name: MISHMESH_INGRESS_CACHE_TTL
+              value: {{ $v.ingressCacheTTL | quote }}
+            {{- if $v.pprofAddr }}
+            - name: MISHMESH_PPROF_ADDR
+              value: {{ $v.pprofAddr | quote }}
+            {{- end }}
             - name: MISHMESH_CONN_BACKEND
               value: {{ $v.connStore.backend | quote }}
             {{- if eq $v.connStore.backend "redis" }}

@@ -105,6 +105,12 @@ func serve() error {
 	}
 	proxy.Register(context.Background(), data, conns, log, cfg.ProxyAllowLoopback)
 
+	stopPprof, err := startPprof(cfg.PprofAddr, log)
+	if err != nil {
+		return err
+	}
+	defer stopPprof()
+
 	var mx *metrics.Metrics
 	if cfg.MetricsEnabled {
 		mx = metrics.New()
@@ -212,6 +218,7 @@ func serve() error {
 			OIDCAllowPrivate: cfg.OIDCAllowPrivate,
 			TrustedProxies:   trustedProxies,
 			Limiter:          limiter,
+			LookupCacheTTL:   cfg.IngressCacheTTL,
 		})
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg, data)

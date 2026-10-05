@@ -49,6 +49,8 @@ type Server struct {
 	DataMaxIdleConns    int
 	DataConnMaxLifetime time.Duration
 	DataConnMaxIdleTime time.Duration
+	IngressCacheTTL     time.Duration
+	PprofAddr           string
 	ConnBackend         string
 	RedisURL            string
 
@@ -130,6 +132,8 @@ func LoadServer() Server {
 		DataMaxIdleConns:    envInt("DATA_MAX_IDLE_CONNS", 0),
 		DataConnMaxLifetime: envDuration("DATA_CONN_MAX_LIFETIME", 30*time.Minute),
 		DataConnMaxIdleTime: envDuration("DATA_CONN_MAX_IDLE_TIME", 5*time.Minute),
+		IngressCacheTTL:     envDuration("INGRESS_CACHE_TTL", 2*time.Second),
+		PprofAddr:           env("PPROF_ADDR", ""),
 		ConnBackend:         env("CONN_BACKEND", "memory"),
 		RedisURL:            env("REDIS_URL", ""),
 

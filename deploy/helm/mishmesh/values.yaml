@@ -108,6 +108,10 @@ dataPool:
   connMaxLifetime: 30m
   connMaxIdleTime: 5m
 
+ingressCacheTTL: 2s
+
+pprofAddr: ""
+
 connStore:
   backend: memory
   redis:

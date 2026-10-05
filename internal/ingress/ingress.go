@@ -35,6 +35,7 @@ type Options struct {
 	TrustedProxies          []*net.IPNet
 	Limiter                 ratelimit.Limiter
 	UpstreamResponseTimeout time.Duration
+	LookupCacheTTL          time.Duration
 }
 
 type Ingress struct {
@@ -47,6 +48,9 @@ type Ingress struct {
 	trusted  []*net.IPNet
 	limiter  ratelimit.Limiter
 	proxy    *httputil.ReverseProxy
+
+	endpoints *ttlCache[*store.Endpoint]
+	quotas    *ttlCache[*store.Quota]
 }
 
 func New(opts Options) *Ingress {
@@ -62,6 +66,9 @@ func New(opts Options) *Ingress {
 		meter:    opts.Meter,
 		trusted:  opts.TrustedProxies,
 		limiter:  opts.Limiter,
+
+		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
+		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
 	}
 	if i.limiter == nil {
 		i.limiter = ratelimit.NewMemory()
@@ -139,14 +146,14 @@ func (i *Ingress) lookupFailed(op string, err error) error {
 func (i *Ingress) resolve(r *http.Request) (ep *store.Endpoint, outPath string, err error) {
 	host := hostOnly(r.Host)
 	if sub, isSub := i.subdomain(host); isSub {
-		e, err := i.data.GetEndpointBySubdomain(r.Context(), sub)
+		e, err := i.endpointBySubdomain(r.Context(), sub)
 		if err != nil {
 			return nil, "", i.lookupFailed("subdomain", err)
 		}
 		return e, r.URL.Path, nil
 	}
 	if host != "" && host != i.apexHost {
-		e, err := i.data.GetEndpointByDomain(r.Context(), host)
+		e, err := i.endpointByDomain(r.Context(), host)
 		if err == nil {
 			return e, r.URL.Path, nil
 		}
@@ -155,7 +162,7 @@ func (i *Ingress) resolve(r *http.Request) (ep *store.Endpoint, outPath string, 
 		}
 	}
 	if id, rest, isPath := pathEndpoint(r.URL.Path); isPath {
-		e, err := i.data.GetEndpoint(r.Context(), id)
+		e, err := i.endpointByID(r.Context(), id)
 		if err != nil {
 			return nil, "", i.lookupFailed("id", err)
 		}
@@ -297,7 +304,7 @@ func (i *Ingress) bandwidthLimit(r *http.Request, ep *store.Endpoint) (limit int
 	if ep == nil || ep.OrgID == "" {
 		return 0, false
 	}
-	q, err := i.data.GetQuota(r.Context(), ep.OrgID)
+	q, err := i.quotaFor(r.Context(), ep.OrgID)
 	if err != nil || q.MaxBandwidthBytes <= 0 {
 		return 0, false
 	}
