@@ -129,7 +129,7 @@ func pollTunnel(t *testing.T, srv *httptest.Server, host, path string) string {
 	return ""
 }
 
-func mustHost(t *testing.T, raw string) string {
+func mustHost(t testing.TB, raw string) string {
 	t.Helper()
 	u, err := url.Parse(raw)
 	if err != nil {
