@@ -121,6 +121,31 @@ func (a *API) issueToken(ctx context.Context, agent *store.Agent) (string, error
 	return raw, nil
 }
 
+func (a *API) rotateToken(ctx context.Context, agent *store.Agent) (string, error) {
+	previous, err := a.data.ListTokensByAgent(ctx, agent.ID)
+	if err != nil {
+		return "", err
+	}
+	raw, err := a.issueToken(ctx, agent)
+	if err != nil {
+		return "", err
+	}
+	for _, t := range previous {
+		if t.RevokedAt != nil {
+			continue
+		}
+		if err := a.data.RevokeToken(ctx, t.ID); err != nil {
+			return "", fmt.Errorf("revoke previous token: %w", err)
+		}
+	}
+	if a.conns != nil {
+		if conn, ok := a.conns.GetAgent(agent.ID); ok {
+			_ = conn.Close()
+		}
+	}
+	return raw, nil
+}
+
 func (a *API) revokeAgent(ctx context.Context, agentID string) error {
 	agent, err := a.data.GetAgent(ctx, agentID)
 	if err != nil {

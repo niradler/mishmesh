@@ -435,10 +435,11 @@ func (a *API) rotateTokenHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	raw, err := a.issueToken(r.Context(), ag)
+	raw, err := a.rotateToken(r.Context(), ag)
 	if a.handleErr(w, err) {
 		return
 	}
+	a.audit(r, "agent.rotate", ag.ID, "")
 	writeJSON(w, http.StatusCreated, map[string]string{"token": raw})
 }
 
