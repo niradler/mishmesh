@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"strconv"
 	"strings"
@@ -59,23 +60,38 @@ func New(opts Options) *Agent {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
-	backoff := time.Second
-	const maxBackoff = 30 * time.Second
+	backoff := initialBackoff
 	for {
+		started := time.Now()
 		err := a.connectOnce(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		a.log.Warn("tunnel session ended; reconnecting", "err", err, "retry_in", backoff)
+		if time.Since(started) >= stableSessionAfter {
+			backoff = initialBackoff
+		}
+		delay := jittered(backoff)
+		a.log.Warn("tunnel session ended; reconnecting", "err", err, "retry_in", delay)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(backoff):
+		case <-time.After(delay):
 		}
 		if backoff *= 2; backoff > maxBackoff {
 			backoff = maxBackoff
 		}
 	}
+}
+
+const (
+	initialBackoff     = time.Second
+	maxBackoff         = 30 * time.Second
+	stableSessionAfter = 10 * time.Second
+)
+
+func jittered(d time.Duration) time.Duration {
+	half := d / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
 }
 
 func (a *Agent) connectOnce(parent context.Context) error {

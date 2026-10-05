@@ -60,6 +60,12 @@ type Server struct {
 	QuotaMaxAgents         int
 	QuotaMaxEndpoints      int
 	QuotaMaxBandwidthBytes int64
+
+	ClusterEnabled bool
+	NodeID         string
+	RelayAddr      string
+	RelayAdvertise string
+	ClusterSecret  string
 }
 
 type Agent struct {
@@ -125,7 +131,58 @@ func LoadServer() Server {
 		QuotaMaxAgents:         envInt("QUOTA_MAX_AGENTS", 0),
 		QuotaMaxEndpoints:      envInt("QUOTA_MAX_ENDPOINTS", 0),
 		QuotaMaxBandwidthBytes: int64(envInt("QUOTA_MAX_BANDWIDTH_BYTES", 0)),
+
+		ClusterEnabled: envBool("CLUSTER_ENABLED", false),
+		NodeID:         env("NODE_ID", hostnameOrEmpty()),
+		RelayAddr:      env("RELAY_ADDR", "127.0.0.1:7443"),
+		RelayAdvertise: env("RELAY_ADVERTISE", ""),
+		ClusterSecret:  env("CLUSTER_SECRET", ""),
 	}
+}
+
+func hostnameOrEmpty() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return h
+}
+
+const minClusterSecretLen = 32
+
+func (s Server) EffectiveDataBackend() string {
+	if s.DataBackend != "" {
+		return s.DataBackend
+	}
+	if strings.HasPrefix(s.DataDSN, "postgres://") || strings.HasPrefix(s.DataDSN, "postgresql://") {
+		return "postgres"
+	}
+	return "sqlite"
+}
+
+func (s Server) validateCluster() error {
+	if s.ConnBackend != "redis" {
+		return fmt.Errorf("config: CLUSTER_ENABLED requires CONN_BACKEND=redis, got %q", s.ConnBackend)
+	}
+	if s.RedisURL == "" {
+		return fmt.Errorf("config: CLUSTER_ENABLED requires REDIS_URL")
+	}
+	if s.EffectiveDataBackend() == "sqlite" {
+		return fmt.Errorf("config: CLUSTER_ENABLED requires a shared data backend (postgres), not sqlite")
+	}
+	if s.NodeID == "" {
+		return fmt.Errorf("config: CLUSTER_ENABLED requires NODE_ID (hostname lookup failed)")
+	}
+	if s.RelayAddr == "" {
+		return fmt.Errorf("config: CLUSTER_ENABLED requires RELAY_ADDR")
+	}
+	if s.RelayAdvertise == "" {
+		return fmt.Errorf("config: CLUSTER_ENABLED requires RELAY_ADVERTISE (host:port other nodes can reach, e.g. $(POD_IP):7443)")
+	}
+	if len(s.ClusterSecret) < minClusterSecretLen {
+		return fmt.Errorf("config: CLUSTER_SECRET must be at least %d characters", minClusterSecretLen)
+	}
+	return nil
 }
 
 func LoadAgent() Agent {
@@ -146,6 +203,9 @@ func (s Server) Validate() error {
 	}
 	if s.APIAuthToken == "" && !s.APIAuthDisabled {
 		return fmt.Errorf("config: API_AUTH_TOKEN must be set to protect the control API (or set API_AUTH_DISABLED=true to explicitly run it without auth)")
+	}
+	if s.ClusterEnabled {
+		return s.validateCluster()
 	}
 	return nil
 }

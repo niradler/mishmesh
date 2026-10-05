@@ -12,9 +12,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/cluster"
 	"github.com/mishmesh/mishmesh/internal/config"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connect/sshfwd"
@@ -66,10 +68,11 @@ func serve(_ []string) error {
 	}
 	defer data.Close()
 
-	conns, err := openConnStore(cfg, log)
+	conns, clusterRT, err := openConnStore(cfg, log)
 	if err != nil {
 		return err
 	}
+	defer clusterRT.close()
 	proxy.Register(context.Background(), data, conns, log, cfg.ProxyAllowLoopback)
 
 	var mx *metrics.Metrics
@@ -79,7 +82,7 @@ func serve(_ []string) error {
 
 	var tcpIngress *ingress.TCP
 	if cfg.IngressEnabled && cfg.TCPEnabled {
-		tcpIngress = ingress.NewTCP(ingress.TCPOptions{
+		tcpOpts := ingress.TCPOptions{
 			Conns:    conns,
 			Data:     data,
 			Log:      log,
@@ -87,8 +90,17 @@ func serve(_ []string) error {
 			PortMin:  cfg.TCPPortMin,
 			PortMax:  cfg.TCPPortMax,
 			Meter:    mx,
-		})
+		}
+		if clusterRT != nil {
+			tcpOpts.Claims = clusterRT.store.PortClaims(cfg.TCPPortMin, cfg.TCPPortMax)
+		}
+		tcpIngress = ingress.NewTCP(tcpOpts)
 		defer tcpIngress.Shutdown()
+		if clusterRT != nil {
+			if err := tcpIngress.ListenCluster(); err != nil {
+				return err
+			}
+		}
 		log.Info("tcp ingress enabled", "bind", cfg.TCPBindHost, "ports", fmt.Sprintf("%d-%d", cfg.TCPPortMin, cfg.TCPPortMax))
 	}
 
@@ -221,18 +233,20 @@ func serve(_ []string) error {
 		log.Info("clientless ssh remote-forward listener", "addr", cfg.SSHAddr)
 	}
 
-	return runServers(log, servers)
+	hooks := shutdownHooks{
+		onDrainStart: func() {
+			cp.SetDraining(true)
+			if tcpIngress != nil {
+				tcpIngress.Shutdown()
+			}
+		},
+		onServersStopped: clusterRT.drain,
+	}
+	return runServers(log, servers, hooks)
 }
 
 func openDataStore(cfg config.Server) (store.DataStore, error) {
-	backend := cfg.DataBackend
-	if backend == "" {
-		if strings.HasPrefix(cfg.DataDSN, "postgres://") || strings.HasPrefix(cfg.DataDSN, "postgresql://") {
-			backend = "postgres"
-		} else {
-			backend = "sqlite"
-		}
-	}
+	backend := cfg.EffectiveDataBackend()
 	switch backend {
 	case "postgres":
 		return postgres.Open(cfg.DataDSN)
@@ -243,23 +257,66 @@ func openDataStore(cfg config.Server) (store.DataStore, error) {
 	}
 }
 
-func openConnStore(cfg config.Server, log *slog.Logger) (store.ConnectionStore, error) {
+type clusterRuntime struct {
+	store *redis.ClusterConnStore
+	relay *cluster.Server
+}
+
+func (c *clusterRuntime) drain(ctx context.Context) {
+	if c == nil {
+		return
+	}
+	c.store.Drain(ctx)
+	c.relay.Shutdown()
+}
+
+func (c *clusterRuntime) close() {
+	if c == nil {
+		return
+	}
+	_ = c.store.Close()
+}
+
+func openConnStore(cfg config.Server, log *slog.Logger) (store.ConnectionStore, *clusterRuntime, error) {
 	switch cfg.ConnBackend {
 	case "redis":
 		if cfg.RedisURL == "" {
-			return nil, fmt.Errorf("CONN_BACKEND=redis requires REDIS_URL")
+			return nil, nil, fmt.Errorf("CONN_BACKEND=redis requires REDIS_URL")
+		}
+		if cfg.ClusterEnabled {
+			return openClusterConnStore(cfg, log)
 		}
 		cs, err := redis.NewConnStore(cfg.RedisURL)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		log.Info("redis connection store enabled")
-		return cs, nil
+		return cs, nil, nil
 	case "", "memory":
-		return memory.NewConnStore(), nil
+		return memory.NewConnStore(), nil, nil
 	default:
-		return nil, fmt.Errorf("unknown CONN_BACKEND %q (want memory or redis)", cfg.ConnBackend)
+		return nil, nil, fmt.Errorf("unknown CONN_BACKEND %q (want memory or redis)", cfg.ConnBackend)
 	}
+}
+
+func openClusterConnStore(cfg config.Server, log *slog.Logger) (store.ConnectionStore, *clusterRuntime, error) {
+	secret := []byte(cfg.ClusterSecret)
+	cs, err := redis.NewClusterConnStore(context.Background(), cfg.RedisURL, redis.ClusterOptions{
+		NodeID:    cfg.NodeID,
+		Advertise: cfg.RelayAdvertise,
+		Relay:     cluster.NewClient(secret),
+		Log:       log,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	relay := cluster.NewServer(cluster.ServerOptions{Secret: secret, Local: cs, Log: log})
+	if _, err := relay.Listen(cfg.RelayAddr); err != nil {
+		_ = cs.Close()
+		return nil, nil, fmt.Errorf("relay listen %s: %w", cfg.RelayAddr, err)
+	}
+	log.Info("cluster mode enabled", "node_id", cfg.NodeID, "relay_addr", cfg.RelayAddr, "relay_advertise", cfg.RelayAdvertise)
+	return cs, &clusterRuntime{store: cs, relay: relay}, nil
 }
 
 func spaHandler(dir string) http.Handler {
@@ -279,7 +336,17 @@ func spaHandler(dir string) http.Handler {
 	})
 }
 
-func runServers(log *slog.Logger, servers []*http.Server) error {
+type shutdownHooks struct {
+	onDrainStart     func()
+	onServersStopped func(ctx context.Context)
+}
+
+const (
+	shutdownTimeout = 10 * time.Second
+	drainTimeout    = 5 * time.Second
+)
+
+func runServers(log *slog.Logger, servers []*http.Server, hooks shutdownHooks) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -305,11 +372,26 @@ func runServers(log *slog.Logger, servers []*http.Server) error {
 		return err
 	}
 
-	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for _, srv := range servers {
-		_ = srv.Shutdown(shutCtx)
+	if hooks.onDrainStart != nil {
+		hooks.onDrainStart()
 	}
+	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, srv := range servers {
+		wg.Add(1)
+		go func(s *http.Server) {
+			defer wg.Done()
+			_ = s.Shutdown(shutCtx)
+		}(srv)
+	}
+	wg.Wait()
+	if hooks.onServersStopped != nil {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), drainTimeout)
+		defer drainCancel()
+		hooks.onServersStopped(drainCtx)
+	}
+	log.Info("shutdown complete")
 	return nil
 }
 

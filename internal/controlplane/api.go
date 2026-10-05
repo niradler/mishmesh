@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
@@ -23,11 +24,16 @@ type API struct {
 	baseDomain     string
 	publicScheme   string
 	reachInEnabled bool
+	draining       atomic.Bool
 	auth           *authConfig
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
 	authzCache   map[string]*authz.Authorizer
+}
+
+func (a *API) SetDraining(draining bool) {
+	a.draining.Store(draining)
 }
 
 func (a *API) SetPublicConfig(baseDomain, scheme string) {
@@ -117,7 +123,7 @@ func (a *API) audit(r *http.Request, action, target, detail string) {
 
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", a.health)
-	mux.HandleFunc("GET /readyz", a.health)
+	mux.HandleFunc("GET /readyz", a.ready)
 
 	a.registerAuthRoutes(mux)
 
@@ -259,6 +265,14 @@ func (a *API) toAgentDTO(ag *store.Agent) agentDTO {
 }
 
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (a *API) ready(w http.ResponseWriter, _ *http.Request) {
+	if a.draining.Load() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "draining"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
