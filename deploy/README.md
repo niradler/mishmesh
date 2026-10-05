@@ -1,230 +1,272 @@
 # Deploying mishmesh
 
-mishmesh ships two images: `mishmesh-server` (gateway + ingress + control API + web UI) and `mishmesh-agent` (tunnel client). This guide covers a cloud deployment. Disabled features are simply not wired in, so the same image runs as a headless enterprise gateway (`AUTH=off, WEBUI=off`) or a full multi-tenant SaaS (`AUTH=on, WEBUI=on`).
+This guide covers running `mishmesh-server` on a plain Docker host, plus the local compose setups in this directory. For Kubernetes, use the Helm charts in [helm/README.md](helm/README.md). For an overview of what mishmesh is, the three deployment shapes and the security model, start with the [root README](../README.md).
 
-Capabilities: HTTP (subdomain / path / custom domain) + WebSocket/streaming, TCP, TLS passthrough; HTTPS via BYO cert, ACME, or self-signed; per-endpoint policy (header rewrite, host/path, basic-auth, IP allow/deny, force-https, compression); quotas + bandwidth; Prometheus `/metrics`; SQLite/Postgres + in-mem/Redis backends; enterprise reach-in API with an agent allowlist; password + Google-OIDC login with org/role RBAC; and a React web UI.
-
-## Local demo (one command)
+There are two images, built from this repo (none are published yet):
 
 ```bash
-docker compose up --build
-# server seeds a bootstrap token; the agent exposes the `whoami` service.
-curl -H "Host: demo.localhost" http://localhost:8080/
+make docker docker-agent VERSION=0.1.0    # mishmesh-server:0.1.0, mishmesh-agent:0.1.0
 ```
 
-## Cloud deployment
+The server image is distroless and runs as nonroot. It sets `MISHMESH_INGRESS_ADDR`, `HTTPS_ADDR`, `API_ADDR`, `TLS_PASSTHROUGH_ADDR`, `SSH_ADDR` and `TCP_BIND_HOST` to `0.0.0.0` (the container's own interfaces), sets `DATA_DSN=/data/mishmesh.db` and `ACME_CACHE_DIR=/data/certs`, and bundles the web UI at `/webui`. Which interfaces are reachable from outside is decided by your `-p` mappings.
+
+Postgres is the data store for every real deployment. The SQLite default (`/data/mishmesh.db`) is a zero-dependency fallback for development only.
+
+## Local demo
+
+```bash
+docker compose up -d --build            # from the repo root
+curl -H 'Host: demo.localhost' http://127.0.0.1:8080/
+docker compose down
+```
+
+See the [quickstart](../README.md#quickstart-5-minutes-docker). It runs with `MISHMESH_API_AUTH_DISABLED=true` and binds only to `127.0.0.1`.
+
+## Single Docker host
 
 ### 1. DNS
 
-Point a wildcard record at the server's public IP so every endpoint subdomain resolves:
+Point the base domain and a wildcard at the host, so every endpoint subdomain resolves:
 
-```
-*.tunnel.example.com   A   <server-ip>
+```text
 tunnel.example.com     A   <server-ip>
+*.tunnel.example.com   A   <server-ip>
 ```
 
-### 2. TLS
+Agents need a separate connect hostname (for example `connect.example.com`), served by a TLS proxy in front of the control listener. See step 5.
 
-Two options:
+### 2. TLS for public ingress
 
-- **BYO wildcard cert (recommended for many ephemeral subdomains):** obtain a cert for `*.tunnel.example.com` (e.g. via DNS-01) and mount it.
-  ```
+Pick one:
+
+- **Your own wildcard certificate.** Recommended when you have many ephemeral subdomains. Get a certificate for `tunnel.example.com` and `*.tunnel.example.com` (for example via DNS-01) and mount it.
+
+  ```text
   MISHMESH_TLS_ENABLED=true
   MISHMESH_TLS_CERT_FILE=/data/certs/fullchain.pem
   MISHMESH_TLS_KEY_FILE=/data/certs/privkey.pem
   ```
-- **ACME/autocert (on-demand per host):** good for the apex and a handful of custom domains; beware Let's Encrypt rate limits with many ephemeral subdomains.
-  ```
+
+- **ACME** (per-host certificates on demand). Good for the apex and a handful of custom domains. Mind Let's Encrypt rate limits if you have many ephemeral subdomains.
+
+  ```text
   MISHMESH_TLS_ENABLED=true
   MISHMESH_ACME_ENABLED=true
   MISHMESH_ACME_EMAIL=ops@example.com
   ```
-  ACME needs ports 80 and 443 publicly reachable.
-  Certificates are issued for the base domain, its subdomains, and custom domains: verified domains when `MISHMESH_DOMAIN_VERIFICATION` is on, otherwise domains bound to an endpoint (lookups cached for 30s). ACME is single-pod only; clusters use a wildcard secret.
 
-### 3. Run the server
+  ACME needs ports 80 and 443 reachable from the internet. Certificates are issued for the base domain, its subdomains and custom domains: verified domains when `MISHMESH_DOMAIN_VERIFICATION` is on, otherwise domains bound to an endpoint (lookups are cached for 30 s). ACME runs on a single pod only, so clusters use a wildcard certificate.
+
+### 3. Run Postgres and the server
 
 ```bash
-docker run -d --name mishmesh-server \
-  -p 80:8080 -p 443:8443 -p 8081:8081 -p 10000-10100:10000-10100 \
+docker network create mishmesh
+
+docker run -d --name mishmesh-postgres --network mishmesh --restart unless-stopped \
+  -e POSTGRES_USER=mishmesh -e POSTGRES_PASSWORD="$PG_PASSWORD" -e POSTGRES_DB=mishmesh \
+  -v mishmesh-pg:/var/lib/postgresql/data \
+  postgres:16-alpine
+
+export MISHMESH_API_AUTH_TOKEN=$(openssl rand -hex 32)
+
+docker run -d --name mishmesh-server --network mishmesh --restart unless-stopped \
+  -p 80:8080 -p 443:8443 \
+  -p 10000-10049:10000-10049 \
+  -p 127.0.0.1:8081:8081 \
   -v mishmesh-data:/data \
+  -e MISHMESH_DATA_DSN="postgres://mishmesh:$PG_PASSWORD@mishmesh-postgres:5432/mishmesh?sslmode=disable" \
+  -e MISHMESH_API_AUTH_TOKEN \
   -e MISHMESH_BASE_DOMAIN=tunnel.example.com \
   -e MISHMESH_PUBLIC_SCHEME=https \
   -e MISHMESH_TLS_ENABLED=true \
   -e MISHMESH_TLS_CERT_FILE=/data/certs/fullchain.pem \
   -e MISHMESH_TLS_KEY_FILE=/data/certs/privkey.pem \
-  -e MISHMESH_BOOTSTRAP_TOKEN=$(openssl rand -hex 24) \
-  mishmesh-server:latest
+  -e MISHMESH_TCP_PORT_MIN=10000 -e MISHMESH_TCP_PORT_MAX=10049 \
+  mishmesh-server:0.1.0
 ```
 
-The container binds `0.0.0.0` by default. The API/control listener (`8081`) should NOT be exposed publicly — keep it on a private network or behind auth.
+- Public: HTTP `80`, HTTPS `443`, and the TCP endpoint range. Keep `-p` and `TCP_PORT_MIN`/`TCP_PORT_MAX` identical. The binary's default range is 10000-10100.
+- Private: the control listener `8081` (agent connect, `/api/v1`, web UI, `/metrics`) is published on `127.0.0.1` only.
+- The server refuses to start without `MISHMESH_API_AUTH_TOKEN`, unless `MISHMESH_API_AUTH_DISABLED=true` is set explicitly. Use the latter only for local demos.
+- Postgres is selected because the DSN starts with `postgres://` (`MISHMESH_DATA_BACKEND=postgres` does the same explicitly). For a managed database, use its DSN with `sslmode=require` and drop the Postgres container.
+- `/data` holds certificates, the ACME cache and, if SSH is enabled, the SSH host key. Keep it on a volume.
+
+Check it:
+
+```bash
+curl -s http://127.0.0.1:8081/healthz
+curl -s -H "Authorization: Bearer $MISHMESH_API_AUTH_TOKEN" http://127.0.0.1:8081/api/v1/status
+```
 
 ### 4. Issue agent tokens
 
-Either set `MISHMESH_BOOTSTRAP_TOKEN` (idempotent single token), or create per-agent tokens:
-
 ```bash
-docker exec mishmesh-server mishmesh-server token create --org acme
-# or via the control API (internal listener):
-curl -X POST http://127.0.0.1:8081/api/v1/agents -d '{"name":"acme-dc1"}'
+curl -s -XPOST http://127.0.0.1:8081/api/v1/agents \
+  -H "Authorization: Bearer $MISHMESH_API_AUTH_TOKEN" \
+  -d '{"name":"acme-dc1"}'
+# {"agent":{"id":"ag_...",...},"token":"<shown once>"}
 ```
 
-### 5. Run an agent (on the private network)
+The token is shown only once. Alternatives: `docker exec mishmesh-server mishmesh-server token create --org default --name acme-dc1` (it uses the server's `MISHMESH_DATA_DSN`), or `MISHMESH_BOOTSTRAP_TOKEN` to seed one fixed token at startup.
+
+### 5. Give agents a connect URL
+
+The control listener speaks plain HTTP/WebSocket. It has no TLS of its own, and the API, web UI and metrics share it. Choose one:
+
+- **Agents on the same private network or VPN** connect directly: `--gateway ws://<private-ip>:8081`. Publish `8081` on that private interface (`-p 10.0.0.10:8081:8081`), never on all interfaces.
+- **Agents across the internet** go through a TLS-terminating reverse proxy on a separate hostname, which forwards **only** the connect path to `127.0.0.1:8081`, with WebSocket upgrade:
+
+  ```nginx
+  server {
+      listen 443 ssl;
+      server_name connect.example.com;
+      ssl_certificate     /etc/ssl/connect.pem;
+      ssl_certificate_key /etc/ssl/connect-key.pem;
+
+      location = /_mishmesh/agent/connect {
+          proxy_pass http://127.0.0.1:8081;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          proxy_read_timeout 1h;
+      }
+      location / { return 404; }
+  }
+  ```
+
+  Because the mishmesh container already owns `443` on the host, run the proxy on a second IP address or on your load balancer. The Helm chart's `connectIngress` sets up the same thing on Kubernetes.
+
+### 6. Run an agent on the private network
 
 ```bash
-MISHMESH_TOKEN=<token> mishmesh-agent http 3000 --subdomain app --gateway wss://tunnel.example.com:8081
-# or TCP:
-MISHMESH_TOKEN=<token> mishmesh-agent tcp 22 --gateway wss://tunnel.example.com:8081
+MISHMESH_TOKEN=<token> mishmesh-agent http 3000 --subdomain app --gateway wss://connect.example.com
+#   -> https://app.tunnel.example.com
+MISHMESH_TOKEN=<token> mishmesh-agent tcp 22 --gateway wss://connect.example.com
+#   -> tcp://tunnel.example.com:100xx
 ```
+
+Or as a container:
+
+```bash
+docker run -d --name mishmesh-agent --restart unless-stopped \
+  -e MISHMESH_TOKEN=<token> -e MISHMESH_GATEWAY_URL=wss://connect.example.com \
+  mishmesh-agent:0.1.0 http host.docker.internal:3000 --subdomain app
+```
+
+For many tunnels, a config file and `mishmesh-agent service install`, see [Agent](../README.md#agent).
+
+### 7. Web UI and login (optional)
+
+Set `MISHMESH_WEBUI_ENABLED=true` and `MISHMESH_AUTH_ENABLED=true`. The UI is served from the control listener (same origin as `/api/v1`), so put it behind TLS too, for example on another `server_name` in the proxy above, routed to all of `127.0.0.1:8081`. The UI authenticates with a session cookie, not the bearer token. Choose who can register with `MISHMESH_SIGNUP_MODE`: `invite` for a company (the first registration owns the default org) or `org` for public signup. When the control host sits behind a proxy, set `MISHMESH_TRUSTED_PROXIES` to the proxy's address so per-IP login throttling sees real clients.
 
 ## Key environment variables
 
+The full list with defaults is in the [root README](../README.md#server-configuration).
+
 | Var | Purpose |
 | --- | --- |
-| `MISHMESH_BASE_DOMAIN` | public host suffix for URLs (e.g. `tunnel.example.com`) |
-| `MISHMESH_PUBLIC_SCHEME` | `https` in production |
-| `MISHMESH_INGRESS_ADDR` / `MISHMESH_HTTPS_ADDR` / `MISHMESH_API_ADDR` | bind addresses (default `0.0.0.0:*` in the image) |
-| `MISHMESH_TLS_ENABLED` + cert/ACME vars | enable HTTPS ingress |
-| `MISHMESH_TCP_ENABLED` / `MISHMESH_TCP_PORT_MIN` / `MISHMESH_TCP_PORT_MAX` | public TCP endpoint range |
-| `MISHMESH_DATA_DSN` | SQLite path (default `/data/mishmesh.db`) |
-| `MISHMESH_BOOTSTRAP_TOKEN` | seed a fixed agent token on startup |
-| `MISHMESH_API_AUTH_TOKEN` | require this bearer token on the control/management API (`/api/v1/*`); health stays open |
-| `MISHMESH_API_AUTH_DISABLED` | explicit opt-out: run the control API without auth. The server refuses to start if neither this nor `API_AUTH_TOKEN` is set (fail-closed). |
-| `MISHMESH_SELF_SIGNED_TLS` | mint an in-memory self-signed cert for the apex + wildcard (dev/local TLS) when no BYO/ACME cert is set |
-| `MISHMESH_TLS_PASSTHROUGH_ENABLED` / `MISHMESH_TLS_PASSTHROUGH_ADDR` | SNI-routed TLS passthrough listener for `kind=tls` endpoints |
-| `MISHMESH_SSH_ENABLED` / `MISHMESH_SSH_ADDR` / `MISHMESH_SSH_HOST_KEY_FILE` | clientless SSH remote-forward front door (stock `ssh -R`); host key persisted if set |
-| `MISHMESH_AUTH_ENABLED` / `MISHMESH_AUTH_PASSWORD_ENABLED` | require browser login; toggle password auth (off ⇒ Google-only) |
-| `MISHMESH_WEBUI_ENABLED` / `MISHMESH_WEBUI_DIR` | serve the React SPA (image bundles it at `/webui`) |
-| `MISHMESH_GOOGLE_CLIENT_ID` / `MISHMESH_GOOGLE_CLIENT_SECRET` / `MISHMESH_OIDC_REDIRECT_URL` | Google OIDC login |
-| `MISHMESH_DATA_BACKEND` / `MISHMESH_DATA_DSN` | `sqlite` (default) or `postgres` (e.g. `postgres://user:pw@host/db`) |
-| `MISHMESH_CONN_BACKEND` / `MISHMESH_REDIS_URL` | `memory` (default) or `redis` (shared usage/presence) |
-| `MISHMESH_METRICS_ENABLED` | expose Prometheus `/metrics` on the control listener |
-| `MISHMESH_REACHIN_ENABLED` | enable the enterprise reach-in data-plane API |
+| `MISHMESH_BASE_DOMAIN` | public host suffix for URLs (`tunnel.example.com`) |
+| `MISHMESH_PUBLIC_SCHEME` | `https` in production; also marks the session cookie `Secure` |
+| `MISHMESH_DATA_BACKEND` / `MISHMESH_DATA_DSN` | `postgres` (inferred from a `postgres://` DSN). `sqlite` with a file path for development only |
+| `MISHMESH_CONN_BACKEND` / `MISHMESH_REDIS_URL` | `memory` (default) or `redis`, required for cluster mode |
+| `MISHMESH_API_AUTH_TOKEN` | admin bearer token for `/api/v1/*`. Health checks stay open |
+| `MISHMESH_API_AUTH_DISABLED` | explicit opt-out for local demos. The server refuses to start if neither this nor `API_AUTH_TOKEN` is set |
+| `MISHMESH_BOOTSTRAP_TOKEN` | seed one fixed agent token at startup |
+| `MISHMESH_INGRESS_ADDR` / `HTTPS_ADDR` / `API_ADDR` | listen addresses (`0.0.0.0:*` in the image, `127.0.0.1:*` for the binary) |
+| `MISHMESH_TLS_ENABLED` + cert or ACME vars | HTTPS ingress |
+| `MISHMESH_SELF_SIGNED_TLS` | in-memory self-signed cert for the apex and wildcard (dev) |
+| `MISHMESH_TCP_ENABLED` / `TCP_PORT_MIN` / `TCP_PORT_MAX` | public TCP endpoint range |
+| `MISHMESH_TLS_PASSTHROUGH_ENABLED` / `TLS_PASSTHROUGH_ADDR` | SNI-routed passthrough listener for `tls` endpoints (default port 8444) |
+| `MISHMESH_SSH_ENABLED` / `SSH_ADDR` / `SSH_HOST_KEY_FILE` | clientless `ssh -R` front door |
+| `MISHMESH_AUTH_ENABLED` / `AUTH_PASSWORD_ENABLED` | browser login; password on/off (off means Google only) |
+| `MISHMESH_SIGNUP_MODE` | `org` (default, every signup gets an org) or `invite` |
+| `MISHMESH_DOMAIN_VERIFICATION` | require DNS TXT proof for custom domains (default on in `org` mode) |
+| `MISHMESH_TRUSTED_PROXIES` | IPs/CIDRs whose `X-Forwarded-For` is trusted for client IP |
+| `MISHMESH_WEBUI_ENABLED` / `WEBUI_DIR` | serve the React SPA (the image bundles it at `/webui`) |
+| `MISHMESH_GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `OIDC_REDIRECT_URL` | Google login |
+| `MISHMESH_METRICS_ENABLED` / `METRICS_TOKEN` | Prometheus `/metrics` on the control listener. The bearer is `METRICS_TOKEN`, or the API token if that is unset |
+| `MISHMESH_REACHIN_ENABLED` | reach-in data-plane API |
 | `MISHMESH_QUOTA_MAX_AGENTS` / `_MAX_ENDPOINTS` / `_MAX_BANDWIDTH_BYTES` | default per-org quotas (0 = unlimited) |
 
-Agent reach-in allowlist: `MISHMESH_ALLOW` / `--allow` (deny-first, comma-separated `host|cidr[:port;port]`). Loopback, link-local, and cloud-metadata IPs are always hard-denied.
+Agent reach-in allowlist: `MISHMESH_ALLOW`, `--allow` or `allow:` in the agent config (deny-first, comma-separated `host|cidr[:port;port]`). Loopback, link-local and cloud-metadata IPs are always denied.
 
 ## Connectivity methods
 
-Beyond the native agent tunnel, endpoints carry a `method` (`native | ssh | proxy | tailscale | cloudflare`).
+Besides the native agent tunnel, endpoints carry a `method`: `native | ssh | proxy | tailscale | cloudflare`.
 
 ### Clientless SSH remote-forward (no install)
 
-Enable a stock-SSH front door — users expose a service with the `ssh` already on their machine, no
-mishmesh agent:
+A stock-SSH front door: users expose a service with the `ssh` client already on their machine, with no mishmesh agent.
 
-```
+```text
 MISHMESH_SSH_ENABLED=true
-MISHMESH_SSH_ADDR=0.0.0.0:2222        # default 127.0.0.1:2222
-MISHMESH_SSH_HOST_KEY_FILE=/data/ssh_host_ed25519   # optional; generated in-memory if unset
+MISHMESH_SSH_ADDR=0.0.0.0:2222                       # image; the binary defaults to 127.0.0.1:2222
+MISHMESH_SSH_HOST_KEY_FILE=/data/ssh_host_ed25519.pem
 ```
+
+Always set `SSH_HOST_KEY_FILE` to a path on a persistent, writable volume. The key is generated on first start and reused after that. With a SQLite DSN the default is next to the database file. With a Postgres DSN the default is `ssh_host_ed25519.pem` in the working directory, which is not writable in the distroless image, so the server fails to start. Publish the port with `-p 2222:2222`.
 
 ```bash
 # password = an agent token (POST /api/v1/agents); the SSH username becomes the subdomain.
 ssh -N -R 80:localhost:3000 myapp@tunnel.example.com -p 2222
 #   -> https://myapp.tunnel.example.com   (HTTP, method=ssh)
-# non-80 bind ports allocate a public TCP port (needs TCP ingress enabled).
+# bind ports other than 80 allocate a public TCP port (needs TCP ingress enabled).
 ```
 
-The reverse forward maps to a normal mishmesh Endpoint, so all routing, policy, TLS, quota, and metering
-apply unchanged. Persist the host key file so the server identity is stable across restarts.
+The reverse forward becomes a normal mishmesh endpoint, so routing, policy, TLS, quota and metering apply unchanged.
 
 ### Agentless proxy
 
-For a target mishmesh can already reach, create a `method=proxy` endpoint — mishmesh reverse-proxies it
-directly (managed DNS/TLS/policy, no agent, no tunnel):
+For a target the server can already reach, create a `method=proxy` endpoint. mishmesh reverse-proxies it directly, with managed DNS, TLS and policy and no agent:
 
 ```bash
-curl -X POST http://127.0.0.1:8081/api/v1/endpoints \
-  -d '{"method":"proxy","subdomain":"internal","policy":{"proxy_target":"10.0.0.5:8080"}}'
+curl -XPOST http://127.0.0.1:8081/api/v1/endpoints \
+  -H "Authorization: Bearer $MISHMESH_API_AUTH_TOKEN" \
+  -d '{"kind":"http","method":"proxy","subdomain":"internal","policy":{"proxy_target":"10.0.0.5:8080"}}'
 ```
 
-Targets resolving to cloud-metadata, loopback, link-local, multicast, or unspecified addresses are
-refused, and the resolved IP is pinned for the dial (no DNS-rebinding). Private/LAN ranges are allowed —
-that is the method's purpose. Set `MISHMESH_PROXY_ALLOW_LOOPBACK=true` only if you must proxy to the
-server's own loopback.
+Targets that resolve to cloud-metadata, loopback, link-local, multicast or unspecified addresses are refused, and the resolved IP is pinned for the dial, so DNS rebinding doesn't work. Private/LAN ranges are allowed, since reaching them is the point of this method. Set `MISHMESH_PROXY_ALLOW_LOOPBACK=true` only if you must proxy to the server's own loopback.
 
 ### mTLS at the edge
 
-Require client certificates per endpoint (HTTPS ingress only). Add to an endpoint's policy:
+Require client certificates per endpoint (HTTPS ingress only) with the endpoint policy:
 
 ```json
 {"mtls": {"client_ca_pem": "-----BEGIN CERTIFICATE-----\n...", "allowed_cns": ["svc-a"]}}
 ```
 
-Requests without a certificate chaining to `client_ca_pem` (and matching `allowed_cns`, if set) get 403.
+A request without a certificate that chains to `client_ca_pem` (and matches `allowed_cns`, if set) gets 403.
 
 ### Managed Tailscale / Cloudflare
 
-Orchestrate-only methods (mishmesh provisions provider resources, traffic flows over the provider) are
-scaffolded behind the `method` field but require live provider API credentials; not enabled in this build.
-
-## Web UI
-
-With `MISHMESH_WEBUI_ENABLED=true` the SPA is served from the control listener (same origin as `/api/v1`). Browse to `http://<api-host>:8081/`. Put the control listener behind TLS / a reverse proxy in production; the session cookie is `Secure` when `PUBLIC_SCHEME=https`.
-
-## Live network e2e (isolated Docker networks)
-
-`deploy/compose.e2e.yml` proves real tunnels across isolated networks: an `internal` `private`
-network holds the backend (`echo`) + agents with no route to the host/`edge`; the `edge` network
-holds the server + a `tester`. Traffic reaches the private backend **only** through the tunnel.
-
-```bash
-cd deploy
-docker compose -f compose.e2e.yml up -d --build server echo tester
-# mint two agent tokens (HTTP + TCP need distinct agent identities), then start agents:
-HTTP_TOKEN=$(curl -s -XPOST localhost:18081/api/v1/agents -d '{"name":"http"}' | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-TCP_TOKEN=$(curl -s -XPOST localhost:18081/api/v1/agents -d '{"name":"tcp"}'  | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-HTTP_TOKEN=$HTTP_TOKEN TCP_TOKEN=$TCP_TOKEN docker compose -f compose.e2e.yml up -d agent-http agent-tcp
-
-# HTTP tunnel:  docker compose -f compose.e2e.yml exec -T tester curl -s -H "Host: demo.localhost" http://server:8080/
-# TCP tunnel:   docker compose -f compose.e2e.yml exec -T tester curl -s http://server:10000/
-# isolation:    docker compose -f compose.e2e.yml exec -T tester curl -m5 http://echo:8080/   # must fail
-docker compose -f compose.e2e.yml down
-```
-
-The WebSocket upgrade path also has an in-process regression test: `go test ./internal/e2e -run WebSocket`.
+These are orchestrate-only methods: mishmesh would provision the provider's resources and traffic would flow over the provider. They are scaffolded behind the `method` field but need live provider API credentials, and they are not enabled in this build.
 
 ## Cluster mode (multiple identical pods)
 
-Run N identical `mishmesh-server` replicas behind a load balancer. Any pod can accept an agent and any
-pod can serve ingress for that agent: when the agent lives on another pod, the request is relayed pod to
-pod over an authenticated TCP link and spliced to the agent's tunnel. Only the `AgentConn` seam changes;
-routing, policy, quotas and metering are unchanged. When disabled it is not wired in.
+Run N identical `mishmesh-server` replicas behind a load balancer. Any pod can accept an agent, and any pod can serve ingress for that agent. When the agent is on another pod, the request is relayed pod to pod over an authenticated TCP link and spliced into the agent's tunnel. This covers HTTP, TCP, TLS passthrough, SSH, proxy and reach-in. Routing, policy, quotas and metering are unchanged. When cluster mode is off, it is not wired in at all.
 
-Requirements: `MISHMESH_CONN_BACKEND=redis` and a shared Postgres (`MISHMESH_DATA_BACKEND=postgres`).
-The server refuses to start in cluster mode with SQLite or the in-memory connection store.
+Requirements: `MISHMESH_CONN_BACKEND=redis` with `MISHMESH_REDIS_URL`, and a shared Postgres. The server refuses to start in cluster mode with SQLite, the in-memory connection store, or a missing relay setting.
 
 | Var | Purpose |
 | --- | --- |
 | `MISHMESH_CLUSTER_ENABLED` | turn cluster mode on (default `false`) |
 | `MISHMESH_NODE_ID` | unique pod identity (defaults to the hostname) |
-| `MISHMESH_RELAY_ADDR` | pod-to-pod relay listener (default `127.0.0.1:7443`; use `0.0.0.0:7443` in a container) |
-| `MISHMESH_RELAY_ADVERTISE` | `host:port` other pods dial to reach this pod (e.g. `$(POD_IP):7443`); required |
+| `MISHMESH_RELAY_ADDR` | pod-to-pod relay listener (default `127.0.0.1:7443`; `0.0.0.0:7443` in a container) |
+| `MISHMESH_RELAY_ADVERTISE` | `host:port` that other pods dial to reach this pod (e.g. `$(POD_IP):7443`); required |
 | `MISHMESH_CLUSTER_SECRET` | shared HMAC key for the relay, at least 32 characters; required |
 
 How it works:
 
-- Each agent session is owned by one pod, recorded in Redis (`mm:agent:{id}`) with a TTL that the owner
-  refreshes (ttl/3) and reclaims if it lapses. Removal is compare-and-delete so a stale pod cannot evict a
-  newer owner.
-- Resolving an endpoint tries the local pod first, then Redis, then opens a relay stream to the owner. The
-  relay header is `{agent_id, endpoint_id, kind, meta, ts, mac}`, HMAC-SHA256 signed, checked with a
-  constant-time compare, a +/-60s skew window and a size cap. The owner replies with a status byte
-  (ok / not-here / error) and then splices bytes.
-- An agent reconnecting to a different pod kicks the stale session cluster-wide over Redis pub/sub
-  (`mm:kick`). Gateway cleanup on the stale pod does not delete endpoints that the new owner still holds.
-- TCP: every pod pre-binds the whole `TCP_PORT_MIN..TCP_PORT_MAX` range and ports are claimed cluster-wide
-  in Redis (`SET mm:port:{p} {endpointID} NX`), so a public TCP port works on any pod. Size the range
-  with the replica count in mind, since each pod holds every port in it.
-- Shutdown: on SIGTERM the pod flips `/readyz` to 503 (so the load balancer stops sending traffic), drains,
-  then closes listeners within a bounded time (about 10s). `/healthz` stays 200. Agents reconnect with
-  jittered exponential backoff, so a rolling restart does not stampede the survivors.
+- Each agent session is owned by one pod, recorded in Redis (`mm:agent:{id}`) with a TTL that the owner refreshes (every ttl/3) and reclaims if it lapses. Removal is compare-and-delete, so a stale pod cannot evict a newer owner.
+- To resolve an endpoint, a pod tries itself first, then Redis, then opens a relay stream to the owner. The relay header is `{agent_id, endpoint_id, kind, meta, ts, mac}`. It is HMAC-SHA256 signed and checked with a constant-time compare, a ±60 s skew window and a size cap. The owner replies with a status byte (ok, not-here or error) and then splices bytes.
+- When an agent reconnects to a different pod, the stale session is kicked cluster-wide over Redis pub/sub (`mm:kick`). Cleanup on the stale pod does not delete endpoints that the new owner still holds.
+- TCP: every pod pre-binds the whole `TCP_PORT_MIN..TCP_PORT_MAX` range, and ports are claimed cluster-wide in Redis (`SET mm:port:{p} {endpointID} NX`), so a public TCP port works on any pod. Size the range with the replica count in mind, because each pod holds every port in it.
+- Rate-limit buckets and the login throttle live in Redis too, so limits hold across pods.
+- Shutdown: on SIGTERM the pod flips `/readyz` to 503 so the load balancer stops sending it traffic. It then drains and closes listeners within a bounded time (about 10 s for servers plus 5 s for the cluster). `/healthz` stays 200. Agents reconnect with jittered exponential backoff, so a rolling restart does not stampede the surviving pods.
 
-Security: the relay port must only be reachable by other pods (private network or NetworkPolicy). The HMAC
-secret authenticates callers but the link is not encrypted; put it on a trusted network or a mesh.
+Security: only other pods should be able to reach the relay port (a private network or NetworkPolicy). The HMAC secret authenticates callers, but the link is **not encrypted**. Keep it on a trusted network or a service mesh with mTLS.
 
-Try it locally with Docker (everything bound to 127.0.0.1):
+Try it locally (everything bound to 127.0.0.1):
 
 ```bash
 cd deploy
@@ -240,10 +282,32 @@ curl http://127.0.0.1:29000/                             # TCP via B
 docker compose -p mishmesh-cluster -f compose.cluster.yml down -v
 ```
 
-The demo compose uses a throwaway `MISHMESH_CLUSTER_SECRET` and disables API auth; change both for real use.
+The demo compose uses a throwaway `MISHMESH_CLUSTER_SECRET` and disables API auth. Change both for real use. On Kubernetes, `cluster.enabled=true` in the Helm chart wires all of this, including the pod IP and a NetworkPolicy for the relay port.
 
-## Notes
+## Live network e2e (isolated Docker networks)
 
-- Persist `/data` (SQLite + ACME cache) on a volume.
-- The control/API port (`8081`) is the agent connect + management + UI surface — restrict it or front it with TLS.
-- Multi-node: use cluster mode above. Without it, the `redis` backend only shares per-org usage/presence and an agent is reachable only through the pod it is connected to.
+`deploy/compose.e2e.yml` proves real tunnels across isolated networks. An `internal` `private` network holds the backend (`echo`) and the agents, with no route to the host or to `edge`. The `edge` network holds the server and a `tester`. Traffic reaches the private backend **only** through the tunnel. Host ports are bound to 127.0.0.1 and API auth is disabled for the test.
+
+```bash
+cd deploy
+docker compose -f compose.e2e.yml up -d --build server echo tester
+HTTP_TOKEN=$(curl -s -XPOST 127.0.0.1:18081/api/v1/agents -d '{"name":"http"}' | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+TCP_TOKEN=$(curl -s -XPOST 127.0.0.1:18081/api/v1/agents -d '{"name":"tcp"}'  | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+HTTP_TOKEN=$HTTP_TOKEN TCP_TOKEN=$TCP_TOKEN docker compose -f compose.e2e.yml up -d agent-http agent-tcp
+
+docker compose -f compose.e2e.yml exec -T tester curl -s -H "Host: demo.localhost" http://server:8080/   # HTTP tunnel
+docker compose -f compose.e2e.yml exec -T tester curl -s http://server:10000/                            # TCP tunnel
+docker compose -f compose.e2e.yml exec -T tester curl -m5 http://echo:8080/                              # must fail
+docker compose -f compose.e2e.yml down
+```
+
+HTTP and TCP use two agents because each agent identity holds its own set of tunnels. The WebSocket upgrade path also has an in-process regression test: `go test ./internal/e2e -run WebSocket`.
+
+`compose.ssh.yml` (clientless SSH) and `compose.perf.yml` (throughput) follow the same pattern on ports 38080/38081/2222 and 28080/28081/20000-20001, also bound to 127.0.0.1.
+
+## Operational notes
+
+- Back up Postgres. `/data` holds certificates, the ACME cache and the SSH host key, so keep it on a volume.
+- The control port (`8081`) serves agent connects, the API, the UI and metrics. Never publish it on all interfaces. Expose only `/_mishmesh/agent/connect` through TLS, and the UI behind TLS if you use it.
+- Single node: the in-memory connection store is enough. For several nodes, use cluster mode. Running several nodes with Redis but without cluster mode only shares usage and presence, and an agent is then reachable only through the node it is connected to.
+- On restart, the server removes ephemeral endpoints whose agent is not connected anywhere. Reserved endpoints stay and come back online when their agent reconnects.

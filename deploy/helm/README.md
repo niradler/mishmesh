@@ -21,6 +21,7 @@ Postgres is the data store in every shape. Redis and cluster mode are only neede
 | Connection store | memory | Redis (external) | Redis (external) |
 | Cluster mode / relay | off | on | on |
 | Auth (login) | off, API bearer token on | on (password, optional Google) | on + per-org quotas |
+| Signup (`MISHMESH_SIGNUP_MODE` via `extraEnv`) | n/a | `invite`: first user owns the org, the rest by invite | `org`: every signup gets its own org |
 | TLS | plain HTTP (enable as needed) | wildcard cert from a Secret | wildcard cert from a Secret |
 | PDB / topology spread / NetworkPolicy | off | on | on |
 | ServiceMonitor | off | off | on |
@@ -40,6 +41,8 @@ kubectl -n mishmesh get secret mishmesh -o jsonpath='{.data.api-auth-token}' | b
 ```
 
 To use your own Postgres instead, set `postgres.external.url` (or `postgres.external.existingSecret`); the built-in one is then turned off automatically.
+
+The web UI signs in with a session, not the API bearer token, so with login off it cannot call the API. To use the UI, add `--set auth.enabled=true --set 'extraEnv[0].name=MISHMESH_SIGNUP_MODE' --set 'extraEnv[0].value=invite'` and register the first account (it owns the default org, where the bootstrap agent lives).
 
 ### Company and SaaS
 
