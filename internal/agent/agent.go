@@ -234,11 +234,13 @@ func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 	defer stream.Close()
 	tgt, ok := a.resolveStreamTarget(init)
 	if !ok {
+		reportStreamFailure(stream, init, notServedReason(init))
 		return
 	}
 	local, err := dialTarget(tgt)
 	if err != nil {
 		a.log.Warn("dial local target failed", "target", tgt.addr, "err", err)
+		reportStreamFailure(stream, init, dialFailureReason(err))
 		return
 	}
 	defer local.Close()
