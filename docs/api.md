@@ -19,7 +19,7 @@ Roles: `owner` > `admin` > `member`. Writes to org/members/quota require `admin`
 | Method | Path | Body / Notes |
 |---|---|---|
 | POST | `/auth/register` | `{email, password, name, invite_token?}` → 201 me; only when `AUTH_PASSWORD_ENABLED`. Email is normalised and validated; rate limited per IP and per email (429). Signup mode `MISHMESH_SIGNUP_MODE`: `org` (default) creates a new org with the user as owner; `invite` lets only the first user self-register (owner of `org_default`), later registrations need an `invite_token` else 403. An `invite_token` (from `POST /members`) must match the registering email; invalid, wrong, expired or reused tokens give 403 and never grant membership. Sets cookie. |
-| POST | `/auth/login` | `{email, password}` → 200 me; sets cookie; rate limited per IP and per email (429). |
+| POST | `/auth/login` | `{email, password}` → 200 me; sets cookie; rate limited per IP and per email (429); counters are shared across nodes in cluster mode, and the client IP honours `MISHMESH_TRUSTED_PROXIES`. |
 | POST | `/auth/logout` | clears cookie → 204 |
 | GET | `/auth/me` | → `{id, email, name, active_org_id, role, memberships:[{org_id, org_name, role}]}` or 401 |
 | POST | `/auth/accept-invite` | session + `{invite_token}`; the token's email must equal the session user's email; adds the membership with the invited role → me |
