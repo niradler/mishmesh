@@ -90,7 +90,7 @@ func installConfig(configPath, user string) (*service.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve config path: %w", err)
 	}
-	if _, err := agent.LoadConfigFile(abs, os.LookupEnv); err != nil {
+	if _, err := agent.LoadConfigFile(abs, lenientLookup); err != nil {
 		return nil, err
 	}
 	execPath, err := os.Executable()

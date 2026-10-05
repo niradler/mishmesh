@@ -85,7 +85,48 @@ Server (env, prefix `MISHMESH_`):
 | `INGRESS_ENABLED` | `true` | enable public ingress |
 | `LOG_LEVEL` | `info` | slog level |
 
-Agent: `GATEWAY_URL` (default `ws://localhost:8081`), `TOKEN`, `LOG_LEVEL` — overridable by `--gateway` / `--token`.
+Agent: `GATEWAY_URL` (default `ws://localhost:8081`), `TOKEN`, `LOG_LEVEL`, `ALLOW` — overridable by the config file, then by `--gateway` / `--token` / `--allow`. The gateway URL may use `ws`, `wss`, `http` or `https` (`http` maps to `ws`, `https` to `wss`).
+
+## Agent usage
+
+One-shot tunnels (`http`, `tcp`, `tls`):
+
+```bash
+mishmesh-agent http 3000 --subdomain demo
+mishmesh-agent tcp 5432 --port 10050
+mishmesh-agent tls 8443 --subdomain api
+```
+
+Config file with many tunnels over one session (`mishmesh-agent start [names...] [--config path]`). With no names every tunnel starts; `start web db` starts just those. The file is searched at `./mishmesh.yml`, `~/.config/mishmesh/agent.yml`, `/etc/mishmesh/agent.yml`. See `deploy/examples/agent.yml`.
+
+```yaml
+gateway: wss://connect.example.com
+token: ${MISHMESH_TOKEN}
+tunnels:
+  web: {proto: http, addr: 3000, subdomain: app}
+  db:  {proto: tcp, addr: 5432}
+  api: {proto: tls, addr: 8443, domain: api.example.com}
+```
+
+`${VAR}` and `${VAR:-default}` are expanded; unknown keys and invalid tunnels are reported with line numbers. `mishmesh-agent validate --config path` checks a file without connecting.
+
+On connect the agent prints each tunnel, its public URL and endpoint id (plus the `/tunnel/{id}` path URL for http). If the gateway refuses a tunnel (subdomain taken, quota exceeded, tcp disabled, port in use, ingress disabled) the reason is printed and the agent exits non-zero. A rejected token exits with `token invalid or revoked` (401) or `agent disabled` (403) and is never retried; other connection failures retry with backoff.
+
+Run as a system service (systemd, launchd, Windows service):
+
+```bash
+mishmesh-agent service install --config /etc/mishmesh/agent.yml
+mishmesh-agent service start
+mishmesh-agent service status
+mishmesh-agent service stop
+mishmesh-agent service uninstall
+```
+
+The service does not inherit your shell environment, so put the token literally in the config file (and protect it with file permissions). `--dry-run` prints the service definition without installing.
+
+Server CLI: `mishmesh-server --help`; `mishmesh-server token create --org NAME --name AGENT [--dsn DSN]` creates the org when new and reuses it by name otherwise.
+
+On startup the server removes ephemeral endpoints whose agent has no live session. In cluster mode only endpoints whose agent is not owned by any node are removed.
 
 ## Development
 

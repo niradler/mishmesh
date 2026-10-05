@@ -56,6 +56,13 @@ func buildStartOptions(configPath, gateway, token, allow string, names []string)
 	return opts, nil
 }
 
+func lenientLookup(name string) (string, bool) {
+	if v, ok := os.LookupEnv(name); ok {
+		return v, true
+	}
+	return "unset", true
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if v != "" {
@@ -92,7 +99,7 @@ func validateCmd(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	file, err := agent.LoadConfigFile(path, os.LookupEnv)
+	file, err := agent.LoadConfigFile(path, lenientLookup)
 	if err != nil {
 		return err
 	}
