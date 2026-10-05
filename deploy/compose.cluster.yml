@@ -1,0 +1,103 @@
+name: mishmesh-cluster
+
+x-server: &server
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  networks: [edge, private]
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  environment: &server-env
+    MISHMESH_BASE_DOMAIN: localhost:8080
+    MISHMESH_PUBLIC_SCHEME: http
+    MISHMESH_API_AUTH_DISABLED: "true"
+    MISHMESH_DATA_BACKEND: postgres
+    MISHMESH_DATA_DSN: postgres://mishmesh:mishmesh@postgres:5432/mishmesh?sslmode=disable
+    MISHMESH_CONN_BACKEND: redis
+    MISHMESH_REDIS_URL: redis://redis:6379
+    MISHMESH_CLUSTER_ENABLED: "true"
+    MISHMESH_CLUSTER_SECRET: cluster-demo-secret-change-me-0123456789
+    MISHMESH_RELAY_ADDR: 0.0.0.0:7443
+    MISHMESH_TCP_PORT_MIN: "10000"
+    MISHMESH_TCP_PORT_MAX: "10002"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    networks: [private]
+    environment:
+      POSTGRES_USER: mishmesh
+      POSTGRES_PASSWORD: mishmesh
+      POSTGRES_DB: mishmesh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mishmesh -d mishmesh"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    networks: [private]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  server-a:
+    <<: *server
+    environment:
+      <<: *server-env
+      MISHMESH_NODE_ID: server-a
+      MISHMESH_RELAY_ADVERTISE: server-a:7443
+    ports:
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:18081:8081"
+      - "127.0.0.1:19000-19002:10000-10002"
+
+  server-b:
+    <<: *server
+    environment:
+      <<: *server-env
+      MISHMESH_NODE_ID: server-b
+      MISHMESH_RELAY_ADVERTISE: server-b:7443
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      server-a:
+        condition: service_started
+    ports:
+      - "127.0.0.1:28080:8080"
+      - "127.0.0.1:28081:8081"
+      - "127.0.0.1:29000-29002:10000-10002"
+
+  echo:
+    image: jmalloc/echo-server:latest
+    networks: [private]
+    environment:
+      PORT: "8080"
+
+  agent-http:
+    build:
+      context: ..
+      dockerfile: Dockerfile.agent
+    networks: [private]
+    command: ["http", "echo:8080", "--subdomain", "demo", "--gateway", "ws://server-a:8081", "--token", "${HTTP_TOKEN}"]
+    depends_on: [server-a, echo]
+
+  agent-tcp:
+    build:
+      context: ..
+      dockerfile: Dockerfile.agent
+    networks: [private]
+    command: ["tcp", "echo:8080", "--port", "10000", "--gateway", "ws://server-a:8081", "--token", "${TCP_TOKEN}"]
+    depends_on: [server-a, echo]
+
+networks:
+  edge: {}
+  private: {}

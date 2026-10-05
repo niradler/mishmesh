@@ -184,8 +184,65 @@ docker compose -f compose.e2e.yml down
 
 The WebSocket upgrade path also has an in-process regression test: `go test ./internal/e2e -run WebSocket`.
 
+## Cluster mode (multiple identical pods)
+
+Run N identical `mishmesh-server` replicas behind a load balancer. Any pod can accept an agent and any
+pod can serve ingress for that agent: when the agent lives on another pod, the request is relayed pod to
+pod over an authenticated TCP link and spliced to the agent's tunnel. Only the `AgentConn` seam changes;
+routing, policy, quotas and metering are unchanged. When disabled it is not wired in.
+
+Requirements: `MISHMESH_CONN_BACKEND=redis` and a shared Postgres (`MISHMESH_DATA_BACKEND=postgres`).
+The server refuses to start in cluster mode with SQLite or the in-memory connection store.
+
+| Var | Purpose |
+| --- | --- |
+| `MISHMESH_CLUSTER_ENABLED` | turn cluster mode on (default `false`) |
+| `MISHMESH_NODE_ID` | unique pod identity (defaults to the hostname) |
+| `MISHMESH_RELAY_ADDR` | pod-to-pod relay listener (default `127.0.0.1:7443`; use `0.0.0.0:7443` in a container) |
+| `MISHMESH_RELAY_ADVERTISE` | `host:port` other pods dial to reach this pod (e.g. `$(POD_IP):7443`); required |
+| `MISHMESH_CLUSTER_SECRET` | shared HMAC key for the relay, at least 32 characters; required |
+
+How it works:
+
+- Each agent session is owned by one pod, recorded in Redis (`mm:agent:{id}`) with a TTL that the owner
+  refreshes (ttl/3) and reclaims if it lapses. Removal is compare-and-delete so a stale pod cannot evict a
+  newer owner.
+- Resolving an endpoint tries the local pod first, then Redis, then opens a relay stream to the owner. The
+  relay header is `{agent_id, endpoint_id, kind, meta, ts, mac}`, HMAC-SHA256 signed, checked with a
+  constant-time compare, a +/-60s skew window and a size cap. The owner replies with a status byte
+  (ok / not-here / error) and then splices bytes.
+- An agent reconnecting to a different pod kicks the stale session cluster-wide over Redis pub/sub
+  (`mm:kick`). Gateway cleanup on the stale pod does not delete endpoints that the new owner still holds.
+- TCP: every pod pre-binds the whole `TCP_PORT_MIN..TCP_PORT_MAX` range and ports are claimed cluster-wide
+  in Redis (`SET mm:port:{p} {endpointID} NX`), so a public TCP port works on any pod. Size the range
+  with the replica count in mind, since each pod holds every port in it.
+- Shutdown: on SIGTERM the pod flips `/readyz` to 503 (so the load balancer stops sending traffic), drains,
+  then closes listeners within a bounded time (about 10s). `/healthz` stays 200. Agents reconnect with
+  jittered exponential backoff, so a rolling restart does not stampede the survivors.
+
+Security: the relay port must only be reachable by other pods (private network or NetworkPolicy). The HMAC
+secret authenticates callers but the link is not encrypted; put it on a trusted network or a mesh.
+
+Try it locally with Docker (everything bound to 127.0.0.1):
+
+```bash
+cd deploy
+docker compose -p mishmesh-cluster -f compose.cluster.yml up -d --build postgres redis server-a server-b echo
+HTTP_TOKEN=$(curl -s -XPOST 127.0.0.1:18081/api/v1/agents -d '{"name":"http"}' | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+TCP_TOKEN=$(curl -s -XPOST 127.0.0.1:28081/api/v1/agents -d '{"name":"tcp"}'  | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+HTTP_TOKEN=$HTTP_TOKEN TCP_TOKEN=$TCP_TOKEN docker compose -p mishmesh-cluster -f compose.cluster.yml up -d agent-http agent-tcp
+
+curl -H "Host: demo.localhost" http://127.0.0.1:18080/   # replica A (owns the agent)
+curl -H "Host: demo.localhost" http://127.0.0.1:28080/   # replica B (relayed to A)
+curl http://127.0.0.1:19000/                             # TCP via A
+curl http://127.0.0.1:29000/                             # TCP via B
+docker compose -p mishmesh-cluster -f compose.cluster.yml down -v
+```
+
+The demo compose uses a throwaway `MISHMESH_CLUSTER_SECRET` and disables API auth; change both for real use.
+
 ## Notes
 
 - Persist `/data` (SQLite + ACME cache) on a volume.
 - The control/API port (`8081`) is the agent connect + management + UI surface — restrict it or front it with TLS.
-- Multi-node: select `postgres` + `redis` backends. Redis shares per-org usage/presence; cross-pod stream routing (forwarding ingress to the pod owning an agent) is not yet implemented, so route agents/ingress with session affinity per node for now.
+- Multi-node: use cluster mode above. Without it, the `redis` backend only shares per-org usage/presence and an agent is reachable only through the pod it is connected to.
