@@ -188,12 +188,9 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 		}
 	}
 	switch {
-	case raw.Tunnels.Kind == 0:
-		p.addf(root.Line, "tunnels: at least one tunnel is required")
+	case raw.Tunnels.Kind == 0 || raw.Tunnels.Tag == "!!null":
 	case raw.Tunnels.Kind != yaml.MappingNode:
 		p.addf(raw.Tunnels.Line, "tunnels must be a mapping of name to tunnel definition")
-	case len(raw.Tunnels.Content) == 0:
-		p.addf(raw.Tunnels.Line, "tunnels: at least one tunnel is required")
 	default:
 		cfg.Tunnels = p.parseTunnels(&raw.Tunnels)
 	}

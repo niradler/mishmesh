@@ -122,6 +122,29 @@ func TestEnvExpansion(t *testing.T) {
 	}
 }
 
+func TestParseConfigReachInOnly(t *testing.T) {
+	for name, src := range map[string]string{
+		"no tunnels key":  "gateway: ws://x:1\ntoken: t",
+		"empty mapping":   "tunnels: {}",
+		"null tunnels":    "tunnels:",
+		"allow and empty": "allow: [ \"10.0.0.0/8:443\" ]\ntunnels: {}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := ParseConfig("t.yml", []byte(src), mapLookup(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			specs, err := cfg.Specs(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(specs) != 0 {
+				t.Fatalf("specs = %v", specs)
+			}
+		})
+	}
+}
+
 func TestParseConfigValidation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -130,8 +153,6 @@ func TestParseConfigValidation(t *testing.T) {
 	}{
 		{name: "not yaml", yaml: "tunnels: [", want: []string{"cannot parse YAML"}},
 		{name: "top level list", yaml: "- a", want: []string{"top level must be a mapping"}},
-		{name: "no tunnels", yaml: "gateway: ws://x:1", want: []string{"at least one tunnel is required"}},
-		{name: "empty tunnels", yaml: "tunnels: {}", want: []string{"at least one tunnel is required"}},
 		{name: "tunnels as list", yaml: "tunnels: [a]", want: []string{"tunnels must be a mapping"}},
 		{name: "bad gateway scheme", yaml: "gateway: ftp://x\ntunnels:\n  a: {proto: tcp, addr: 1}", want: []string{"unsupported scheme"}},
 		{name: "unknown root field", yaml: "gatway: ws://x\ntunnels:\n  a: {proto: tcp, addr: 1}", want: []string{`unknown field "gatway"`}},

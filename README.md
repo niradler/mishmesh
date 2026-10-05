@@ -233,6 +233,8 @@ tunnels:
 
 Tunnel keys: `proto` (`http`, `tcp`, `tls`), `addr`, `subdomain`, `domain`, `port`, `reserved`, `target_https`, `insecure`, `policy` (the [endpoint policy](#endpoint-policy) object). `${VAR}` and `${VAR:-default}` are expanded. Unknown keys and invalid tunnels are reported with line numbers. To check a file without connecting, run `mishmesh-agent validate --config path`.
 
+`tunnels:` is optional. A config with `gateway`, `token` and `allow` only starts a reach-in-only agent.
+
 On connect the agent prints each tunnel's public URL and endpoint id. If the gateway refuses a tunnel (subdomain taken, quota exceeded, port in use, kind disabled on the server), the agent prints the reason and exits non-zero. A rejected token exits immediately with `token invalid or revoked` (401) or `agent disabled` (403). Any other connection failure is retried with jittered exponential backoff.
 
 ### Run as a service
@@ -276,7 +278,7 @@ Upgrade: mishmesh-stream
 
 Optional query parameters: `tls=true` (dial the target over TLS) and `insecure=true`. The caller needs write access to agents in the agent's org, and an agent in another org returns 404. If the agent cannot dial the target, HTTP reach-in returns 502 with the agent's reason. Full contract: [docs/api.md](docs/api.md#reach-in-data-plane).
 
-The agent must be connected to be reachable, and it currently needs at least one tunnel in its config to connect (see [Status and roadmap](#status-and-roadmap)).
+The agent must be connected to be reachable. A reach-in-only gateway needs no tunnels: leave `tunnels:` out (or empty) and `mishmesh-agent start` connects, prints no URLs and just serves reach-in streams. This also works against a server with `MISHMESH_INGRESS_ENABLED=false`.
 
 ## Endpoint policy
 
@@ -420,7 +422,6 @@ The ship-blocking gaps from the productionization pass are closed. Known limitat
 
 - No published images or chart repository yet; build them from this repo.
 - HTTP reach-in buffers the response (8 MB cap). Use the stream route for large or long transfers.
-- An agent needs at least one tunnel to connect, and the server rejects every tunnel when `INGRESS_ENABLED=false`. Until this is fixed, a reach-in-only agent cannot stay connected to an ingress-less server.
 - ACME runs on a single pod only. Clusters use a wildcard certificate Secret.
 - TCP and TLS-passthrough endpoints have no rate limiting and no in-flight bandwidth metering (HTTP has both).
 - Custom domains are not re-verified periodically.
