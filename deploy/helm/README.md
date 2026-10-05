@@ -20,8 +20,8 @@ Postgres is the data store in every shape. Redis and cluster mode are only neede
 | Postgres | built-in single-instance StatefulSet (`postgres:16-alpine`, PVC) | external (`existingSecret`) | external (`existingSecret`) |
 | Connection store | memory | Redis (external) | Redis (external) |
 | Cluster mode / relay | off | on | on |
-| Auth (login) | off, API bearer token on | on (password, optional Google) | on + per-org quotas |
-| Signup (`MISHMESH_SIGNUP_MODE` via `extraEnv`) | n/a | `invite`: first user owns the org, the rest by invite | `org`: every signup gets its own org |
+| Auth (login) | on (password), API bearer token on | on (password, optional Google) | on + per-org quotas |
+| Signup (`auth.signupMode`) | `invite`: first user owns the org, the rest by invite | `invite`: first user owns the org, the rest by invite | `org`: every signup gets its own org |
 | TLS | plain HTTP (enable as needed) | wildcard cert from a Secret | wildcard cert from a Secret |
 | PDB / topology spread / NetworkPolicy | off | on | on |
 | ServiceMonitor | off | off | on |
@@ -42,7 +42,7 @@ kubectl -n mishmesh get secret mishmesh -o jsonpath='{.data.api-auth-token}' | b
 
 To use your own Postgres instead, set `postgres.external.url` (or `postgres.external.existingSecret`); the built-in one is then turned off automatically.
 
-The web UI signs in with a session, not the API bearer token, so with login off it cannot call the API. To use the UI, add `--set auth.enabled=true --set 'extraEnv[0].name=MISHMESH_SIGNUP_MODE' --set 'extraEnv[0].value=invite'` and register the first account (it owns the default org, where the bootstrap agent lives).
+The web UI signs in with a session, not the API bearer token, so the homelab defaults turn login on (`auth.enabled=true`, `auth.passwordEnabled=true`) with `auth.signupMode=invite`. Register the first account right after install (through `kubectl port-forward svc/<release>-api 8081`): in invite mode it becomes the owner of the default org, where the bootstrap agent lives, and later accounts need an invite. The API bearer token stays on for automation. Set `auth.enabled=false` for token-only access.
 
 ### Company and SaaS
 
@@ -156,6 +156,7 @@ All generated values live in one Secret `<release>` (annotated `helm.sh/resource
 | `cluster-secret` | `MISHMESH_CLUSTER_SECRET` | `cluster.enabled` |
 | `bootstrap-token` | `MISHMESH_BOOTSTRAP_TOKEN` | `secrets.generateBootstrapToken` or `secrets.bootstrapToken` |
 | `google-client-secret` | `MISHMESH_GOOGLE_CLIENT_SECRET` | `secrets.googleClientSecret` set |
+| `metrics-token` | `MISHMESH_METRICS_TOKEN` | `secrets.metricsToken` set (protects `/metrics`) |
 | `data-dsn` | `MISHMESH_DATA_DSN` | `postgres.external.url` set |
 | `redis-url` | `MISHMESH_REDIS_URL` | `connStore.redis.url` set |
 | `ssh-host-key` | `MISHMESH_SSH_HOST_KEY_FILE` (mounted) | SSH enabled and `ssh.hostKey.generate` (ed25519, shared by all pods) |
@@ -212,5 +213,9 @@ helm template t deploy/helm/mishmesh-agent --set token=x
 | `connStore.backend` | `memory` | `redis` required for cluster mode |
 | `cluster.enabled` / `cluster.relayPort` | `false` / 7443 | required for replicas > 1 or HPA |
 | `auth.*`, `quotas.*`, `features.*` | | map 1:1 to `MISHMESH_*` env |
+| `auth.signupMode` | `invite` | `invite` or `org` (`MISHMESH_SIGNUP_MODE`); `values-saas.yaml` sets `org` |
+| `auth.domainVerification` | `""` | `"true"` or `"false"` forces DNS TXT custom-domain verification; empty keeps the server default (on when `signupMode=org`) |
+| `trustedProxies` | `[]` | CIDRs or IPs of proxies whose `X-Forwarded-For` is trusted (`MISHMESH_TRUSTED_PROXIES`, comma-joined) |
+| `secrets.metricsToken` | `""` | bearer token required on `/metrics` (`MISHMESH_METRICS_TOKEN`); with `secrets.existingSecret`, store it under key `metrics-token` |
 | `drain.preStopSleepSeconds` / `terminationGracePeriodSeconds` | 10 / 45 | |
 | `extraEnv` | `[]` | any other `MISHMESH_*` variable |

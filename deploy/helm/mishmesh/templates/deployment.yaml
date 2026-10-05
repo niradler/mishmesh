@@ -148,6 +148,16 @@ spec:
               value: {{ $v.auth.enabled | quote }}
             - name: MISHMESH_AUTH_PASSWORD_ENABLED
               value: {{ $v.auth.passwordEnabled | quote }}
+            - name: MISHMESH_SIGNUP_MODE
+              value: {{ $v.auth.signupMode | quote }}
+            {{- if ne (toString $v.auth.domainVerification) "" }}
+            - name: MISHMESH_DOMAIN_VERIFICATION
+              value: {{ $v.auth.domainVerification | quote }}
+            {{- end }}
+            {{- with $v.trustedProxies }}
+            - name: MISHMESH_TRUSTED_PROXIES
+              value: {{ join "," . | quote }}
+            {{- end }}
             - name: MISHMESH_SESSION_TTL_HOURS
               value: {{ $v.auth.sessionTTLHours | quote }}
             - name: MISHMESH_OIDC_ISSUER
@@ -183,6 +193,14 @@ spec:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: api-auth-token
+            {{- end }}
+            {{- if or $v.secrets.metricsToken $v.secrets.existingSecret }}
+            - name: MISHMESH_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: metrics-token
+                  optional: true
             {{- end }}
             - name: MISHMESH_ENDPOINT_OIDC_KEY
               valueFrom:

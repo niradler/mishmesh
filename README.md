@@ -80,8 +80,8 @@ One image and one Helm chart cover all three shapes. Postgres is the data store 
 
 | | Homelab | Company / on-prem | SaaS |
 | --- | --- | --- | --- |
-| Who signs up | nobody, API token only (login optional) | invited colleagues only | anyone, each signup gets its own org |
-| `MISHMESH_SIGNUP_MODE` | n/a (or `invite` if you enable login) | `invite` | `org` (default) |
+| Who signs up | you (first registered user owns the org), plus API token | invited colleagues only | anyone, each signup gets its own org |
+| `MISHMESH_SIGNUP_MODE` | `invite` | `invite` | `org` (default) |
 | Custom domain verification | off | off (on if you want it) | on (DNS TXT) |
 | Quotas | none | optional | per-org defaults |
 | Data / live state | Postgres / memory | Postgres / memory, or Redis with replicas | Postgres / Redis |
@@ -102,7 +102,7 @@ Chart details (services, secrets, DNS, TLS options, every value) are in [deploy/
 
 ### Homelab
 
-One server pod, a bundled single-instance Postgres, the in-memory connection store, and API access by bearer token.
+One server pod, a bundled single-instance Postgres, the in-memory connection store, password login with invite signup, and API access by bearer token.
 
 ```bash
 helm upgrade --install mishmesh deploy/helm/mishmesh -n mishmesh --create-namespace \
@@ -115,14 +115,7 @@ kubectl -n mishmesh get secret mishmesh -o jsonpath='{.data.bootstrap-token}' | 
 
 Point `tunnel.home.example.com` and `*.tunnel.home.example.com` at the `mishmesh-public` LoadBalancer. The control API stays on a ClusterIP service (`kubectl -n mishmesh port-forward svc/mishmesh-api 8081`); call it with `Authorization: Bearer <api-auth-token>`.
 
-The web UI uses login sessions, not the bearer token. To use it, enable login and invite mode, so the first account you register owns the default org (where the bootstrap agent lives):
-
-```bash
---set auth.enabled=true \
---set 'extraEnv[0].name=MISHMESH_SIGNUP_MODE' --set 'extraEnv[0].value=invite'
-```
-
-Then register right away through the port-forward. In invite mode the first registration becomes the owner, and later ones need an invite.
+The web UI works out of the box: password login is on and signup mode is `invite` (`auth.signupMode`). Register right away through the port-forward. In invite mode the first registration becomes the owner of the default org (where the bootstrap agent lives), and later ones need an invite. The bearer token stays available for automation. Set `auth.enabled=false` for token-only access.
 
 Without Kubernetes: the root `docker-compose.yml` is a working single-host template. Before using it beyond your own machine, replace `MISHMESH_API_AUTH_DISABLED` with `MISHMESH_API_AUTH_TOKEN`, change the Postgres password and the bootstrap token, and follow [deploy/README.md](deploy/README.md) for DNS and TLS.
 

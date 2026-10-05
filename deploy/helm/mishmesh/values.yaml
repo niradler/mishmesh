@@ -22,12 +22,16 @@ features:
   oidcAllowPrivateIssuers: false
 
 auth:
-  enabled: false
+  enabled: true
   passwordEnabled: true
+  signupMode: invite
+  domainVerification: ""
   sessionTTLHours: 168
   oidcIssuer: https://accounts.google.com
   googleClientID: ""
   oidcRedirectURL: ""
+
+trustedProxies: []
 
 apiAuth:
   disabled: false
@@ -117,6 +121,7 @@ secrets:
   bootstrapToken: ""
   generateBootstrapToken: true
   googleClientSecret: ""
+  metricsToken: ""
 
 service:
   public:
