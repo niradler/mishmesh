@@ -73,7 +73,24 @@ func Open(dsn string, pool PoolConfig) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+const migrationLockKey int64 = 0x6d6973686d657368
+
 func (s *Store) migrate(ctx context.Context) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres migrate: acquire connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return fmt.Errorf("postgres migrate: advisory lock: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrationLockKey)
+	}()
+	return runMigrations(ctx, conn)
+}
+
+func runMigrations(ctx context.Context, conn *sql.Conn) error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS orgs (
   id         TEXT PRIMARY KEY,
@@ -181,7 +198,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at BIGINT NOT NULL
 );
 `
-	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+	if _, err := conn.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("postgres migrate: %w", err)
 	}
 	for _, alter := range []string{
@@ -189,7 +206,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
 		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS policy TEXT`,
 		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS method TEXT`,
 	} {
-		if _, err := s.db.ExecContext(ctx, alter); err != nil {
+		if _, err := conn.ExecContext(ctx, alter); err != nil {
 			return fmt.Errorf("postgres migrate alter: %w", err)
 		}
 	}
