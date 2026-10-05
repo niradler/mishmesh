@@ -288,7 +288,7 @@ Every endpoint carries an optional policy, set with `POST`/`PATCH /api/v1/endpoi
 | --- | --- |
 | `request_headers_add` / `_remove`, `response_headers_add` / `_remove` | header rewrites |
 | `host_header`, `strip_path_prefix`, `add_path_prefix` | upstream Host and path rewrites |
-| `basic_auth_user` + `basic_auth_password` | HTTP basic auth. The password is write-only through the API and stored as a bcrypt hash |
+| `basic_auth_user` + `basic_auth_password` | HTTP basic auth. The password is write-only through the API and stored as a bcrypt hash. In the agent config, `basic_auth_password` is bcrypt-hashed by the agent before it connects, so the plaintext never leaves the host; use `${VAR}` to keep it out of the file |
 | `ip_allow` / `ip_deny` | CIDR lists. A request matching deny, or missing allow, gets 403 |
 | `force_https` | redirect http to https |
 | `max_body_bytes`, `compression` | request size cap and response compression |

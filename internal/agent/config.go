@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -291,7 +293,37 @@ func isDigits(s string) bool {
 	return true
 }
 
+func hashBasicAuthPassword(m map[string]any) (map[string]any, error) {
+	v, ok := m["basic_auth_password"]
+	if !ok {
+		return m, nil
+	}
+	password, isString := v.(string)
+	if !isString || password == "" {
+		return nil, errors.New("basic_auth_password must be a non-empty string")
+	}
+	if _, dup := m["basic_auth_hash"]; dup {
+		return nil, errors.New("basic_auth_password and basic_auth_hash are mutually exclusive")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, fmt.Errorf("hash basic_auth_password: %w", err)
+	}
+	out := make(map[string]any, len(m))
+	for k, val := range m {
+		if k != "basic_auth_password" {
+			out[k] = val
+		}
+	}
+	out["basic_auth_hash"] = string(hash)
+	return out, nil
+}
+
 func encodePolicy(m map[string]any) (json.RawMessage, error) {
+	m, err := hashBasicAuthPassword(m)
+	if err != nil {
+		return nil, err
+	}
 	raw, err := json.Marshal(m)
 	if err != nil {
 		return nil, err

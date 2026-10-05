@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
@@ -140,6 +143,48 @@ func TestParseConfigReachInOnly(t *testing.T) {
 			}
 			if len(specs) != 0 {
 				t.Fatalf("specs = %v", specs)
+			}
+		})
+	}
+}
+
+func TestParseConfigBasicAuthPassword(t *testing.T) {
+	src := "tunnels:\n  a:\n    proto: http\n    addr: 1\n    policy:\n      basic_auth_user: alice\n      basic_auth_password: ${APP_PW}\n"
+	cfg, err := ParseConfig("t.yml", []byte(src), mapLookup(map[string]string{"APP_PW": "s3cret"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs, err := cfg.Specs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pol store.EndpointPolicy
+	if err := json.Unmarshal(specs[0].Policy, &pol); err != nil {
+		t.Fatal(err)
+	}
+	if pol.BasicAuthUser != "alice" {
+		t.Fatalf("user = %q", pol.BasicAuthUser)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(pol.BasicAuthHash), []byte("s3cret")) != nil {
+		t.Fatalf("hash does not match password: %q", pol.BasicAuthHash)
+	}
+	if strings.Contains(string(specs[0].Policy), "s3cret") || strings.Contains(string(specs[0].Policy), "basic_auth_password") {
+		t.Fatalf("plaintext password leaked into policy: %s", specs[0].Policy)
+	}
+}
+
+func TestParseConfigBasicAuthPasswordInvalid(t *testing.T) {
+	tests := map[string]string{
+		"empty":    "basic_auth_password: \"\"",
+		"not text": "basic_auth_password: [1]",
+		"both":     "basic_auth_password: x, basic_auth_hash: y",
+	}
+	for name, pol := range tests {
+		t.Run(name, func(t *testing.T) {
+			src := "tunnels:\n  a: {proto: http, addr: 1, policy: {" + pol + "}}"
+			_, err := ParseConfig("t.yml", []byte(src), mapLookup(nil))
+			if err == nil || !strings.Contains(err.Error(), "basic_auth_password") {
+				t.Fatalf("err = %v", err)
 			}
 		})
 	}
