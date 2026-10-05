@@ -14,6 +14,7 @@ import type {
   Endpoint,
   EndpointPolicy,
   Me,
+  Invite,
   Member,
   Org,
   Policy,
@@ -80,7 +81,7 @@ export function useLogin() {
 export function useRegister() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { email: string; password: string; name: string }) =>
+    mutationFn: (vars: { email: string; password: string; name: string; invite_token?: string }) =>
       api.post<Me>("/auth/register", vars),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.me }),
   });
@@ -239,8 +240,7 @@ export function useMembers(orgId?: string) {
 export function useAddMember(orgId?: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { email: string; role: Role }) =>
-      api.post<Member>("/members", { ...vars, org_id: orgId }),
+    mutationFn: (vars: { email: string; role: Role }) => api.post<Invite>("/members", vars),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.members(orgId) }),
   });
 }

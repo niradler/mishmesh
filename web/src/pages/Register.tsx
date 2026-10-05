@@ -10,11 +10,12 @@ export function Register({ authConfig, onBack }: { authConfig: AuthConfig; onBac
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteToken, setInviteToken] = useState(() => new URLSearchParams(window.location.search).get("invite") ?? "");
   const register = useRegister();
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    register.mutate({ name, email, password }, { onSuccess: () => window.location.reload() });
+    register.mutate({ name, email, password, invite_token: inviteToken || undefined }, { onSuccess: () => window.location.reload() });
   };
 
   const errorMessage =
@@ -31,6 +32,17 @@ export function Register({ authConfig, onBack }: { authConfig: AuthConfig; onBac
           Registration is by invitation. Use the email address your administrator invited.
         </p>
       )}
+      <div className="space-y-1.5">
+        <Label htmlFor="reg-invite">Invite token</Label>
+        <Input
+          id="reg-invite"
+          autoComplete="off"
+          value={inviteToken}
+          onChange={(e) => setInviteToken(e.target.value.trim())}
+          placeholder={authConfig.signup_mode === "invite" ? "Required" : "Optional"}
+          required={authConfig.signup_mode === "invite"}
+        />
+      </div>
       <div className="space-y-1.5">
         <Label htmlFor="reg-name">Name</Label>
         <Input

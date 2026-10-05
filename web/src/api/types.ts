@@ -53,6 +53,17 @@ export interface Member {
   created_at: string;
 }
 
+export interface Invite {
+  id: string;
+  email: string;
+  role: Role;
+  invited_by: string;
+  created_at: string;
+  expires_at: string;
+  invite_token?: string;
+  invite_url?: string;
+}
+
 export interface Agent {
   id: string;
   org_id: string;

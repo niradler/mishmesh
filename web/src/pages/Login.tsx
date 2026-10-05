@@ -21,7 +21,9 @@ const GoogleIcon = () => (
 export function Login({ authConfig }: { authConfig: AuthConfig }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [mode, setMode] = useState<"login" | "register">(() =>
+    new URLSearchParams(window.location.search).has("invite") ? "register" : "login",
+  );
   const login = useLogin();
 
   const onSubmit = (e: FormEvent) => {

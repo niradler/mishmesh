@@ -18,10 +18,11 @@ Roles: `owner` > `admin` > `member`. Writes to org/members/quota require `admin`
 
 | Method | Path | Body / Notes |
 |---|---|---|
-| POST | `/auth/register` | `{email, password, name}` → 201 me; only when `AUTH_PASSWORD_ENABLED`. Email is normalised and validated; rate limited per IP and per email (429). Signup mode `MISHMESH_SIGNUP_MODE`: `org` (default) creates a new org with the user as owner; `invite` lets only the first user self-register (owner of `org_default`), later registrations need a prior invite via `POST /members` else 403. Sets cookie. |
+| POST | `/auth/register` | `{email, password, name, invite_token?}` → 201 me; only when `AUTH_PASSWORD_ENABLED`. Email is normalised and validated; rate limited per IP and per email (429). Signup mode `MISHMESH_SIGNUP_MODE`: `org` (default) creates a new org with the user as owner; `invite` lets only the first user self-register (owner of `org_default`), later registrations need an `invite_token` else 403. An `invite_token` (from `POST /members`) must match the registering email; invalid, wrong, expired or reused tokens give 403 and never grant membership. Sets cookie. |
 | POST | `/auth/login` | `{email, password}` → 200 me; sets cookie; rate limited per IP and per email (429). |
 | POST | `/auth/logout` | clears cookie → 204 |
 | GET | `/auth/me` | → `{id, email, name, active_org_id, role, memberships:[{org_id, org_name, role}]}` or 401 |
+| POST | `/auth/accept-invite` | session + `{invite_token}`; the token's email must equal the session user's email; adds the membership with the invited role → me |
 | POST | `/auth/switch-org` | `{org_id}` → me; changes the session's active org; 404 if not a member |
 | GET | `/auth/google/start` | 302 → Google consent (state cookie) |
 | GET | `/auth/google/callback` | `?code&state` → sets cookie, 302 → web UI |
@@ -77,7 +78,9 @@ are created implicitly by the clientless SSH remote-forward server (see deploy g
 | GET | `/orgs/{id}` | member only, else 404 |
 | POST | `/orgs` | `{name}` → creates org, caller becomes owner |
 | GET | `/members` | current org memberships → `[{user:{id,email,name}, role, created_at}]` |
-| POST | `/members` | admin+ `{email, role}` — add a user to the org; an unknown email becomes a pending invite that can register in either signup mode |
+| POST | `/members` | admin+ `{email, role}` → 201 `{id, email, role, invited_by, created_at, expires_at, invite_token, invite_url}`. Creates a single-use invite (7 day expiry); the raw token is returned once and only its SHA-256 is stored. The role may not exceed the caller's own (403). Nobody is added until the invite is redeemed via `/auth/register` or `/auth/accept-invite`, or by a Google login whose `email_verified` is true |
+| GET | `/invites` | admin+ pending invites (no tokens) |
+| DELETE | `/invites/{id}` | admin+ revoke → 204 |
 | PATCH | `/members/{user_id}` | admin+ `{role}` |
 | DELETE | `/members/{user_id}` | admin+ |
 

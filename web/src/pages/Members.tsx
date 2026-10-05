@@ -22,7 +22,7 @@ import { useSession } from "@/context/SessionContext";
 import { toast } from "@/hooks/use-toast";
 import { formatRelativeTime } from "@/lib/utils";
 import { ApiError } from "@/api/client";
-import type { Role } from "@/api/types";
+import type { Invite, Role } from "@/api/types";
 
 const ROLES: Role[] = ["owner", "admin", "member"];
 
@@ -35,31 +35,56 @@ function AddMemberDialog({ orgId }: { orgId?: string }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("member");
   const add = useAddMember(orgId);
+  const [created, setCreated] = useState<Invite | null>(null);
+  const link = created?.invite_url ? `${window.location.origin}${created.invite_url}` : "";
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
     add.mutate(
       { email: email.trim(), role },
       {
-        onSuccess: () => {
-          toast({ title: "Member added" });
-          setOpen(false);
+        onSuccess: (inv) => {
+          toast({ title: "Invite created" });
+          setCreated(inv);
           setEmail("");
         },
-        onError: (err) => toast({ variant: "destructive", title: "Add failed", description: errMsg(err) }),
+        onError: (err) => toast({ variant: "destructive", title: "Invite failed", description: errMsg(err) }),
       },
     );
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        setOpen(v);
+        if (!v) setCreated(null);
+      }}
+    >
       <Button onClick={() => setOpen(true)}>
-        <Plus className="h-4 w-4" /> Add member
+        <Plus className="h-4 w-4" /> Invite member
       </Button>
       <DialogContent>
+        {created ? (
+          <div className="space-y-4">
+            <DialogHeader>
+              <DialogTitle>Invite created</DialogTitle>
+              <DialogDescription>
+                Share this link with {created.email}. It is shown once, works once, and expires{" "}
+                {new Date(created.expires_at).toLocaleDateString()}.
+              </DialogDescription>
+            </DialogHeader>
+            <Input readOnly value={link} onFocus={(e) => e.currentTarget.select()} />
+            <DialogFooter>
+              <Button type="button" onClick={() => setOpen(false)}>
+                Done
+              </Button>
+            </DialogFooter>
+          </div>
+        ) : (
         <form onSubmit={onSubmit}>
           <DialogHeader>
-            <DialogTitle>Add member</DialogTitle>
+            <DialogTitle>Invite member</DialogTitle>
             <DialogDescription>Invite a user to this organization by email.</DialogDescription>
           </DialogHeader>
           <div className="my-4 space-y-4">
@@ -88,10 +113,11 @@ function AddMemberDialog({ orgId }: { orgId?: string }) {
               Cancel
             </Button>
             <Button type="submit" disabled={!email || add.isPending}>
-              {add.isPending ? "Adding…" : "Add"}
+              {add.isPending ? "Creating…" : "Create invite"}
             </Button>
           </DialogFooter>
         </form>
+        )}
       </DialogContent>
     </Dialog>
   );
