@@ -60,6 +60,9 @@ func (a *API) ensureOrg(ctx context.Context, orgID string) (*store.Org, error) {
 	}
 	org = &store.Org{ID: defaultOrgID, Name: "default", CreatedAt: time.Now()}
 	if err := a.data.CreateOrg(ctx, org); err != nil {
+		if existing, getErr := a.data.GetOrg(ctx, defaultOrgID); getErr == nil {
+			return existing, nil
+		}
 		return nil, err
 	}
 	a.applyDefaultQuota(ctx, org.ID)
