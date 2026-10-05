@@ -192,6 +192,10 @@ func serve() error {
 	log.Info("api listener", "addr", cfg.APIAddr)
 
 	if cfg.IngressEnabled {
+		trustedProxies, err := ingress.ParseTrustedProxies(cfg.TrustedProxies)
+		if err != nil {
+			return fmt.Errorf("trusted proxies: %w", err)
+		}
 		ing := ingress.New(ingress.Options{
 			Data:             data,
 			Conns:            conns,
@@ -201,6 +205,7 @@ func serve() error {
 			OIDCSignKey:      endpointOIDCKey(cfg),
 			CookieSecure:     cfg.PublicScheme == "https",
 			OIDCAllowPrivate: cfg.OIDCAllowPrivate,
+			TrustedProxies:   trustedProxies,
 		})
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg)

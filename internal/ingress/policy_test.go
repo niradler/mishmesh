@@ -48,15 +48,13 @@ func TestIsUpgrade(t *testing.T) {
 	}
 }
 
-func TestBuildOutboundRequestPathRewrite(t *testing.T) {
-	ep := &store.Endpoint{Policy: &store.EndpointPolicy{StripPathPrefix: "/api", AddPathPrefix: "/v2", HostHeader: "internal.local"}}
+func TestApplyOutboundPathRewrite(t *testing.T) {
+	ep := &store.Endpoint{Policy: &store.EndpointPolicy{StripPathPrefix: "/api", AddPathPrefix: "/v2"}}
 	r := httptest.NewRequest("GET", "http://demo.localhost/api/users", nil)
-	out := buildOutboundRequest(r, context.Background(), ep, "/api/users")
+	out := r.Clone(context.Background())
+	applyOutboundPath(out, ep, "/api/users")
 	if out.URL.Path != "/v2/users" {
 		t.Fatalf("path = %q want /v2/users", out.URL.Path)
-	}
-	if out.Host != "internal.local" {
-		t.Fatalf("host = %q want internal.local", out.Host)
 	}
 }
 
@@ -172,10 +170,11 @@ func TestProxyHTTPWithCompressionAndHeaders(t *testing.T) {
 		Compression:       true,
 	}}
 	ing := &Ingress{log: discardLogger(), conns: nopConns{}}
+	ing.proxy = ing.newProxy(0)
 	r := httptest.NewRequest("GET", "http://demo.localhost/", nil)
 	r.Header.Set("Accept-Encoding", "gzip")
 	w := httptest.NewRecorder()
-	ing.proxyHTTP(w, r, &fakeAgentConn{backend: backend}, ep, "/")
+	ing.proxyHTTP(w, r, &fakeAgentConn{backend: backend}, ep, "/", 0)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d", w.Code)
 	}

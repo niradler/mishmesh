@@ -130,7 +130,7 @@ func shouldCompress(ep *store.Endpoint, r *http.Request, resp *http.Response) bo
 	if ep == nil || ep.Policy == nil || !ep.Policy.Compression {
 		return false
 	}
-	if resp.Header.Get("Content-Encoding") != "" {
+	if resp.Header.Get("Content-Encoding") != "" || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified || r.Method == http.MethodHead {
 		return false
 	}
 	return strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip")

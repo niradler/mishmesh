@@ -68,6 +68,8 @@ type Server struct {
 	RelayAddr      string
 	RelayAdvertise string
 	ClusterSecret  string
+
+	TrustedProxies string
 }
 
 type Agent struct {
@@ -141,6 +143,8 @@ func LoadServer() Server {
 		RelayAddr:      env("RELAY_ADDR", "127.0.0.1:7443"),
 		RelayAdvertise: env("RELAY_ADVERTISE", ""),
 		ClusterSecret:  env("CLUSTER_SECRET", ""),
+
+		TrustedProxies: env("TRUSTED_PROXIES", ""),
 	}
 }
 
