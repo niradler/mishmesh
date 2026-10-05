@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
 type TLSPassthroughOptions struct {
@@ -95,11 +96,7 @@ func (t *TLSPassthrough) handle(client net.Conn) {
 	if _, err := stream.Write(hello); err != nil {
 		return
 	}
-	errc := make(chan error, 2)
-	var up, down int64
-	go func() { n, e := io.Copy(stream, client); up = n; errc <- e }()
-	go func() { n, e := io.Copy(client, stream); down = n; errc <- e }()
-	<-errc
+	up, down := tunnel.Splice(client, stream)
 	if ep.OrgID != "" {
 		t.conns.AddUsage(ep.OrgID, up+down+int64(len(hello)))
 	}

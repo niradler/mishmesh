@@ -243,10 +243,7 @@ func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 	}
 	defer local.Close()
 
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(local, stream); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(stream, local); done <- struct{}{} }()
-	<-done
+	tunnel.Splice(stream, local)
 }
 
 func dialTarget(tgt localTarget) (net.Conn, error) {

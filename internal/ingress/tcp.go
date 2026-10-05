@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"strconv"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
 type PortClaims interface {
@@ -170,11 +170,7 @@ func (t *TCP) handle(client net.Conn, endpointID string) {
 	}
 	defer stream.Close()
 
-	errc := make(chan error, 2)
-	var up, down int64
-	go func() { n, e := io.Copy(stream, client); up = n; errc <- e }()
-	go func() { n, e := io.Copy(client, stream); down = n; errc <- e }()
-	<-errc
+	up, down := tunnel.Splice(client, stream)
 	t.meterUsage(endpointID, up, down)
 }
 

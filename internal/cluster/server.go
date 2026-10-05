@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
 const (
@@ -156,20 +157,10 @@ func (s *Server) handle(conn net.Conn) {
 	if !writeStatus(conn, StatusOK) {
 		return
 	}
-	splice(conn, stream)
+	tunnel.Splice(conn, stream)
 }
 
 func writeStatus(w io.Writer, status byte) bool {
 	_, err := w.Write([]byte{status})
 	return err == nil
-}
-
-func splice(a, b net.Conn) {
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
-	<-done
-	_ = a.Close()
-	_ = b.Close()
-	<-done
 }
