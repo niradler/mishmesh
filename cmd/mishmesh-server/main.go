@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -46,16 +46,40 @@ func main() {
 		case "version", "-version", "--version":
 			fmt.Println("mishmesh-server", version)
 			return
+		case "help", "-h", "-help", "--help":
+			usage(os.Stdout)
+			return
 		case "serve":
 			args = args[1:]
 		}
 	}
-	if err := serve(args); err != nil {
+	if len(args) > 0 {
+		fmt.Fprintf(os.Stderr, "error: unknown command or flag %q\n\n", args[0])
+		usage(os.Stderr)
+		os.Exit(2)
+	}
+	if err := serve(); err != nil {
 		fail(err)
 	}
 }
 
-func serve(_ []string) error {
+func usage(w io.Writer) {
+	fmt.Fprint(w, `mishmesh-server - tunnel platform server
+
+usage:
+  mishmesh-server [serve]                        run the server (configured by MISHMESH_* env vars)
+  mishmesh-server token create [flags]           create an org (if new), an agent and a one-time token
+  mishmesh-server version                        print version
+  mishmesh-server help                           print this help
+
+token create flags:
+  --org NAME     org to create or reuse (default "default")
+  --name NAME    agent name (default "agent")
+  --dsn DSN      data store DSN (default $MISHMESH_DATA_DSN or mishmesh.db; postgres:// supported)
+`)
+}
+
+func serve() error {
 	cfg := config.LoadServer()
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -115,7 +139,13 @@ func serve(_ []string) error {
 	if tcpIngress != nil {
 		gwOpts.Ports = tcpIngress
 	}
+	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil)
 	gw := gateway.New(gwOpts)
+	if swept, err := gw.SweepOrphanedEphemeral(context.Background()); err != nil {
+		log.Warn("sweep of orphaned ephemeral endpoints failed", "err", err)
+	} else if swept > 0 {
+		log.Info("swept orphaned ephemeral endpoints", "count", swept)
+	}
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
@@ -395,50 +425,6 @@ func runServers(log *slog.Logger, servers []*http.Server, hooks shutdownHooks) e
 	return nil
 }
 
-func tokenCmd(args []string) error {
-	fs := flag.NewFlagSet("token", flag.ExitOnError)
-	dsn := fs.String("dsn", envOr("MISHMESH_DATA_DSN", "mishmesh.db"), "DataStore DSN")
-	orgName := fs.String("org", "default", "org name")
-	agentName := fs.String("name", "agent", "agent name")
-	_ = fs.Parse(args)
-
-	if len(fs.Args()) == 0 || fs.Arg(0) != "create" {
-		return fmt.Errorf("usage: mishmesh-server token create [--dsn x] [--org x] [--name x]")
-	}
-
-	data, err := sqlite.Open(*dsn)
-	if err != nil {
-		return err
-	}
-	defer data.Close()
-
-	ctx := context.Background()
-	now := time.Now()
-	org := &store.Org{ID: store.NewID("org"), Name: *orgName, CreatedAt: now}
-	if err := data.CreateOrg(ctx, org); err != nil {
-		return err
-	}
-	agent := &store.Agent{ID: store.NewID("ag"), OrgID: org.ID, Name: *agentName, Status: store.AgentActive, CreatedAt: now}
-	if err := data.CreateAgent(ctx, agent); err != nil {
-		return err
-	}
-	raw, hash, err := store.GenerateToken()
-	if err != nil {
-		return err
-	}
-	tok := &store.Token{ID: store.NewID("tok"), OrgID: org.ID, AgentID: agent.ID, Hash: hash, CreatedAt: now}
-	if err := data.CreateToken(ctx, tok); err != nil {
-		return err
-	}
-
-	fmt.Printf("org_id:   %s\n", org.ID)
-	fmt.Printf("agent_id: %s\n", agent.ID)
-	fmt.Printf("token:    %s\n", raw)
-	fmt.Println("\nrun the agent with:")
-	fmt.Printf("  MISHMESH_TOKEN=%s mishmesh-agent http 3000\n", raw)
-	return nil
-}
-
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(level)); err != nil {
@@ -469,4 +455,22 @@ func endpointOIDCKey(cfg config.Server) []byte {
 		return sum[:]
 	}
 	return nil
+}
+
+func unavailableKinds(cfg config.Server, tcpActive bool) map[string]string {
+	out := make(map[string]string)
+	if !cfg.IngressEnabled {
+		const reason = "ingress is disabled on this server (MISHMESH_INGRESS_ENABLED=false)"
+		out[store.KindHTTP] = "http " + reason
+		out[store.KindTLS] = "tls " + reason
+		out[store.KindTCP] = "tcp " + reason
+		return out
+	}
+	if !cfg.TLSPassthroughEnabled {
+		out[store.KindTLS] = "tls passthrough is disabled on this server (MISHMESH_TLS_PASSTHROUGH_ENABLED=false)"
+	}
+	if !tcpActive {
+		out[store.KindTCP] = "tcp ingress is disabled on this server (MISHMESH_TCP_ENABLED=false)"
+	}
+	return out
 }
