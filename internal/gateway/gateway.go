@@ -23,6 +23,7 @@ type Metrics interface {
 	AgentDisconnected()
 	HandshakeFailure()
 	StreamOpened(kind string)
+	StreamClosed(kind string)
 }
 
 type Options struct {
