@@ -16,17 +16,19 @@ import (
 )
 
 type API struct {
-	data           store.DataStore
-	conns          store.ConnectionStore
-	log            *slog.Logger
-	adminToken     string
-	defaultQuota   store.Quota
-	baseDomain     string
-	publicScheme   string
-	reachInEnabled bool
-	draining       atomic.Bool
-	auth           *authConfig
-	limiter        *rateLimiter
+	data               store.DataStore
+	conns              store.ConnectionStore
+	log                *slog.Logger
+	adminToken         string
+	defaultQuota       store.Quota
+	baseDomain         string
+	publicScheme       string
+	reachInEnabled     bool
+	domainVerification bool
+	resolver           DNSResolver
+	draining           atomic.Bool
+	auth               *authConfig
+	limiter            *rateLimiter
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
@@ -171,6 +173,14 @@ func (a *API) routes() []route {
 
 		{"GET /api/v1/policy", a.require(authz.ActionPolicyRead, a.getPolicyHandler)},
 		{"PUT /api/v1/policy", a.require(authz.ActionPolicyWrite, a.putPolicyHandler)},
+	}
+	if a.domainVerification {
+		routes = append(routes,
+			route{"GET /api/v1/domains", a.require(authz.ActionEndpointRead, a.listDomainsHandler)},
+			route{"POST /api/v1/domains", a.require(authz.ActionEndpointWrite, a.createDomainHandler)},
+			route{"POST /api/v1/domains/{id}/verify", a.require(authz.ActionEndpointWrite, a.verifyDomainHandler)},
+			route{"DELETE /api/v1/domains/{id}", a.require(authz.ActionEndpointWrite, a.deleteDomainHandler)},
+		)
 	}
 	if a.reachInEnabled {
 		routes = append(routes, route{"POST /api/v1/reach/{agent_id}/http", a.require(authz.ActionAgentWrite, a.reachInHTTPHandler)})

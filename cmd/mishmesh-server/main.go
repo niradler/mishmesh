@@ -157,6 +157,7 @@ func serve() error {
 		MaxBandwidthBytes: cfg.QuotaMaxBandwidthBytes,
 	})
 	cp.SetReachInEnabled(cfg.ReachInEnabled)
+	cp.SetDomainVerification(cfg.DomainVerification, nil)
 	cp.ConfigureAuth(controlplane.AuthOptions{
 		Enabled:            cfg.AuthEnabled,
 		PasswordEnabled:    cfg.AuthPasswordEnabled,

@@ -16,6 +16,7 @@ type Server struct {
 	AuthEnabled           bool
 	AuthPasswordEnabled   bool
 	SignupMode            string
+	DomainVerification    bool
 	MetricsToken          string
 	WebUIEnabled          bool
 	IngressEnabled        bool
@@ -82,6 +83,7 @@ type Agent struct {
 const envPrefix = "MISHMESH_"
 
 func LoadServer() Server {
+	signupMode := env("SIGNUP_MODE", "org")
 	return Server{
 		IngressAddr:           env("INGRESS_ADDR", "127.0.0.1:8080"),
 		APIAddr:               env("API_ADDR", "127.0.0.1:8081"),
@@ -90,7 +92,8 @@ func LoadServer() Server {
 		DataDSN:               env("DATA_DSN", "mishmesh.db"),
 		AuthEnabled:           envBool("AUTH_ENABLED", false),
 		AuthPasswordEnabled:   envBool("AUTH_PASSWORD_ENABLED", true),
-		SignupMode:            env("SIGNUP_MODE", "org"),
+		SignupMode:            signupMode,
+		DomainVerification:    envBool("DOMAIN_VERIFICATION", signupMode == "org"),
 		MetricsToken:          env("METRICS_TOKEN", ""),
 		WebUIEnabled:          envBool("WEBUI_ENABLED", false),
 		IngressEnabled:        envBool("INGRESS_ENABLED", true),

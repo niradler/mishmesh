@@ -163,6 +163,15 @@ type OrgPolicy struct {
 	UpdatedAt time.Time
 }
 
+type Domain struct {
+	ID         string
+	OrgID      string
+	Name       string
+	Token      string
+	VerifiedAt *time.Time
+	CreatedAt  time.Time
+}
+
 type DataStore interface {
 	CreateOrg(ctx context.Context, o *Org) error
 	GetOrg(ctx context.Context, id string) (*Org, error)
@@ -191,6 +200,13 @@ type DataStore interface {
 	UpdateEndpoint(ctx context.Context, e *Endpoint) error
 	DeleteEndpoint(ctx context.Context, id string) error
 	CountEndpoints(ctx context.Context, orgID string) (int, error)
+
+	CreateDomain(ctx context.Context, d *Domain) error
+	GetDomain(ctx context.Context, orgID, name string) (*Domain, error)
+	GetVerifiedDomain(ctx context.Context, name string) (*Domain, error)
+	ListDomainsByOrg(ctx context.Context, orgID string) ([]*Domain, error)
+	SetDomainVerified(ctx context.Context, id string, at time.Time) error
+	DeleteDomain(ctx context.Context, orgID, id string) error
 
 	GetQuota(ctx context.Context, orgID string) (*Quota, error)
 	SetQuota(ctx context.Context, q *Quota) error

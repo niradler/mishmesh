@@ -126,6 +126,17 @@ CREATE TABLE IF NOT EXISTS audit (
   created_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_org ON audit(org_id, created_at);
+CREATE TABLE IF NOT EXISTS domains (
+  id          TEXT PRIMARY KEY,
+  org_id      TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  token       TEXT NOT NULL,
+  verified_at BIGINT,
+  created_at  BIGINT NOT NULL,
+  UNIQUE (org_id, name)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_domains_verified_name
+  ON domains(name) WHERE verified_at IS NOT NULL;
 CREATE TABLE IF NOT EXISTS org_policies (
   org_id     TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
   cedar_src  TEXT NOT NULL,
@@ -711,4 +722,77 @@ func scanErr(op string, err error) error {
 		return store.ErrNotFound
 	}
 	return wrap(op, err)
+}
+
+const domainCols = `id, org_id, name, token, verified_at, created_at`
+
+func (s *Store) CreateDomain(ctx context.Context, d *store.Domain) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO domains (`+domainCols+`) VALUES ($1, $2, $3, $4, $5, $6)`,
+		d.ID, d.OrgID, d.Name, d.Token, nsPtr(d.VerifiedAt), ns(d.CreatedAt))
+	return wrap("create domain", err)
+}
+
+func (s *Store) GetDomain(ctx context.Context, orgID, name string) (*store.Domain, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+domainCols+` FROM domains WHERE org_id = $1 AND name = $2`, orgID, name)
+	return scanDomain(row.Scan)
+}
+
+func (s *Store) GetVerifiedDomain(ctx context.Context, name string) (*store.Domain, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+domainCols+` FROM domains WHERE name = $1 AND verified_at IS NOT NULL`, name)
+	return scanDomain(row.Scan)
+}
+
+func (s *Store) ListDomainsByOrg(ctx context.Context, orgID string) ([]*store.Domain, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+domainCols+` FROM domains WHERE org_id = $1 ORDER BY created_at`, orgID)
+	if err != nil {
+		return nil, wrap("list domains", err)
+	}
+	defer rows.Close()
+	var out []*store.Domain
+	for rows.Next() {
+		d, err := scanDomain(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, wrap("list domains", rows.Err())
+}
+
+func (s *Store) SetDomainVerified(ctx context.Context, id string, at time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE domains SET verified_at = $1 WHERE id = $2`, ns(at), id)
+	if err != nil {
+		return wrap("verify domain", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteDomain(ctx context.Context, orgID, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM domains WHERE id = $1 AND org_id = $2`, id, orgID)
+	if err != nil {
+		return wrap("delete domain", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func scanDomain(scan func(...any) error) (*store.Domain, error) {
+	var d store.Domain
+	var verified sql.NullInt64
+	var created int64
+	if err := scan(&d.ID, &d.OrgID, &d.Name, &d.Token, &verified, &created); err != nil {
+		return nil, scanErr("scan domain", err)
+	}
+	if verified.Valid {
+		t := fromNS(verified.Int64)
+		d.VerifiedAt = &t
+	}
+	d.CreatedAt = fromNS(created)
+	return &d, nil
 }

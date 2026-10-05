@@ -67,6 +67,19 @@ are created implicitly by the clientless SSH remote-forward server (see deploy g
 `mtls`: when set, the HTTPS edge requires a client certificate that chains to `client_ca_pem`
 (and whose CN is in `allowed_cns`, if given); otherwise 403. Requires the HTTPS ingress (`TLS_ENABLED`).
 
+## Custom domains (ownership verification)
+
+Enabled by `MISHMESH_DOMAIN_VERIFICATION` (default `true` when `MISHMESH_SIGNUP_MODE=org`, `false` when `invite`; set it explicitly to override). When off the routes below are not registered and any well-formed hostname outside the base domain may be bound to an endpoint (homelab / single-company deployments). When on, `domain` on `POST`/`PATCH /endpoints` is accepted only if the domain is verified for the caller's org (403 otherwise). A verified domain is unique across all orgs; unverified claims by several orgs may coexist but only the org that proves DNS control can verify. Names equal to, or under, the base domain are rejected (400) in both modes. Wildcards are not supported.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/domains` | org domains -> `[domainDTO]` |
+| POST | `/domains` | `{name}` -> 201 `domainDTO`; idempotent for the same org (200); 409 if another org already verified the name |
+| POST | `/domains/{id}/verify` | resolves the challenge TXT record; 200 `domainDTO` when found, 422 when not, 409 if another org verified it first |
+| DELETE | `/domains/{id}` | 204; 409 while an endpoint of the org is bound to it |
+
+`domainDTO`: `{id, name, verified, verified_at?, challenge?:{type:"TXT", name:"_mishmesh-challenge.<domain>", value:"<token>"}, cname_target, created_at}`. `challenge` is present until verified. Proof of ownership is the TXT record only; `cname_target` is the base domain host the domain's CNAME must point at so traffic reaches the platform (a CNAME alone is not accepted as proof, since anyone can point a CNAME at the platform).
+
 ## Quota
 
 | GET | `/quota` | → `{max_agents, max_endpoints, max_bandwidth_bytes, usage:{agents, endpoints, bandwidth_bytes}}` |

@@ -142,6 +142,15 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	domain := req.Domain
+	if domain != "" {
+		var status int
+		var msg string
+		if domain, status, msg = a.authorizeDomainBinding(r.Context(), orgID, domain); status != 0 {
+			writeError(w, status, msg)
+			return
+		}
+	}
 	agentID := req.AgentID
 	if method == store.MethodProxy {
 		if pol == nil || pol.ProxyTarget == "" {
@@ -168,7 +177,7 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	ep := &store.Endpoint{
 		ID: store.NewID("ep"), AgentID: agentID, OrgID: orgID, Kind: kind, Method: method,
-		Lifecycle: store.LifecycleReserved, Subdomain: req.Subdomain, Domain: req.Domain,
+		Lifecycle: store.LifecycleReserved, Subdomain: req.Subdomain, Domain: domain,
 		Port: req.Port, Policy: pol, CreatedAt: time.Now(),
 	}
 	if a.handleErr(w, a.data.CreateEndpoint(r.Context(), ep)) {
@@ -203,7 +212,16 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		ep.Subdomain = *req.Subdomain
 	}
 	if req.Domain != nil {
-		ep.Domain = *req.Domain
+		domain := ""
+		if *req.Domain != "" {
+			var status int
+			var msg string
+			if domain, status, msg = a.authorizeDomainBinding(r.Context(), ep.OrgID, *req.Domain); status != 0 {
+				writeError(w, status, msg)
+				return
+			}
+		}
+		ep.Domain = domain
 	}
 	if req.Port != nil {
 		ep.Port = *req.Port
