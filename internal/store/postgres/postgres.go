@@ -20,11 +20,49 @@ type Store struct {
 
 var _ store.DataStore = (*Store)(nil)
 
-func Open(dsn string) (*Store, error) {
+type PoolConfig struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
+}
+
+const (
+	DefaultMaxOpenConns    = 25
+	DefaultConnMaxLifetime = 30 * time.Minute
+	DefaultConnMaxIdleTime = 5 * time.Minute
+)
+
+func (p PoolConfig) withDefaults() PoolConfig {
+	if p.MaxOpenConns <= 0 {
+		p.MaxOpenConns = DefaultMaxOpenConns
+	}
+	if p.MaxIdleConns <= 0 || p.MaxIdleConns > p.MaxOpenConns {
+		p.MaxIdleConns = p.MaxOpenConns
+	}
+	if p.ConnMaxLifetime <= 0 {
+		p.ConnMaxLifetime = DefaultConnMaxLifetime
+	}
+	if p.ConnMaxIdleTime <= 0 {
+		p.ConnMaxIdleTime = DefaultConnMaxIdleTime
+	}
+	return p
+}
+
+func (p PoolConfig) apply(db *sql.DB) {
+	p = p.withDefaults()
+	db.SetMaxOpenConns(p.MaxOpenConns)
+	db.SetMaxIdleConns(p.MaxIdleConns)
+	db.SetConnMaxLifetime(p.ConnMaxLifetime)
+	db.SetConnMaxIdleTime(p.ConnMaxIdleTime)
+}
+
+func Open(dsn string, pool PoolConfig) (*Store, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres %q: %w", dsn, err)
 	}
+	pool.apply(db)
 	s := &Store{db: db}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()

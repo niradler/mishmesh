@@ -223,6 +223,14 @@ spec:
                 secretKeyRef:
                   name: {{ $dsn.name }}
                   key: {{ $dsn.key }}
+            - name: MISHMESH_DATA_MAX_CONNS
+              value: {{ $v.dataPool.maxConns | quote }}
+            - name: MISHMESH_DATA_MAX_IDLE_CONNS
+              value: {{ $v.dataPool.maxIdleConns | quote }}
+            - name: MISHMESH_DATA_CONN_MAX_LIFETIME
+              value: {{ $v.dataPool.connMaxLifetime | quote }}
+            - name: MISHMESH_DATA_CONN_MAX_IDLE_TIME
+              value: {{ $v.dataPool.connMaxIdleTime | quote }}
             - name: MISHMESH_CONN_BACKEND
               value: {{ $v.connStore.backend | quote }}
             {{- if eq $v.connStore.backend "redis" }}

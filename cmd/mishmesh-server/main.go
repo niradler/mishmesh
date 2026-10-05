@@ -291,7 +291,12 @@ func openDataStore(cfg config.Server) (store.DataStore, error) {
 	backend := cfg.EffectiveDataBackend()
 	switch backend {
 	case "postgres":
-		return postgres.Open(cfg.DataDSN)
+		return postgres.Open(cfg.DataDSN, postgres.PoolConfig{
+			MaxOpenConns:    cfg.DataMaxConns,
+			MaxIdleConns:    cfg.DataMaxIdleConns,
+			ConnMaxLifetime: cfg.DataConnMaxLifetime,
+			ConnMaxIdleTime: cfg.DataConnMaxIdleTime,
+		})
 	case "sqlite":
 		return sqlite.Open(cfg.DataDSN)
 	default:

@@ -12,11 +12,16 @@ import (
 
 func newStore(t *testing.T) *Store {
 	t.Helper()
+	return newStoreWithPool(t, PoolConfig{})
+}
+
+func newStoreWithPool(t *testing.T, pool PoolConfig) *Store {
+	t.Helper()
 	dsn := os.Getenv("MISHMESH_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("MISHMESH_TEST_POSTGRES_DSN not set")
 	}
-	s, err := Open(dsn)
+	s, err := Open(dsn, pool)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

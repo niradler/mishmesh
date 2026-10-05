@@ -102,6 +102,12 @@ postgres:
     existingSecret: ""
     existingSecretKey: data-dsn
 
+dataPool:
+  maxConns: 25
+  maxIdleConns: 0
+  connMaxLifetime: 30m
+  connMaxIdleTime: 5m
+
 connStore:
   backend: memory
   redis:

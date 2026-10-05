@@ -26,6 +26,9 @@ func Open(dsn string) (*Store, error) {
 		return nil, fmt.Errorf("open sqlite %q: %w", dsn, err)
 	}
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=5000",

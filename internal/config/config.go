@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Server struct {
@@ -43,9 +44,13 @@ type Server struct {
 	APIAuthDisabled       bool
 	LogLevel              string
 
-	DataBackend string
-	ConnBackend string
-	RedisURL    string
+	DataBackend         string
+	DataMaxConns        int
+	DataMaxIdleConns    int
+	DataConnMaxLifetime time.Duration
+	DataConnMaxIdleTime time.Duration
+	ConnBackend         string
+	RedisURL            string
 
 	MetricsEnabled bool
 	ReachInEnabled bool
@@ -120,9 +125,13 @@ func LoadServer() Server {
 		APIAuthDisabled:       envBool("API_AUTH_DISABLED", false),
 		LogLevel:              env("LOG_LEVEL", "info"),
 
-		DataBackend: env("DATA_BACKEND", ""),
-		ConnBackend: env("CONN_BACKEND", "memory"),
-		RedisURL:    env("REDIS_URL", ""),
+		DataBackend:         env("DATA_BACKEND", ""),
+		DataMaxConns:        envInt("DATA_MAX_CONNS", 25),
+		DataMaxIdleConns:    envInt("DATA_MAX_IDLE_CONNS", 0),
+		DataConnMaxLifetime: envDuration("DATA_CONN_MAX_LIFETIME", 30*time.Minute),
+		DataConnMaxIdleTime: envDuration("DATA_CONN_MAX_IDLE_TIME", 5*time.Minute),
+		ConnBackend:         env("CONN_BACKEND", "memory"),
+		RedisURL:            env("REDIS_URL", ""),
 
 		MetricsEnabled: envBool("METRICS_ENABLED", true),
 		ReachInEnabled: envBool("REACHIN_ENABLED", false),
@@ -218,6 +227,9 @@ func (s Server) Validate() error {
 	if s.APIAuthToken == "" && !s.APIAuthDisabled {
 		return fmt.Errorf("config: API_AUTH_TOKEN must be set to protect the control API (or set API_AUTH_DISABLED=true to explicitly run it without auth)")
 	}
+	if s.DataMaxConns < 0 || s.DataMaxIdleConns < 0 {
+		return fmt.Errorf("config: DATA_MAX_CONNS and DATA_MAX_IDLE_CONNS must not be negative")
+	}
 	if s.ClusterEnabled {
 		return s.validateCluster()
 	}
@@ -253,4 +265,16 @@ func envBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	v, ok := os.LookupEnv(envPrefix + key)
+	if !ok {
+		return def
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d < 0 {
+		return def
+	}
+	return d
 }
