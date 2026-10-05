@@ -1,0 +1,35 @@
+mishmesh {{ .Chart.AppVersion }} installed as {{ include "mishmesh.fullname" . }} in {{ .Release.Namespace }}.
+
+Mode: {{ if .Values.cluster.enabled }}cluster ({{ if .Values.autoscaling.enabled }}HPA {{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }}{{ else }}{{ .Values.replicaCount }} replicas{{ end }}, {{ if include "mishmesh.builtinPostgres" . }}built-in postgres{{ else }}external postgres{{ end }} + {{ .Values.connStore.backend }}){{ else }}single node ({{ if include "mishmesh.builtinPostgres" . }}built-in postgres{{ else }}external postgres{{ end }} + {{ .Values.connStore.backend }}){{ end }}
+
+Public endpoints: {{ .Values.publicScheme }}://<name>.{{ .Values.baseDomain }}
+{{- if .Values.service.public.enabled }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "mishmesh.fullname" . }}-public
+  Point DNS  {{ .Values.baseDomain }}  and  *.{{ .Values.baseDomain }}  at its external address.
+{{- end }}
+
+Control API / web UI / agent WSS (ClusterIP):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "mishmesh.fullname" . }}-api 8081:{{ .Values.listeners.api.servicePort }}
+{{- if .Values.connectIngress.enabled }}
+Agents connect with: --gateway wss://{{ .Values.connectIngress.host }}
+{{- else }}
+In-cluster agents connect with: --gateway ws://{{ include "mishmesh.fullname" . }}-api.{{ .Release.Namespace }}.svc:{{ .Values.listeners.api.servicePort }}
+{{- end }}
+
+{{- if not .Values.apiAuth.disabled }}
+
+API auth token:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "mishmesh.secretName" . }} -o jsonpath='{.data.api-auth-token}' | base64 -d
+{{- end }}
+{{- if or .Values.secrets.bootstrapToken .Values.secrets.generateBootstrapToken }}
+Bootstrap agent token:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "mishmesh.secretName" . }} -o jsonpath='{.data.bootstrap-token}' | base64 -d
+{{- end }}
+{{- if and .Values.tls.acme.enabled (include "mishmesh.multiReplica" .) }}
+
+WARNING: ACME with multiple replicas keeps a per-pod cert cache and HTTP-01 challenges may land on another pod. Prefer tls.existingSecret with a wildcard cert.
+{{- end }}
+{{- if and .Values.listeners.ssh.enabled (not (include "mishmesh.sshKeyMounted" .)) (include "mishmesh.multiReplica" .) }}
+
+WARNING: SSH host key is generated per pod; set ssh.hostKey.generate=true or ssh.hostKey.existingSecret for a stable identity.
+{{- end }}

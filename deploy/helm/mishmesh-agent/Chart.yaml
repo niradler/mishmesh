@@ -1,0 +1,10 @@
+apiVersion: v2
+name: mishmesh-agent
+description: mishmesh agent - run inside a private network to expose internal services through a mishmesh gateway
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - tunnel
+  - agent
+home: https://github.com/mishmesh/mishmesh

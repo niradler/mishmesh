@@ -1,0 +1,60 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/mishmesh/mishmesh-agent
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+gatewayURL: wss://connect.example.com
+logLevel: info
+allow: ""
+
+token: ""
+existingSecret: ""
+existingSecretKey: token
+
+tunnels:
+  - name: web
+    kind: http
+    target: web.default.svc.cluster.local:80
+    subdomain: ""
+    port: 0
+    reserved: false
+    targetHTTPS: false
+    insecureSkipVerify: false
+    token: ""
+    existingSecret: ""
+    existingSecretKey: ""
+    extraArgs: []
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+extraEnv: []

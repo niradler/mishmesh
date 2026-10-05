@@ -1,0 +1,97 @@
+replicaCount: 2
+
+baseDomain: tunnel.corp.example.com
+publicScheme: https
+
+features:
+  webuiEnabled: true
+  metricsEnabled: true
+  reachInEnabled: true
+
+auth:
+  enabled: true
+  passwordEnabled: true
+  googleClientID: ""
+  oidcRedirectURL: https://mishmesh.corp.example.com/api/v1/auth/google/callback
+
+listeners:
+  https:
+    enabled: true
+  tlsPassthrough:
+    enabled: true
+  ssh:
+    enabled: true
+  tcp:
+    enabled: true
+    portMin: 10000
+    portMax: 10019
+
+tls:
+  existingSecret: mishmesh-wildcard-tls
+
+ssh:
+  hostKey:
+    generate: true
+
+postgres:
+  builtin:
+    enabled: false
+  external:
+    existingSecret: mishmesh-db
+    existingSecretKey: data-dsn
+
+connStore:
+  backend: redis
+  redis:
+    existingSecret: mishmesh-redis
+    existingSecretKey: redis-url
+
+cluster:
+  enabled: true
+
+secrets:
+  generateBootstrapToken: false
+
+service:
+  public:
+    type: LoadBalancer
+    externalTrafficPolicy: Local
+
+connectIngress:
+  enabled: true
+  className: nginx
+  host: connect.corp.example.com
+  controlHost: mishmesh.corp.example.com
+  exposeControlAPI: false
+  tls:
+    secretName: mishmesh-connect-tls
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+topologySpread:
+  enabled: true
+
+drain:
+  preStopSleepSeconds: 10
+  terminationGracePeriodSeconds: 60
+
+networkPolicy:
+  enabled: true
+
+serviceMonitor:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 1Gi

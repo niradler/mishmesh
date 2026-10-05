@@ -1,0 +1,9 @@
+mishmesh-agent installed as {{ include "mishmesh-agent.fullname" . }} in {{ .Release.Namespace }}, dialing {{ .Values.gatewayURL }}.
+
+Tunnels:
+{{- range .Values.tunnels }}
+  {{ .name }}: {{ .kind }} -> {{ .target }}{{ if .subdomain }} (subdomain {{ .subdomain }}){{ end }}{{ if .port }} (public port {{ .port }}){{ end }}
+{{- end }}
+
+Logs (the public URL is printed on connect):
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} --tail=50

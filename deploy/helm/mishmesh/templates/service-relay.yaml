@@ -1,0 +1,19 @@
+{{- if .Values.cluster.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mishmesh.fullname" . }}-relay
+  labels:
+    {{- include "mishmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/service: relay
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "mishmesh.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: relay
+      port: {{ .Values.cluster.relayPort }}
+      targetPort: relay
+      protocol: TCP
+{{- end }}

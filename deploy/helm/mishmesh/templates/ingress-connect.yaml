@@ -1,0 +1,59 @@
+{{- if .Values.connectIngress.enabled }}
+{{- $ci := .Values.connectIngress }}
+{{- $backend := printf "%s-api" (include "mishmesh.fullname" .) }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "mishmesh.fullname" . }}-connect
+  labels:
+    {{- include "mishmesh.labels" . | nindent 4 }}
+  {{- with $ci.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $ci.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if $ci.tls.secretName }}
+  tls:
+    - secretName: {{ $ci.tls.secretName }}
+      hosts:
+        - {{ $ci.host | quote }}
+        {{- with $ci.controlHost }}
+        - {{ . | quote }}
+        {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ $ci.host | quote }}
+      http:
+        paths:
+          - path: /_mishmesh/agent/connect
+            pathType: Exact
+            backend:
+              service:
+                name: {{ $backend }}
+                port:
+                  name: api
+          {{- if $ci.exposeControlAPI }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $backend }}
+                port:
+                  name: api
+          {{- end }}
+    {{- with $ci.controlHost }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $backend }}
+                port:
+                  name: api
+    {{- end }}
+{{- end }}

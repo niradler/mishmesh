@@ -1,0 +1,108 @@
+replicaCount: 3
+
+baseDomain: tunnel.example.com
+publicScheme: https
+
+features:
+  webuiEnabled: true
+  metricsEnabled: true
+  reachInEnabled: false
+
+auth:
+  enabled: true
+  passwordEnabled: true
+  googleClientID: ""
+  oidcRedirectURL: https://app.example.com/api/v1/auth/google/callback
+
+quotas:
+  maxAgents: 5
+  maxEndpoints: 10
+  maxBandwidthBytes: 10737418240
+
+listeners:
+  https:
+    enabled: true
+  tlsPassthrough:
+    enabled: true
+  ssh:
+    enabled: true
+  tcp:
+    enabled: true
+    portMin: 10000
+    portMax: 10049
+
+tls:
+  existingSecret: mishmesh-wildcard-tls
+
+ssh:
+  hostKey:
+    generate: true
+
+postgres:
+  builtin:
+    enabled: false
+  external:
+    existingSecret: mishmesh-db
+    existingSecretKey: data-dsn
+
+connStore:
+  backend: redis
+  redis:
+    existingSecret: mishmesh-redis
+    existingSecretKey: redis-url
+
+cluster:
+  enabled: true
+
+secrets:
+  generateBootstrapToken: false
+
+service:
+  public:
+    type: LoadBalancer
+    externalTrafficPolicy: Local
+
+connectIngress:
+  enabled: true
+  className: nginx
+  host: connect.example.com
+  controlHost: app.example.com
+  exposeControlAPI: false
+  tls:
+    secretName: mishmesh-connect-tls
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 65
+  targetMemoryUtilizationPercentage: 80
+  scaleDownStabilizationSeconds: 600
+  scaleDownPodsPerPeriod: 1
+  scaleDownPeriodSeconds: 180
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+topologySpread:
+  enabled: true
+  whenUnsatisfiable: ScheduleAnyway
+
+drain:
+  preStopSleepSeconds: 15
+  terminationGracePeriodSeconds: 90
+
+networkPolicy:
+  enabled: true
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    memory: 2Gi

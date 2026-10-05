@@ -1,0 +1,353 @@
+{{- $v := .Values -}}
+{{- $secret := include "mishmesh.secretName" . -}}
+{{- $dsn := include "mishmesh.dsnSecretRef" . | fromJson -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mishmesh.fullname" . }}
+  labels:
+    {{- include "mishmesh.labels" . | nindent 4 }}
+spec:
+  {{- if not $v.autoscaling.enabled }}
+  replicas: {{ $v.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "mishmesh.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "mishmesh.selectorLabels" . | nindent 8 }}
+        {{- with $v.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $v.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "mishmesh.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $v.drain.terminationGracePeriodSeconds }}
+      {{- with $v.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $v.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $v.podSecurityContext | nindent 8 }}
+      {{- if include "mishmesh.builtinPostgres" . }}
+      initContainers:
+        - name: wait-for-postgres
+          image: "{{ $v.postgres.builtin.image.repository }}:{{ $v.postgres.builtin.image.tag }}"
+          imagePullPolicy: {{ $v.postgres.builtin.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - until pg_isready -q -h {{ include "mishmesh.postgresName" . }} -p 5432 -U {{ $v.postgres.builtin.username }}; do sleep 2; done
+          securityContext:
+            {{- toYaml $v.securityContext | nindent 12 }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      {{- end }}
+      containers:
+        - name: server
+          image: {{ include "mishmesh.image" . }}
+          imagePullPolicy: {{ $v.image.pullPolicy }}
+          args: ["serve"]
+          securityContext:
+            {{- toYaml $v.securityContext | nindent 12 }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: MISHMESH_BASE_DOMAIN
+              value: {{ $v.baseDomain | quote }}
+            - name: MISHMESH_PUBLIC_SCHEME
+              value: {{ $v.publicScheme | quote }}
+            - name: MISHMESH_LOG_LEVEL
+              value: {{ $v.logLevel | quote }}
+            - name: MISHMESH_API_ADDR
+              value: "0.0.0.0:{{ $v.listeners.api.containerPort }}"
+            - name: MISHMESH_INGRESS_ENABLED
+              value: {{ $v.features.ingressEnabled | quote }}
+            - name: MISHMESH_INGRESS_ADDR
+              value: "0.0.0.0:{{ $v.listeners.http.containerPort }}"
+            - name: MISHMESH_TLS_ENABLED
+              value: {{ $v.listeners.https.enabled | quote }}
+            - name: MISHMESH_HTTPS_ADDR
+              value: "0.0.0.0:{{ $v.listeners.https.containerPort }}"
+            {{- if $v.tls.existingSecret }}
+            - name: MISHMESH_TLS_CERT_FILE
+              value: /etc/mishmesh/tls/tls.crt
+            - name: MISHMESH_TLS_KEY_FILE
+              value: /etc/mishmesh/tls/tls.key
+            {{- end }}
+            - name: MISHMESH_ACME_ENABLED
+              value: {{ $v.tls.acme.enabled | quote }}
+            - name: MISHMESH_ACME_EMAIL
+              value: {{ $v.tls.acme.email | quote }}
+            - name: MISHMESH_ACME_CACHE_DIR
+              value: /data/certs
+            - name: MISHMESH_SELF_SIGNED_TLS
+              value: {{ $v.tls.selfSigned | quote }}
+            - name: MISHMESH_TLS_PASSTHROUGH_ENABLED
+              value: {{ $v.listeners.tlsPassthrough.enabled | quote }}
+            - name: MISHMESH_TLS_PASSTHROUGH_ADDR
+              value: "0.0.0.0:{{ $v.listeners.tlsPassthrough.containerPort }}"
+            - name: MISHMESH_TCP_ENABLED
+              value: {{ $v.listeners.tcp.enabled | quote }}
+            - name: MISHMESH_TCP_BIND_HOST
+              value: "0.0.0.0"
+            - name: MISHMESH_TCP_PORT_MIN
+              value: {{ $v.listeners.tcp.portMin | quote }}
+            - name: MISHMESH_TCP_PORT_MAX
+              value: {{ $v.listeners.tcp.portMax | quote }}
+            - name: MISHMESH_SSH_ENABLED
+              value: {{ $v.listeners.ssh.enabled | quote }}
+            - name: MISHMESH_SSH_ADDR
+              value: "0.0.0.0:{{ $v.listeners.ssh.containerPort }}"
+            {{- if $v.listeners.ssh.enabled }}
+            - name: MISHMESH_SSH_HOST_KEY_FILE
+              {{- if include "mishmesh.sshKeyMounted" . }}
+              value: /etc/mishmesh/ssh/ssh_host_ed25519.pem
+              {{- else }}
+              value: /data/ssh_host_ed25519.pem
+              {{- end }}
+            {{- end }}
+            - name: MISHMESH_WEBUI_ENABLED
+              value: {{ $v.features.webuiEnabled | quote }}
+            - name: MISHMESH_WEBUI_DIR
+              value: /webui
+            - name: MISHMESH_METRICS_ENABLED
+              value: {{ $v.features.metricsEnabled | quote }}
+            - name: MISHMESH_REACHIN_ENABLED
+              value: {{ $v.features.reachInEnabled | quote }}
+            - name: MISHMESH_PROXY_ALLOW_LOOPBACK
+              value: {{ $v.features.proxyAllowLoopback | quote }}
+            - name: MISHMESH_OIDC_ALLOW_PRIVATE_ISSUERS
+              value: {{ $v.features.oidcAllowPrivateIssuers | quote }}
+            - name: MISHMESH_AUTH_ENABLED
+              value: {{ $v.auth.enabled | quote }}
+            - name: MISHMESH_AUTH_PASSWORD_ENABLED
+              value: {{ $v.auth.passwordEnabled | quote }}
+            - name: MISHMESH_SESSION_TTL_HOURS
+              value: {{ $v.auth.sessionTTLHours | quote }}
+            - name: MISHMESH_OIDC_ISSUER
+              value: {{ $v.auth.oidcIssuer | quote }}
+            {{- with $v.auth.googleClientID }}
+            - name: MISHMESH_GOOGLE_CLIENT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $v.auth.oidcRedirectURL }}
+            - name: MISHMESH_OIDC_REDIRECT_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if or $v.secrets.googleClientSecret $v.secrets.existingSecret }}
+            - name: MISHMESH_GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: google-client-secret
+                  optional: true
+            {{- end }}
+            - name: MISHMESH_QUOTA_MAX_AGENTS
+              value: {{ $v.quotas.maxAgents | quote }}
+            - name: MISHMESH_QUOTA_MAX_ENDPOINTS
+              value: {{ $v.quotas.maxEndpoints | quote }}
+            - name: MISHMESH_QUOTA_MAX_BANDWIDTH_BYTES
+              value: {{ $v.quotas.maxBandwidthBytes | int64 | quote }}
+            {{- if $v.apiAuth.disabled }}
+            - name: MISHMESH_API_AUTH_DISABLED
+              value: "true"
+            {{- else }}
+            - name: MISHMESH_API_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: api-auth-token
+            {{- end }}
+            - name: MISHMESH_ENDPOINT_OIDC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: endpoint-oidc-key
+                  optional: true
+            {{- if or $v.secrets.bootstrapToken $v.secrets.generateBootstrapToken $v.secrets.existingSecret }}
+            - name: MISHMESH_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: bootstrap-token
+                  optional: true
+            {{- end }}
+            - name: MISHMESH_DATA_BACKEND
+              value: "postgres"
+            - name: MISHMESH_DATA_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dsn.name }}
+                  key: {{ $dsn.key }}
+            - name: MISHMESH_CONN_BACKEND
+              value: {{ $v.connStore.backend | quote }}
+            {{- if eq $v.connStore.backend "redis" }}
+            - name: MISHMESH_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mishmesh.redisSecretName" . }}
+                  key: {{ $v.connStore.redis.existingSecretKey }}
+            {{- end }}
+            {{- if $v.cluster.enabled }}
+            - name: MISHMESH_CLUSTER_ENABLED
+              value: "true"
+            - name: MISHMESH_NODE_ID
+              value: "$(POD_NAME)"
+            - name: MISHMESH_RELAY_ADDR
+              value: "0.0.0.0:{{ $v.cluster.relayPort }}"
+            - name: MISHMESH_RELAY_ADVERTISE
+              value: "$(POD_IP):{{ $v.cluster.relayPort }}"
+            - name: MISHMESH_CLUSTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: cluster-secret
+            {{- end }}
+            {{- with $v.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: api
+              containerPort: {{ $v.listeners.api.containerPort }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ $v.listeners.http.containerPort }}
+              protocol: TCP
+            {{- if $v.listeners.https.enabled }}
+            - name: https
+              containerPort: {{ $v.listeners.https.containerPort }}
+              protocol: TCP
+            {{- end }}
+            {{- if $v.listeners.tlsPassthrough.enabled }}
+            - name: tls-passthru
+              containerPort: {{ $v.listeners.tlsPassthrough.containerPort }}
+              protocol: TCP
+            {{- end }}
+            {{- if $v.listeners.ssh.enabled }}
+            - name: ssh
+              containerPort: {{ $v.listeners.ssh.containerPort }}
+              protocol: TCP
+            {{- end }}
+            {{- if $v.cluster.enabled }}
+            - name: relay
+              containerPort: {{ $v.cluster.relayPort }}
+              protocol: TCP
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            periodSeconds: {{ $v.probes.startup.periodSeconds }}
+            failureThreshold: {{ $v.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: api
+            initialDelaySeconds: {{ $v.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ $v.probes.readiness.periodSeconds }}
+            failureThreshold: {{ $v.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            initialDelaySeconds: {{ $v.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ $v.probes.liveness.periodSeconds }}
+            failureThreshold: {{ $v.probes.liveness.failureThreshold }}
+          {{- if gt (int $v.drain.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ $v.drain.preStopSleepSeconds }}
+          {{- end }}
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            {{- if $v.tls.existingSecret }}
+            - name: tls
+              mountPath: /etc/mishmesh/tls
+              readOnly: true
+            {{- end }}
+            {{- if include "mishmesh.sshKeyMounted" . }}
+            - name: ssh-host-key
+              mountPath: /etc/mishmesh/ssh
+              readOnly: true
+            {{- end }}
+            {{- with $v.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: data
+          emptyDir: {}
+        {{- if $v.tls.existingSecret }}
+        - name: tls
+          secret:
+            secretName: {{ $v.tls.existingSecret }}
+        {{- end }}
+        {{- if include "mishmesh.sshKeyMounted" . }}
+        - name: ssh-host-key
+          secret:
+            secretName: {{ include "mishmesh.sshKeySecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ $v.ssh.hostKey.existingSecretKey }}
+                path: ssh_host_ed25519.pem
+        {{- end }}
+        {{- with $v.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or $v.topologySpread.enabled $v.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- if $v.topologySpread.enabled }}
+        {{- range $key := $v.topologySpread.topologyKeys }}
+        - maxSkew: {{ $v.topologySpread.maxSkew }}
+          topologyKey: {{ $key }}
+          whenUnsatisfiable: {{ $v.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "mishmesh.selectorLabels" $ | nindent 14 }}
+        {{- end }}
+        {{- end }}
+        {{- with $v.topologySpreadConstraints }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with $v.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $v.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $v.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

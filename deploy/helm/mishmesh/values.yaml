@@ -1,0 +1,244 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/mishmesh/mishmesh-server
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 1
+
+baseDomain: tunnel.example.com
+publicScheme: http
+logLevel: info
+
+features:
+  ingressEnabled: true
+  webuiEnabled: true
+  metricsEnabled: true
+  reachInEnabled: false
+  proxyAllowLoopback: false
+  oidcAllowPrivateIssuers: false
+
+auth:
+  enabled: false
+  passwordEnabled: true
+  sessionTTLHours: 168
+  oidcIssuer: https://accounts.google.com
+  googleClientID: ""
+  oidcRedirectURL: ""
+
+apiAuth:
+  disabled: false
+
+quotas:
+  maxAgents: 0
+  maxEndpoints: 0
+  maxBandwidthBytes: 0
+
+listeners:
+  http:
+    containerPort: 8080
+    servicePort: 80
+  https:
+    enabled: false
+    containerPort: 8443
+    servicePort: 443
+  tlsPassthrough:
+    enabled: false
+    containerPort: 8444
+    servicePort: 8444
+  ssh:
+    enabled: false
+    containerPort: 2222
+    servicePort: 2222
+  api:
+    containerPort: 8081
+    servicePort: 8081
+  tcp:
+    enabled: true
+    portMin: 10000
+    portMax: 10009
+
+tls:
+  existingSecret: ""
+  acme:
+    enabled: false
+    email: ""
+  selfSigned: false
+
+ssh:
+  hostKey:
+    generate: true
+    existingSecret: ""
+    existingSecretKey: ssh-host-key
+
+postgres:
+  builtin:
+    enabled: true
+    image:
+      repository: postgres
+      tag: 16-alpine
+      pullPolicy: IfNotPresent
+    database: mishmesh
+    username: mishmesh
+    password: ""
+    persistence:
+      storageClass: ""
+      size: 5Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+  external:
+    url: ""
+    existingSecret: ""
+    existingSecretKey: data-dsn
+
+connStore:
+  backend: memory
+  redis:
+    url: ""
+    existingSecret: ""
+    existingSecretKey: redis-url
+
+cluster:
+  enabled: false
+  relayPort: 7443
+
+secrets:
+  existingSecret: ""
+  apiAuthToken: ""
+  clusterSecret: ""
+  endpointOIDCKey: ""
+  bootstrapToken: ""
+  generateBootstrapToken: true
+  googleClientSecret: ""
+
+service:
+  public:
+    enabled: true
+    type: LoadBalancer
+    annotations: {}
+    labels: {}
+    externalTrafficPolicy: Cluster
+    loadBalancerClass: ""
+    loadBalancerIP: ""
+    loadBalancerSourceRanges: []
+  api:
+    type: ClusterIP
+    annotations: {}
+    labels: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls:
+    secretName: ""
+
+connectIngress:
+  enabled: false
+  className: ""
+  host: ""
+  controlHost: ""
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+  exposeControlAPI: false
+  tls:
+    secretName: ""
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 0
+  scaleDownStabilizationSeconds: 300
+  scaleDownPodsPerPeriod: 1
+  scaleDownPeriodSeconds: 120
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: ""
+
+topologySpread:
+  enabled: false
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
+  topologyKeys:
+    - kubernetes.io/hostname
+    - topology.kubernetes.io/zone
+topologySpreadConstraints: []
+
+drain:
+  preStopSleepSeconds: 10
+  terminationGracePeriodSeconds: 45
+
+networkPolicy:
+  enabled: false
+  apiAllowedFrom: []
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+probes:
+  readiness:
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 6
+  startup:
+    periodSeconds: 2
+    failureThreshold: 60
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
