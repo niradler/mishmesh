@@ -53,6 +53,7 @@ type Ingress struct {
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
+	basicAuth *ttlCache[struct{}]
 }
 
 func New(opts Options) *Ingress {
@@ -72,6 +73,7 @@ func New(opts Options) *Ingress {
 
 		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
+		basicAuth: newTTLCache[struct{}](basicAuthCacheTTL),
 	}
 	if i.limiter == nil {
 		i.limiter = ratelimit.NewMemory()
@@ -120,7 +122,7 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (i *Ingress) gateDeps() gateDeps {
-	return gateDeps{oidc: i.oidc, trusted: i.trusted, limiter: i.limiter}
+	return gateDeps{oidc: i.oidc, trusted: i.trusted, limiter: i.limiter, basic: i.basicAuth}
 }
 
 var (

@@ -1,8 +1,10 @@
 package ingress
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"slices"
@@ -21,6 +23,7 @@ type gateDeps struct {
 	oidc    *oidcGate
 	trusted []*net.IPNet
 	limiter ratelimit.Limiter
+	basic   *ttlCache[struct{}]
 }
 
 func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, deps gateDeps) bool {
@@ -50,7 +53,7 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 	}
 
 	if p.BasicAuthUser != "" {
-		if !checkBasicAuth(r, p.BasicAuthUser, p.BasicAuthHash) {
+		if !checkBasicAuth(r, ep.ID, p.BasicAuthUser, p.BasicAuthHash, deps.basic) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="mishmesh"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return false
@@ -240,7 +243,9 @@ func checkMTLS(r *http.Request, m *store.MTLSConfig) bool {
 	return false
 }
 
-func checkBasicAuth(r *http.Request, user, hash string) bool {
+const basicAuthCacheTTL = time.Minute
+
+func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[struct{}]) bool {
 	u, pass, ok := r.BasicAuth()
 	if !ok {
 		return false
@@ -251,5 +256,14 @@ func checkBasicAuth(r *http.Request, user, hash string) bool {
 	if hash == "" {
 		return false
 	}
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) == nil
+	sum := sha256.Sum256([]byte(hash + "|" + u + ":" + pass))
+	key := epID + "|" + hex.EncodeToString(sum[:])
+	if _, hit := cache.get(key); hit {
+		return true
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) != nil {
+		return false
+	}
+	cache.put(key, struct{}{})
+	return true
 }
