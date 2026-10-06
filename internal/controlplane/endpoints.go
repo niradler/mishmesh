@@ -157,6 +157,10 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "proxy_target required for proxy method")
 			return
 		}
+		if err := a.guardProxyTarget(pol.ProxyTarget); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		agentID = proxy.AgentID
 	} else {
 		ag, err := a.data.GetAgent(r.Context(), req.AgentID)
@@ -231,6 +235,16 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		if ep.Method == store.MethodProxy {
+			if pol == nil || pol.ProxyTarget == "" {
+				writeError(w, http.StatusBadRequest, "proxy_target required for proxy method")
+				return
+			}
+			if err := a.guardProxyTarget(pol.ProxyTarget); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		ep.Policy = pol
 	}

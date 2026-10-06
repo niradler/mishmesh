@@ -107,7 +107,11 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("trusted proxies: %w", err)
 	}
-	proxy.Register(context.Background(), data, conns, log, cfg.ProxyAllowLoopback)
+	proxyGuard, err := proxy.NewGuard(cfg.ProxyAllowLoopback, cfg.ProxyAllowPrivate, cfg.ProxyAllowedCIDRs)
+	if err != nil {
+		return err
+	}
+	proxy.Register(context.Background(), data, conns, log, proxyGuard)
 
 	stopPprof, err := startPprof(cfg.PprofAddr, log)
 	if err != nil {
@@ -170,6 +174,7 @@ func serve() error {
 	cp.SetLimiter(limiter)
 	cp.SetTrustedProxies(trustedProxies)
 	cp.SetAllowedOrigins(cfg.AllowedOrigins)
+	cp.SetProxyGuard(proxyGuard)
 	cp.SetDefaultQuota(store.Quota{
 		MaxAgents:         cfg.QuotaMaxAgents,
 		MaxEndpoints:      cfg.QuotaMaxEndpoints,

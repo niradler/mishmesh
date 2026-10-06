@@ -108,7 +108,7 @@ Each org can replace the default matrix (compiled to Cedar):
 
 `endpointDTO`: `{id, agent_id, org_id, kind, method, lifecycle, subdomain, domain, port, public_url, online, policy}`
 
-`method` (default `native`): `native | ssh | proxy | tailscale | cloudflare`. For `method=proxy`, omit `agent_id` and set `policy.proxy_target` (`host:port`). mishmesh then reverse-proxies the target directly, with no agent. `ssh` endpoints are created implicitly by the clientless SSH remote-forward server (see the deploy guide), not through this API.
+`method` (default `native`): `native | ssh | proxy | tailscale | cloudflare`. For `method=proxy`, omit `agent_id` and set `policy.proxy_target` (`host:port`); a target in a blocked range returns 400 (see `MISHMESH_PROXY_ALLOW_PRIVATE`, `MISHMESH_PROXY_ALLOWED_CIDRS`), and PATCH of the policy re-validates it. mishmesh then reverse-proxies the target directly, with no agent. `ssh` endpoints are created implicitly by the clientless SSH remote-forward server (see the deploy guide), not through this API.
 
 `policy` (all fields optional): `{request_headers_add:{}, request_headers_remove:[], response_headers_add:{}, response_headers_remove:[], host_header, strip_path_prefix, add_path_prefix, basic_auth_user, basic_auth_password (write-only, bcrypt-hashed server-side), ip_allow:[cidr], ip_deny:[cidr], force_https, max_body_bytes, compression, oidc:{issuer, client_id, client_secret, allowed_emails, allowed_domains}, mtls:{client_ca_pem, allowed_cns:[]}, rate_limit:{requests, period_seconds, burst?, scope?}, proxy_target}`
 

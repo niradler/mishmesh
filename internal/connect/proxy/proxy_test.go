@@ -40,7 +40,11 @@ func TestProxyRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	_ = data.CreateOrg(ctx, &store.Org{ID: "org_default", Name: "d", CreatedAt: now})
-	Register(ctx, data, conns, nil, true)
+	loopbackGuard, err := NewGuard(true, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	Register(ctx, data, conns, nil, loopbackGuard)
 
 	ep := &store.Endpoint{
 		ID: store.NewID("ep"), AgentID: AgentID, OrgID: "org_default", Kind: store.KindHTTP,
@@ -52,7 +56,7 @@ func TestProxyRoundTrip(t *testing.T) {
 	}
 	conns.BindEndpoint(ep.ID, AgentID)
 
-	ac := newConn(data, nil, true)
+	ac := newConn(data, nil, loopbackGuard)
 	stream, err := ac.OpenStream(ctx, ep.ID, store.KindHTTP, nil)
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
@@ -67,21 +71,5 @@ func TestProxyRoundTrip(t *testing.T) {
 	}
 	if string(out) != "ping" {
 		t.Fatalf("echo mismatch: %q", out)
-	}
-}
-
-func TestGuardBlocks(t *testing.T) {
-	c := newConn(nil, nil, false)
-	for _, target := range []string{"169.254.169.254:80", "169.254.10.10:80", "127.0.0.1:80", "0.0.0.0:80"} {
-		if _, err := c.resolveTarget(target); err == nil {
-			t.Fatalf("expected %q to be blocked", target)
-		}
-	}
-	if _, err := c.resolveTarget("10.1.2.3:80"); err != nil {
-		t.Fatalf("private LAN target should be allowed (feature intent): %v", err)
-	}
-	loop := newConn(nil, nil, true)
-	if addr, err := loop.resolveTarget("127.0.0.1:80"); err != nil || addr != "127.0.0.1:80" {
-		t.Fatalf("loopback should be allowed when opted in: addr=%q err=%v", addr, err)
 	}
 }

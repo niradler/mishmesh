@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
+	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
@@ -33,6 +34,7 @@ type API struct {
 	limiter            ratelimit.Limiter
 	trustedProxies     []*net.IPNet
 	allowedOrigins     map[string]struct{}
+	proxyGuard         *proxy.Guard
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex

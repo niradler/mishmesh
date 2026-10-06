@@ -225,7 +225,7 @@ curl -XPOST http://127.0.0.1:8081/api/v1/endpoints \
   -d '{"kind":"http","method":"proxy","subdomain":"internal","policy":{"proxy_target":"10.0.0.5:8080"}}'
 ```
 
-Targets that resolve to cloud-metadata, loopback, link-local, multicast or unspecified addresses are refused, and the resolved IP is pinned for the dial, so DNS rebinding doesn't work. Private/LAN ranges are allowed, since reaching them is the point of this method. Set `MISHMESH_PROXY_ALLOW_LOOPBACK=true` only if you must proxy to the server's own loopback.
+Targets that resolve to cloud-metadata, link-local, multicast or unspecified addresses are always refused. Loopback, private/LAN (RFC1918, CGNAT, ULA) addresses and internal names (`*.svc`, `*.cluster.local`, single-label) are refused by default too, because any tenant can create proxy endpoints. The target is checked when the endpoint is saved and again when dialling, and the checked IP is pinned for the dial, so DNS rebinding does not work. To proxy into your own network, set `MISHMESH_PROXY_ALLOWED_CIDRS=10.0.0.0/8` (preferred) or `MISHMESH_PROXY_ALLOW_PRIVATE=true`; use `MISHMESH_PROXY_ALLOW_LOOPBACK=true` only to reach the server's own loopback. The example above needs one of these opt-ins.
 
 ### mTLS at the edge
 
