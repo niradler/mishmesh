@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -17,18 +18,47 @@ import (
 )
 
 func TestAcmeHostPolicy(t *testing.T) {
-	p := acmeHostPolicy("mishmesh.io", nil)
-	ok := []string{"mishmesh.io", "abc.mishmesh.io", "ABC.MISHMESH.IO"}
-	bad := []string{"evil.com", "mishmesh.io.evil.com", "a.b.mishmesh.io.x"}
-	for _, h := range ok {
-		if err := p(nil, h); err != nil {
-			t.Errorf("host %q: want allow, got %v", h, err)
-		}
+	subs := map[string]bool{"abc": true}
+	customs := map[string]bool{"app.customer.com": true}
+	lookup := func(m map[string]bool) hostLookup {
+		return func(_ context.Context, h string) (bool, error) { return m[h], nil }
 	}
-	for _, h := range bad {
-		if err := p(nil, h); err == nil {
-			t.Errorf("host %q: want reject", h)
-		}
+	p := acmeHostPolicy("mishmesh.io", lookup(subs), lookup(customs), "api.mishmesh.io")
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"mishmesh.io", true},
+		{"MISHMESH.IO", true},
+		{"abc.mishmesh.io", true},
+		{"ABC.MISHMESH.IO", true},
+		{"api.mishmesh.io", true},
+		{"random1.mishmesh.io", false},
+		{"a.b.mishmesh.io", false},
+		{"x.abc.mishmesh.io", false},
+		{".mishmesh.io", false},
+		{"app.customer.com", true},
+		{"evil.com", false},
+		{"mishmesh.io.evil.com", false},
+		{"a.b.mishmesh.io.x", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			err := p(context.Background(), tt.host)
+			if (err == nil) != tt.want {
+				t.Fatalf("host %q: want allow=%v, got err=%v", tt.host, tt.want, err)
+			}
+		})
+	}
+}
+
+func TestAcmeHostPolicyNoStoreRejectsSubdomains(t *testing.T) {
+	p := acmeHostPolicy("mishmesh.io", nil, nil)
+	if err := p(context.Background(), "abc.mishmesh.io"); err == nil {
+		t.Fatal("subdomain must be rejected without a store")
+	}
+	if err := p(context.Background(), "mishmesh.io"); err != nil {
+		t.Fatalf("apex must be allowed: %v", err)
 	}
 }
 

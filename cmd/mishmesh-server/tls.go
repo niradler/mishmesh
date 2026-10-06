@@ -68,7 +68,7 @@ func buildTLSConfig(cfg config.Server, data store.DataStore) (*tls.Config, http.
 			Prompt:     autocert.AcceptTOS,
 			Cache:      autocert.DirCache(cfg.ACMECacheDir),
 			Email:      cfg.ACMEEmail,
-			HostPolicy: acmeHostPolicy(apex, customDomainLookup(cfg, data)),
+			HostPolicy: acmeHostPolicy(apex, subdomainLookup(data), customDomainLookup(cfg, data)),
 		}
 		tc := m.TLSConfig()
 		tc.MinVersion = tls.VersionTLS12
@@ -145,6 +145,16 @@ func customDomainLookup(cfg config.Server, data store.DataStore) hostLookup {
 	}
 }
 
+func subdomainLookup(data store.DataStore) hostLookup {
+	if data == nil {
+		return nil
+	}
+	return func(ctx context.Context, sub string) (bool, error) {
+		_, err := data.GetEndpointBySubdomain(ctx, sub)
+		return foundOrNotFound(err)
+	}
+}
+
 func foundOrNotFound(err error) (bool, error) {
 	if err == nil {
 		return true, nil
@@ -189,18 +199,40 @@ func (c *cachedLookup) allowed(ctx context.Context, host string) (bool, error) {
 	return allowed, nil
 }
 
-func acmeHostPolicy(apex string, custom hostLookup) autocert.HostPolicy {
-	var cache *cachedLookup
-	if custom != nil {
-		cache = newCachedLookup(custom, customDomainCacheTTL)
+func acmeHostPolicy(apex string, subdomain, custom hostLookup, fixedHosts ...string) autocert.HostPolicy {
+	fixed := map[string]struct{}{apex: {}}
+	for _, h := range fixedHosts {
+		fixed[strings.ToLower(h)] = struct{}{}
 	}
+	var subCache, customCache *cachedLookup
+	if subdomain != nil {
+		subCache = newCachedLookup(subdomain, customDomainCacheTTL)
+	}
+	if custom != nil {
+		customCache = newCachedLookup(custom, customDomainCacheTTL)
+	}
+	suffix := "." + apex
 	return func(ctx context.Context, host string) error {
 		host = strings.ToLower(host)
-		if host == apex || strings.HasSuffix(host, "."+apex) {
+		if _, ok := fixed[host]; ok {
 			return nil
 		}
-		if cache != nil {
-			allowed, err := cache.allowed(ctx, host)
+		if strings.HasSuffix(host, suffix) {
+			label := strings.TrimSuffix(host, suffix)
+			if label == "" || strings.Contains(label, ".") || subCache == nil {
+				return fmt.Errorf("acme: host %q not permitted", host)
+			}
+			allowed, err := subCache.allowed(ctx, label)
+			if err != nil {
+				return fmt.Errorf("acme: lookup host %q: %w", host, err)
+			}
+			if allowed {
+				return nil
+			}
+			return fmt.Errorf("acme: host %q not permitted", host)
+		}
+		if customCache != nil {
+			allowed, err := customCache.allowed(ctx, host)
 			if err != nil {
 				return fmt.Errorf("acme: lookup host %q: %w", host, err)
 			}

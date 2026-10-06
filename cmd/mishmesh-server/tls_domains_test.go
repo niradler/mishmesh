@@ -36,7 +36,7 @@ func TestAcmeHostPolicyVerifiedCustomDomains(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	policy := acmeHostPolicy("mishmesh.io", customDomainLookup(config.Server{DomainVerification: true}, data))
+	policy := acmeHostPolicy("mishmesh.io", subdomainLookup(data), customDomainLookup(config.Server{DomainVerification: true}, data))
 
 	tests := []struct {
 		host  string
@@ -44,7 +44,7 @@ func TestAcmeHostPolicyVerifiedCustomDomains(t *testing.T) {
 	}{
 		{"app.example.com", true},
 		{"APP.example.com", true},
-		{"x.mishmesh.io", true},
+		{"x.mishmesh.io", false},
 		{"pending.example.com", false},
 		{"unknown.example.com", false},
 		{"mishmesh.io.evil.com", false},
@@ -67,7 +67,7 @@ func TestAcmeHostPolicyWithoutVerificationUsesEndpointDomains(t *testing.T) {
 	if err := data.CreateEndpoint(ctx, ep); err != nil {
 		t.Fatal(err)
 	}
-	policy := acmeHostPolicy("mishmesh.io", customDomainLookup(config.Server{DomainVerification: false}, data))
+	policy := acmeHostPolicy("mishmesh.io", subdomainLookup(data), customDomainLookup(config.Server{DomainVerification: false}, data))
 	if err := policy(ctx, "home.example.com"); err != nil {
 		t.Errorf("endpoint domain should be allowed: %v", err)
 	}
