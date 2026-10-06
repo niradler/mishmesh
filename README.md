@@ -325,6 +325,7 @@ The client IP used by `ip_allow`, `ip_deny` and `rate_limit` is the socket peer.
 - **Trusted proxies.** `X-Forwarded-For` is ignored unless the peer is listed in `MISHMESH_TRUSTED_PROXIES`, so clients cannot spoof their IP to get around allow/deny lists or rate limits.
 - **Reach-in.** Reach-in has three gates: the server flag, an API caller allowed to write agents in that org, and the agent's own deny-first allowlist. The agent always blocks loopback, link-local and metadata addresses.
 - **Agentless proxy endpoints** (`method=proxy`) refuse loopback, link-local, multicast and metadata targets and pin the resolved IP. Per-endpoint OIDC refuses private issuer addresses unless `MISHMESH_OIDC_ALLOW_PRIVATE_ISSUERS=true`.
+- **CSRF and tunnel domains.** Session-authenticated requests that change state must carry `Content-Type: application/json` and an `Origin` (or `Sec-Fetch-Site`) that matches the control API's own host, `BASE_DOMAIN`, the `OIDC_REDIRECT_URL` host or an entry in `MISHMESH_ALLOWED_ORIGINS`. Bearer-token requests are exempt. This is defence in depth, not a substitute for domain separation: tenant tunnels are untrusted web content, and a tenant subdomain of the app's registrable domain is same-site with it. For SaaS, serve tunnels from a separate registrable domain (for example app at `mishmesh.example` and tunnels under `*.mishmesh-tunnels.example`, not `*.mishmesh.example`), so tenant pages cannot reach the session cookie's site at all.
 - **Keep the control listener private.** Port `8081` serves agent connects, the API, the UI and `/metrics` (bearer `MISHMESH_METRICS_TOKEN`, or the API token if that is unset). Publish only `/_mishmesh/agent/connect`, with TLS in front of it. The chart's `connectIngress` does exactly that.
 - **The cluster relay is authenticated but not encrypted.** Pod-to-pod relay frames carry an HMAC-SHA256 signature (`MISHMESH_CLUSTER_SECRET`, at least 32 characters, with a ±60 s clock-skew window), but the tunnelled bytes travel in cleartext. Keep the relay port (7443) on a private network: a pod network with NetworkPolicy (the chart enables one in the company and SaaS profiles), a private VPC subnet, or a service mesh with mTLS.
 
@@ -421,6 +422,7 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `SSH_ENABLED` / `SSH_ADDR` / `SSH_HOST_KEY_FILE` | `false` / `127.0.0.1:2222` | clientless `ssh -R` front door |
 | `REACHIN_ENABLED` | `false` | reach-in API |
 | `TRUSTED_PROXIES` | empty | IPs/CIDRs whose `X-Forwarded-For` is trusted |
+| `ALLOWED_ORIGINS` | empty | extra origins allowed to send cookie-authenticated writes (for example the Vite dev server `http://localhost:5173`) |
 | `QUOTA_MAX_AGENTS` / `QUOTA_MAX_ENDPOINTS` / `QUOTA_MAX_BANDWIDTH_BYTES` | `0` | default per-org quota (0 = unlimited) |
 | `METRICS_ENABLED` / `METRICS_TOKEN` | `true` / empty | Prometheus `/metrics` on the control listener |
 | `ENDPOINT_OIDC_KEY` | derived from `API_AUTH_TOKEN` | signing key for per-endpoint OIDC cookies |

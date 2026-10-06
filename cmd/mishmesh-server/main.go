@@ -169,6 +169,7 @@ func serve() error {
 	cp.SetPublicConfig(cfg.BaseDomain, cfg.PublicScheme)
 	cp.SetLimiter(limiter)
 	cp.SetTrustedProxies(trustedProxies)
+	cp.SetAllowedOrigins(cfg.AllowedOrigins)
 	cp.SetDefaultQuota(store.Quota{
 		MaxAgents:         cfg.QuotaMaxAgents,
 		MaxEndpoints:      cfg.QuotaMaxEndpoints,

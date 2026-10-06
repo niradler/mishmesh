@@ -80,6 +80,8 @@ type Server struct {
 	ClusterSecret  string
 
 	TrustedProxies string
+
+	AllowedOrigins []string
 }
 
 type Agent struct {
@@ -165,7 +167,19 @@ func LoadServer() Server {
 		ClusterSecret:  env("CLUSTER_SECRET", ""),
 
 		TrustedProxies: env("TRUSTED_PROXIES", ""),
+
+		AllowedOrigins: envList("ALLOWED_ORIGINS"),
 	}
+}
+
+func envList(key string) []string {
+	var out []string
+	for _, part := range strings.Split(env(key, ""), ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func hostnameOrEmpty() string {

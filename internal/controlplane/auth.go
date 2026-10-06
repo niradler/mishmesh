@@ -89,12 +89,12 @@ func (a *API) googleEnabled() bool {
 
 func (a *API) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/auth/config", a.authConfigHandler)
-	mux.HandleFunc("POST /api/v1/auth/login", a.loginHandler)
-	mux.HandleFunc("POST /api/v1/auth/logout", a.logoutHandler)
+	mux.HandleFunc("POST /api/v1/auth/login", a.csrfGuarded(a.loginHandler))
+	mux.HandleFunc("POST /api/v1/auth/logout", a.csrfGuarded(a.logoutHandler))
 	mux.HandleFunc("GET /api/v1/auth/me", a.meHandler)
-	mux.HandleFunc("POST /api/v1/auth/switch-org", a.switchOrgHandler)
-	mux.HandleFunc("POST /api/v1/auth/accept-invite", a.acceptInviteHandler)
-	mux.HandleFunc("POST /api/v1/auth/register", a.registerHandler)
+	mux.HandleFunc("POST /api/v1/auth/switch-org", a.csrfGuarded(a.switchOrgHandler))
+	mux.HandleFunc("POST /api/v1/auth/accept-invite", a.csrfGuarded(a.acceptInviteHandler))
+	mux.HandleFunc("POST /api/v1/auth/register", a.csrfGuarded(a.registerHandler))
 	mux.HandleFunc("GET /api/v1/auth/google/start", a.googleStartHandler)
 	mux.HandleFunc("GET /api/v1/auth/google/callback", a.googleCallbackHandler)
 }

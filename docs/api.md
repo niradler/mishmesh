@@ -30,6 +30,8 @@ The server refuses to start unless `MISHMESH_API_AUTH_TOKEN` is set or `MISHMESH
 | unset, `API_AUTH_DISABLED=true` | `false` | anything, as owner of `org_default` (local demo only) |
 | unset, `API_AUTH_DISABLED=true` | `true` | a session |
 
+Session (cookie) requests that are not GET, HEAD or OPTIONS must send `Content-Type: application/json` whenever they have a body (415 otherwise). When the browser supplies `Origin` or `Sec-Fetch-Site`, the request must come from the API's own origin, `BASE_DOMAIN`, the `OIDC_REDIRECT_URL` host or `MISHMESH_ALLOWED_ORIGINS` (403 otherwise). This also applies to `/auth/login`, `/auth/register`, `/auth/logout`, `/auth/switch-org` and `/auth/accept-invite`. Bearer-token requests are exempt.
+
 Every resource is scoped to the caller's active org. A resource outside that org returns 404, never 403. A session whose user has no membership in any org gets 401. Unknown `/api/*` paths return a JSON 404.
 
 ## Roles and policy

@@ -32,6 +32,7 @@ type API struct {
 	auth               *authConfig
 	limiter            ratelimit.Limiter
 	trustedProxies     []*net.IPNet
+	allowedOrigins     map[string]struct{}
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
@@ -256,6 +257,10 @@ func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context
 		return a.authContext(r, a.queryOrg(r), "admin", store.RoleOwner, true), true
 	}
 	if a.authEnabled() {
+		if err := a.csrfCheck(r); err != nil {
+			writeCSRFError(w, err)
+			return nil, false
+		}
 		su, err := a.lookupSession(r)
 		if err != nil {
 			if errors.Is(err, errNoSession) {
