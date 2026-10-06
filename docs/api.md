@@ -71,7 +71,7 @@ Each org can replace the default matrix (compiled to Cedar):
 | POST | `/auth/accept-invite` | session + `{invite_token}`. The token's email must equal the session user's email. Adds the membership with the invited role → me |
 | POST | `/auth/switch-org` | `{org_id}` → me. Changes the session's active org; 404 if not a member |
 | GET | `/auth/google/start` | 302 → Google consent (state cookie) |
-| GET | `/auth/google/callback` | `?code&state` → sets the cookie, 302 → web UI. Never attaches to an existing password account with the same email |
+| GET | `/auth/google/callback` | `?code&state` → verifies the state cookie and the ID token nonce, audience and subject, clears the state and nonce cookies (single use), sets the session cookie, 302 → web UI. Never attaches to an existing password account with the same email |
 | GET | `/auth/config` | public → `{password_enabled, google_enabled, auth_enabled, password_signup, signup_mode}` (for the login screen) |
 
 ## Status (dashboard summary)

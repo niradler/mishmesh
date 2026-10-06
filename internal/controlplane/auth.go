@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -19,7 +20,10 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-const sessionCookie = "mm_session"
+const (
+	sessionCookie    = "mm_session"
+	oauthNonceCookie = "mm_oauth_nonce"
+)
 const oauthStateCookie = "mm_oauth_state"
 
 const (
@@ -210,6 +214,10 @@ func (a *API) loginHandler(w http.ResponseWriter, r *http.Request) {
 	email := normalizeEmail(req.Email)
 	if !a.authRateAllowed(r, email) {
 		writeError(w, http.StatusTooManyRequests, "too many attempts, try again later")
+		return
+	}
+	if email == "" {
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 	user, err := a.data.GetUserByEmail(r.Context(), email)
@@ -504,8 +512,15 @@ func (a *API) googleStartHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "state failed")
 		return
 	}
+	nonce, err := randomToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "nonce failed")
+		return
+	}
 	http.SetCookie(w, &http.Cookie{Name: oauthStateCookie, Value: state, Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: 600})
+	http.SetCookie(w, &http.Cookie{Name: oauthNonceCookie, Value: nonce, Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: 600})
 	q := url.Values{}
+	q.Set("nonce", nonce)
 	q.Set("client_id", a.auth.googleClientID)
 	q.Set("redirect_uri", a.auth.redirectURL)
 	q.Set("response_type", "code")
@@ -521,7 +536,13 @@ func (a *API) googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	state := r.URL.Query().Get("state")
 	c, err := r.Cookie(oauthStateCookie)
-	if err != nil || state == "" || c.Value != state {
+	nonceCookie, nonceErr := r.Cookie(oauthNonceCookie)
+	a.clearOAuthCookies(w)
+	if err != nil || state == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(state)) != 1 {
+		writeError(w, http.StatusBadRequest, "invalid oauth state")
+		return
+	}
+	if nonceErr != nil || nonceCookie.Value == "" {
 		writeError(w, http.StatusBadRequest, "invalid oauth state")
 		return
 	}
@@ -530,7 +551,7 @@ func (a *API) googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "oidc discovery failed")
 		return
 	}
-	profile, err := a.auth.exchangeAndProfile(r.Context(), disc, r.URL.Query().Get("code"))
+	profile, err := a.auth.exchangeAndProfile(r.Context(), disc, r.URL.Query().Get("code"), nonceCookie.Value)
 	if err != nil {
 		a.log.Warn("google oauth exchange failed", "err", err)
 		writeError(w, http.StatusUnauthorized, "oauth exchange failed")
@@ -648,7 +669,69 @@ func (c *authConfig) discover(ctx context.Context) (*oidcDiscovery, error) {
 	return &disc, nil
 }
 
-func (c *authConfig) exchangeAndProfile(ctx context.Context, disc *oidcDiscovery, code string) (*oidcProfile, error) {
+func (a *API) clearOAuthCookies(w http.ResponseWriter) {
+	for _, name := range []string{oauthStateCookie, oauthNonceCookie} {
+		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	}
+}
+
+type idTokenClaims struct {
+	Sub   string          `json:"sub"`
+	Nonce string          `json:"nonce"`
+	Aud   json.RawMessage `json:"aud"`
+}
+
+func parseIDTokenClaims(idToken string) (*idTokenClaims, error) {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return nil, errors.New("malformed id_token")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return nil, fmt.Errorf("decode id_token: %w", err)
+	}
+	var claims idTokenClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("parse id_token: %w", err)
+	}
+	return &claims, nil
+}
+
+func audienceContains(raw json.RawMessage, clientID string) bool {
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		return one == clientID
+	}
+	var many []string
+	if err := json.Unmarshal(raw, &many); err != nil {
+		return false
+	}
+	for _, a := range many {
+		if a == clientID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *authConfig) verifyIDToken(idToken, nonce string) (*idTokenClaims, error) {
+	if idToken == "" {
+		return nil, errors.New("no id_token in response")
+	}
+	claims, err := parseIDTokenClaims(idToken)
+	if err != nil {
+		return nil, err
+	}
+	if nonce == "" || subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(nonce)) != 1 {
+		return nil, errors.New("id_token nonce mismatch")
+	}
+	if !audienceContains(claims.Aud, c.googleClientID) {
+		return nil, errors.New("id_token audience mismatch")
+	}
+	return claims, nil
+}
+
+func (c *authConfig) exchangeAndProfile(ctx context.Context, disc *oidcDiscovery, code, nonce string) (*oidcProfile, error) {
 	if code == "" {
 		return nil, errors.New("missing code")
 	}
@@ -670,12 +753,17 @@ func (c *authConfig) exchangeAndProfile(ctx context.Context, disc *oidcDiscovery
 	defer resp.Body.Close()
 	var tok struct {
 		AccessToken string `json:"access_token"`
+		IDToken     string `json:"id_token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
 		return nil, err
 	}
 	if tok.AccessToken == "" {
 		return nil, errors.New("no access token in response")
+	}
+	claims, err := c.verifyIDToken(tok.IDToken, nonce)
+	if err != nil {
+		return nil, err
 	}
 	uReq, err := http.NewRequestWithContext(ctx, http.MethodGet, disc.UserinfoEndpoint, nil)
 	if err != nil {
@@ -693,6 +781,9 @@ func (c *authConfig) exchangeAndProfile(ctx context.Context, disc *oidcDiscovery
 	}
 	if profile.Sub == "" || profile.Email == "" {
 		return nil, errors.New("incomplete userinfo")
+	}
+	if claims.Sub != "" && claims.Sub != profile.Sub {
+		return nil, errors.New("id_token subject does not match userinfo")
 	}
 	return &profile, nil
 }
