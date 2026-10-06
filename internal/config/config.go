@@ -18,6 +18,7 @@ type Server struct {
 	AuthPasswordEnabled   bool
 	SignupMode            string
 	DomainVerification    bool
+	PathRouting           bool
 	MetricsToken          string
 	WebUIEnabled          bool
 	IngressEnabled        bool
@@ -101,6 +102,7 @@ func LoadServer() Server {
 		AuthPasswordEnabled:   envBool("AUTH_PASSWORD_ENABLED", true),
 		SignupMode:            signupMode,
 		DomainVerification:    envBool("DOMAIN_VERIFICATION", signupMode == "org"),
+		PathRouting:           envBool("PATH_ROUTING", signupMode != "org"),
 		MetricsToken:          env("METRICS_TOKEN", ""),
 		WebUIEnabled:          envBool("WEBUI_ENABLED", false),
 		IngressEnabled:        envBool("INGRESS_ENABLED", true),

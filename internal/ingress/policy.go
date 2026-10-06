@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -77,6 +78,39 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 		r.Body = http.MaxBytesReader(w, r.Body, p.MaxBodyBytes)
 	}
 	return true
+}
+
+func stripGateCredentials(h http.Header, ep *store.Endpoint) {
+	stripCookies(h, oidcSessionCookie, oidcStateCookie)
+	if ep != nil && ep.Policy != nil && ep.Policy.BasicAuthUser != "" {
+		h.Del("Authorization")
+	}
+}
+
+func stripCookies(h http.Header, names ...string) {
+	values := h.Values("Cookie")
+	if len(values) == 0 {
+		return
+	}
+	var kept []string
+	for _, line := range values {
+		for _, part := range strings.Split(line, ";") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			name, _, _ := strings.Cut(part, "=")
+			if slices.Contains(names, strings.TrimSpace(name)) {
+				continue
+			}
+			kept = append(kept, part)
+		}
+	}
+	if len(kept) == 0 {
+		h.Del("Cookie")
+		return
+	}
+	h.Set("Cookie", strings.Join(kept, "; "))
 }
 
 func applyRequestPolicy(outReq *http.Request, ep *store.Endpoint) {

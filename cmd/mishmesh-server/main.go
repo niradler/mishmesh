@@ -208,17 +208,18 @@ func serve() error {
 
 	if cfg.IngressEnabled {
 		ing := ingress.New(ingress.Options{
-			Data:             data,
-			Conns:            conns,
-			Log:              log,
-			BaseDomain:       cfg.BaseDomain,
-			Meter:            mx,
-			OIDCSignKey:      endpointOIDCKey(cfg),
-			CookieSecure:     cfg.PublicScheme == "https",
-			OIDCAllowPrivate: cfg.OIDCAllowPrivate,
-			TrustedProxies:   trustedProxies,
-			Limiter:          limiter,
-			LookupCacheTTL:   cfg.IngressCacheTTL,
+			Data:               data,
+			Conns:              conns,
+			Log:                log,
+			BaseDomain:         cfg.BaseDomain,
+			Meter:              mx,
+			OIDCSignKey:        endpointOIDCKey(cfg),
+			CookieSecure:       cfg.PublicScheme == "https",
+			OIDCAllowPrivate:   cfg.OIDCAllowPrivate,
+			TrustedProxies:     trustedProxies,
+			Limiter:            limiter,
+			LookupCacheTTL:     cfg.IngressCacheTTL,
+			DisablePathRouting: !cfg.PathRouting,
 		})
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg, data)

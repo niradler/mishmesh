@@ -128,6 +128,7 @@ func (i *Ingress) rewriteRequest(pr *httputil.ProxyRequest) {
 		out.Host = ep.Policy.HostHeader
 	}
 	setForwardedHeaders(pr.In, out, u.trusted)
+	stripGateCredentials(out.Header, u.ep)
 	applyRequestPolicy(out, u.ep)
 }
 

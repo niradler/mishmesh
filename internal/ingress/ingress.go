@@ -36,18 +36,20 @@ type Options struct {
 	Limiter                 ratelimit.Limiter
 	UpstreamResponseTimeout time.Duration
 	LookupCacheTTL          time.Duration
+	DisablePathRouting      bool
 }
 
 type Ingress struct {
-	data     store.DataStore
-	conns    store.ConnectionStore
-	log      *slog.Logger
-	apexHost string
-	meter    Meter
-	oidc     *oidcGate
-	trusted  []*net.IPNet
-	limiter  ratelimit.Limiter
-	proxy    *httputil.ReverseProxy
+	data        store.DataStore
+	conns       store.ConnectionStore
+	log         *slog.Logger
+	apexHost    string
+	meter       Meter
+	oidc        *oidcGate
+	pathRouting bool
+	trusted     []*net.IPNet
+	limiter     ratelimit.Limiter
+	proxy       *httputil.ReverseProxy
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
@@ -59,13 +61,14 @@ func New(opts Options) *Ingress {
 		log = slog.Default()
 	}
 	i := &Ingress{
-		data:     opts.Data,
-		conns:    opts.Conns,
-		log:      log,
-		apexHost: hostOnly(opts.BaseDomain),
-		meter:    opts.Meter,
-		trusted:  opts.TrustedProxies,
-		limiter:  opts.Limiter,
+		data:        opts.Data,
+		conns:       opts.Conns,
+		log:         log,
+		apexHost:    hostOnly(opts.BaseDomain),
+		meter:       opts.Meter,
+		trusted:     opts.TrustedProxies,
+		limiter:     opts.Limiter,
+		pathRouting: !opts.DisablePathRouting,
 
 		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
@@ -161,7 +164,7 @@ func (i *Ingress) resolve(r *http.Request) (ep *store.Endpoint, outPath string, 
 			return nil, "", i.lookupFailed("domain", err)
 		}
 	}
-	if id, rest, isPath := pathEndpoint(r.URL.Path); isPath {
+	if id, rest, isPath := pathEndpoint(r.URL.Path); isPath && i.pathRouting {
 		e, err := i.endpointByID(r.Context(), id)
 		if err != nil {
 			return nil, "", i.lookupFailed("id", err)
@@ -241,6 +244,7 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 	stripHopHeaders(outReq.Header)
 	preserveUpgradeHeaders(outReq.Header, r.Header)
 	setForwardedHeaders(r, outReq, i.trusted)
+	stripGateCredentials(outReq.Header, ep)
 	applyRequestPolicy(outReq, ep)
 	if err := outReq.Write(stream); err != nil {
 		http.Error(w, upstreamUnreachableMessage(""), http.StatusBadGateway)
