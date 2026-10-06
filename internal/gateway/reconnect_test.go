@@ -25,7 +25,7 @@ func (s *staleLookupStore) GetEndpointBySubdomain(ctx context.Context, sub strin
 func TestRegisterRaceOnSameSubdomainIsIdempotent(t *testing.T) {
 	g, ag1, ag2, data := newRegisterFixture(t, Options{})
 	ctx := context.Background()
-	existing := &store.Endpoint{ID: "ep_old", AgentID: ag1.ID, OrgID: ag1.OrgID, Kind: store.KindHTTP, Lifecycle: store.LifecycleEphemeral, Subdomain: "app", CreatedAt: time.Now()}
+	existing := &store.Endpoint{ID: "ep_old", AgentID: ag1.ID, OrgID: ag1.OrgID, Kind: store.KindHTTP, Lifecycle: store.LifecycleEphemeral, Subdomain: "shop", CreatedAt: time.Now()}
 	if err := data.CreateEndpoint(ctx, existing); err != nil {
 		t.Fatal(err)
 	}
@@ -33,13 +33,13 @@ func TestRegisterRaceOnSameSubdomainIsIdempotent(t *testing.T) {
 	g.data = stale
 
 	stale.hideFirstLookup.Store(true)
-	ack := g.handleRegister(ctx, ag1, &tunnel.RegisterPayload{Endpoints: []tunnel.EndpointRequest{{Ref: "0", Kind: store.KindHTTP, Subdomain: "app"}}})
+	ack := g.handleRegister(ctx, ag1, &tunnel.RegisterPayload{Endpoints: []tunnel.EndpointRequest{{Ref: "0", Kind: store.KindHTTP, Subdomain: "shop"}}})
 	if got := ack.Endpoints[0]; got.Error != "" || got.EndpointID != "ep_old" {
 		t.Fatalf("same agent re-register after race: %+v, want rebind of ep_old", got)
 	}
 
 	stale.hideFirstLookup.Store(true)
-	ack = g.handleRegister(ctx, ag2, &tunnel.RegisterPayload{Endpoints: []tunnel.EndpointRequest{{Ref: "0", Kind: store.KindHTTP, Subdomain: "app"}}})
+	ack = g.handleRegister(ctx, ag2, &tunnel.RegisterPayload{Endpoints: []tunnel.EndpointRequest{{Ref: "0", Kind: store.KindHTTP, Subdomain: "shop"}}})
 	if got := ack.Endpoints[0]; got.Error == "" {
 		t.Fatalf("different agent must be refused a taken subdomain, got %+v", got)
 	}
@@ -58,7 +58,7 @@ func TestCleanupEphemeralSkipsAgentsWithLiveSession(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g, ag1, _, data := newRegisterFixture(t, Options{})
 			ctx := context.Background()
-			ep := &store.Endpoint{ID: "ep_1", AgentID: ag1.ID, OrgID: ag1.OrgID, Kind: store.KindHTTP, Lifecycle: store.LifecycleEphemeral, Subdomain: "app", CreatedAt: time.Now()}
+			ep := &store.Endpoint{ID: "ep_1", AgentID: ag1.ID, OrgID: ag1.OrgID, Kind: store.KindHTTP, Lifecycle: store.LifecycleEphemeral, Subdomain: "shop", CreatedAt: time.Now()}
 			if err := data.CreateEndpoint(ctx, ep); err != nil {
 				t.Fatal(err)
 			}

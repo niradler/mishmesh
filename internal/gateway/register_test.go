@@ -74,14 +74,19 @@ func TestRegisterReasons(t *testing.T) {
 	}{
 		{
 			name:    "http with subdomain",
-			req:     tunnel.EndpointRequest{Ref: "0", Kind: store.KindHTTP, Subdomain: "app"},
-			wantURL: "https://app.example.com",
+			req:     tunnel.EndpointRequest{Ref: "0", Kind: store.KindHTTP, Subdomain: "shop"},
+			wantURL: "https://shop.example.com",
 		},
 		{
 			name:      "subdomain taken by another agent",
-			seed:      []tunnel.EndpointRequest{{Ref: "s", Kind: store.KindHTTP, Subdomain: "app"}},
-			req:       tunnel.EndpointRequest{Ref: "0", Kind: store.KindHTTP, Subdomain: "app"},
-			wantError: `subdomain "app" is already taken`,
+			seed:      []tunnel.EndpointRequest{{Ref: "s", Kind: store.KindHTTP, Subdomain: "shop"}},
+			req:       tunnel.EndpointRequest{Ref: "0", Kind: store.KindHTTP, Subdomain: "shop"},
+			wantError: `subdomain "shop" is already taken`,
+		},
+		{
+			name:      "reserved subdomain",
+			req:       tunnel.EndpointRequest{Ref: "0", Kind: store.KindHTTP, Subdomain: "admin"},
+			wantError: `subdomain "admin" is reserved`,
 		},
 		{
 			name:      "invalid subdomain",
@@ -189,7 +194,7 @@ func TestRegisterReasons(t *testing.T) {
 
 func TestRegisterHTTPIncludesPathURL(t *testing.T) {
 	g, ag1, _, _ := newRegisterFixture(t, Options{})
-	ack := g.handleRegister(context.Background(), ag1, &tunnel.RegisterPayload{Endpoints: []tunnel.EndpointRequest{{Ref: "0", Kind: store.KindHTTP, Subdomain: "app"}}})
+	ack := g.handleRegister(context.Background(), ag1, &tunnel.RegisterPayload{Endpoints: []tunnel.EndpointRequest{{Ref: "0", Kind: store.KindHTTP, Subdomain: "shop"}}})
 	b := ack.Endpoints[0]
 	if want := "https://example.com/tunnel/" + b.EndpointID; b.PathURL != want {
 		t.Fatalf("path url = %q, want %q", b.PathURL, want)
@@ -204,7 +209,7 @@ func TestRegisterRebindsOwnSubdomainAndCustomDomain(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqs := []tunnel.EndpointRequest{
-		{Ref: "a", Kind: store.KindHTTP, Subdomain: "app", Lifecycle: store.LifecycleReserved},
+		{Ref: "a", Kind: store.KindHTTP, Subdomain: "shop", Lifecycle: store.LifecycleReserved},
 		{Ref: "d", Kind: store.KindTLS, Domain: "api.example.org"},
 	}
 	first := g.handleRegister(ctx, ag1, &tunnel.RegisterPayload{Endpoints: reqs})

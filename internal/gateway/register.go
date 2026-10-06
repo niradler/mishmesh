@@ -4,15 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/subdomain"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
-
-var dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func (g *Gateway) handleRegister(ctx context.Context, agent *store.Agent, p *tunnel.RegisterPayload) *tunnel.RegisterAckPayload {
 	ack := &tunnel.RegisterAckPayload{}
@@ -71,8 +69,8 @@ func (g *Gateway) registerHostBased(ctx context.Context, agent *store.Agent, req
 	if sub == "" {
 		sub = store.NewID("")
 	} else {
-		if !dnsLabel.MatchString(sub) {
-			return tunnel.EndpointBinding{}, fmt.Errorf("invalid subdomain %q (use lowercase letters, digits and hyphens, max 63 characters)", sub)
+		if err := subdomain.Validate(sub, ""); err != nil {
+			return tunnel.EndpointBinding{}, err
 		}
 		existing, err := g.data.GetEndpointBySubdomain(ctx, sub)
 		if err == nil {

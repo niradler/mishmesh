@@ -11,6 +11,7 @@ import (
 
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/subdomain"
 )
 
 func hostOnly(hostport string) string {
@@ -142,6 +143,13 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.Subdomain != "" {
+		req.Subdomain = subdomain.Normalize(req.Subdomain)
+		if err := subdomain.Validate(req.Subdomain, a.baseDomain); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	domain := req.Domain
 	if domain != "" {
 		var status int
@@ -213,7 +221,14 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Subdomain != nil {
-		ep.Subdomain = *req.Subdomain
+		sub := subdomain.Normalize(*req.Subdomain)
+		if sub != "" {
+			if err := subdomain.Validate(sub, a.baseDomain); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		ep.Subdomain = sub
 	}
 	if req.Domain != nil {
 		domain := ""
