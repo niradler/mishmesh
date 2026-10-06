@@ -5,8 +5,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 env:
   REGISTRY: ghcr.io/${{ github.repository_owner }}
@@ -14,15 +13,17 @@ env:
 jobs:
   binaries:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
@@ -32,15 +33,18 @@ jobs:
           cd web && npm ci --no-fund --no-audit && npm run build && cd ..
           mkdir -p dist-web
           tar -C web/dist -czf "dist-web/mishmesh-webui_${GITHUB_REF_NAME#v}.tar.gz" .
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a
         with:
-          version: "~> v2"
+          version: v2.18.2
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   images:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     timeout-minutes: 45
     strategy:
       matrix:
@@ -50,22 +54,22 @@ jobs:
           - name: mishmesh-agent
             file: Dockerfile.agent
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
         with:
           images: ${{ env.REGISTRY }}/${{ matrix.name }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           file: ${{ matrix.file }}
@@ -77,15 +81,20 @@ jobs:
 
   charts:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     timeout-minutes: 10
     needs: images
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
       - name: package and push
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#v}"
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          printf '%s' "$GHCR_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           for chart in deploy/helm/mishmesh deploy/helm/mishmesh-agent; do
             helm package "$chart" --version "$version" --app-version "$version" -d dist-charts
           done
