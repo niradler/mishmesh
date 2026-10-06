@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"log/slog"
 	"net"
 	"net/http"
@@ -28,6 +29,9 @@ const (
 	oidcStateTTL      = 10 * time.Minute
 	oidcSessionTTL    = 12 * time.Hour
 	jwksTTL           = time.Hour
+
+	tokenPurposeState   = "state"
+	tokenPurposeSession = "session"
 )
 
 type oidcGate struct {
@@ -282,11 +286,11 @@ type stateClaims struct {
 
 func (g *oidcGate) signState(c stateClaims) string {
 	payload, _ := json.Marshal(c)
-	return g.sign(payload)
+	return g.sign(tokenPurposeState, payload)
 }
 
 func (g *oidcGate) verifyState(token string) (*stateClaims, error) {
-	payload, err := g.unsign(token)
+	payload, err := g.unsign(tokenPurposeState, token)
 	if err != nil {
 		return nil, err
 	}
@@ -308,11 +312,11 @@ type sessionClaims struct {
 
 func (g *oidcGate) signSession(epID, email string) string {
 	payload, _ := json.Marshal(sessionClaims{Ep: epID, Email: email, Exp: time.Now().Add(oidcSessionTTL).Unix()})
-	return g.sign(payload)
+	return g.sign(tokenPurposeSession, payload)
 }
 
 func (g *oidcGate) verifySession(token, epID string) (string, bool) {
-	payload, err := g.unsign(token)
+	payload, err := g.unsign(tokenPurposeSession, token)
 	if err != nil {
 		return "", false
 	}
@@ -320,25 +324,31 @@ func (g *oidcGate) verifySession(token, epID string) (string, bool) {
 	if err := json.Unmarshal(payload, &c); err != nil {
 		return "", false
 	}
-	if c.Ep != epID || time.Now().Unix() > c.Exp {
+	if c.Ep != epID || c.Email == "" || time.Now().Unix() > c.Exp {
 		return "", false
 	}
 	return c.Email, true
 }
 
-func (g *oidcGate) sign(payload []byte) string {
+func (g *oidcGate) purposeMAC(purpose string) hash.Hash {
+	derive := hmac.New(sha256.New, g.signKey)
+	derive.Write([]byte("mishmesh-oidc-token-v1:" + purpose))
+	return hmac.New(sha256.New, derive.Sum(nil))
+}
+
+func (g *oidcGate) sign(purpose string, payload []byte) string {
 	body := base64.RawURLEncoding.EncodeToString(payload)
-	mac := hmac.New(sha256.New, g.signKey)
+	mac := g.purposeMAC(purpose)
 	mac.Write([]byte(body))
 	return body + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func (g *oidcGate) unsign(token string) ([]byte, error) {
+func (g *oidcGate) unsign(purpose, token string) ([]byte, error) {
 	body, sig, ok := strings.Cut(token, ".")
 	if !ok {
 		return nil, errors.New("malformed token")
 	}
-	mac := hmac.New(sha256.New, g.signKey)
+	mac := g.purposeMAC(purpose)
 	mac.Write([]byte(body))
 	want := mac.Sum(nil)
 	got, err := base64.RawURLEncoding.DecodeString(sig)
