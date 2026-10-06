@@ -64,7 +64,7 @@ func TestLoginRateLimitSharedAcrossNodes(t *testing.T) {
 	nodeA := newLimitedAPI(t, newNodeLimiter(), nil)
 	nodeB := newLimitedAPI(t, newNodeLimiter(), nil)
 
-	for i := 0; i < emailLimit.Capacity(); i++ {
+	for i := 0; i < pairLimit.Capacity(); i++ {
 		if got := loginStatus(t, nodeA, "victim@example.com", ""); got == http.StatusTooManyRequests {
 			t.Fatalf("attempt %d on node A limited too early", i)
 		}

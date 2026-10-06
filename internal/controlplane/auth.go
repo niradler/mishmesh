@@ -217,7 +217,11 @@ func (a *API) loginHandler(w http.ResponseWriter, r *http.Request) {
 		writeStoreUnavailable(w)
 		return
 	}
-	if err != nil || user.PasswordHash == "" || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
+	hash := ""
+	if err == nil {
+		hash = user.PasswordHash
+	}
+	if !passwordMatches(hash, req.Password) {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}

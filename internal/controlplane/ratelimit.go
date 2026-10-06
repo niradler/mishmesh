@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	ipLimit    = ratelimit.Limit{Requests: 1, Period: 3 * time.Second, Burst: 20}
-	emailLimit = ratelimit.Limit{Requests: 1, Period: 12 * time.Second, Burst: 5}
+	ipLimit   = ratelimit.Limit{Requests: 1, Period: 3 * time.Second, Burst: 20}
+	pairLimit = ratelimit.Limit{Requests: 1, Period: 12 * time.Second, Burst: 5}
 )
 
 func (a *API) SetLimiter(l ratelimit.Limiter) {
@@ -37,7 +37,7 @@ func (a *API) authRateAllowed(r *http.Request, email string) bool {
 	if email == "" {
 		return true
 	}
-	return a.limiter.Allow(ctx, "cp:email:"+hashKey(email), emailLimit).Allowed
+	return a.limiter.Allow(ctx, "cp:pair:"+hashKey(ipKey+"|"+email), pairLimit).Allowed
 }
 
 func hashKey(s string) string {
