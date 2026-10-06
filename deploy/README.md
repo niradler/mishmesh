@@ -55,7 +55,7 @@ Pick one:
   MISHMESH_ACME_EMAIL=ops@example.com
   ```
 
-  ACME needs ports 80 and 443 reachable from the internet. Certificates are issued for the base domain, its subdomains and custom domains: verified domains when `MISHMESH_DOMAIN_VERIFICATION` is on, otherwise domains bound to an endpoint (lookups are cached for 30 s). ACME runs on a single pod only, so clusters use a wildcard certificate.
+  ACME needs ports 80 and 443 reachable from the internet. Certificates are issued for the base domain, subdomains that belong to an existing endpoint (single label only) and custom domains: verified domains when `MISHMESH_DOMAIN_VERIFICATION` is on, otherwise domains bound to an endpoint (lookups are cached for 30 s). ACME runs on a single pod only, so clusters use a wildcard certificate.
 
 ### 3. Run Postgres and the server
 

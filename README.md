@@ -404,11 +404,13 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `DATA_BACKEND` / `DATA_DSN` | inferred / `mishmesh.db` | `postgres` (a `postgres://` DSN selects it) or `sqlite` for dev |
 | `DATA_MAX_CONNS` / `DATA_MAX_IDLE_CONNS` | `25` / | Postgres connection pool bound per pod |
 | `CONN_BACKEND` / `REDIS_URL` | `memory` / empty | `redis` for clusters |
+| `REDIS_POOL_SIZE` | `0` (go-redis default) | Redis connection pool size. Bandwidth usage is batched per org and flushed about once a second, and reads are cached for about a second, so the bandwidth quota is eventually consistent across pods within 1 to 2 s |
 | `API_AUTH_TOKEN` | empty | admin bearer token for `/api/v1`; required unless `API_AUTH_DISABLED=true` |
 | `BOOTSTRAP_TOKEN` | empty | seed one agent token (`ag_bootstrap` in `org_default`) at startup |
 | `AUTH_ENABLED` / `AUTH_PASSWORD_ENABLED` | `false` / `true` | browser login; password on/off (off means Google only) |
 | `SIGNUP_MODE` | `org` | `org` or `invite` |
 | `DOMAIN_VERIFICATION` | `true` in `org` mode | require TXT proof for custom domains |
+| `PATH_ROUTING` | `false` in `org` mode, `true` in `invite` | serve endpoints at `/tunnel/{id}` on the base domain; off keeps tenants on separate origins |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `OIDC_REDIRECT_URL` / `OIDC_ISSUER` | | Google login |
 | `SESSION_TTL_HOURS` | `168` | login session lifetime |
 | `WEBUI_ENABLED` / `WEBUI_DIR` | `false` / empty | serve the SPA (the image bundles it at `/webui`) |
