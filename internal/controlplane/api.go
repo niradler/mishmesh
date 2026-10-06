@@ -39,7 +39,8 @@ type API struct {
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
-	authzCache   map[string]*authz.Authorizer
+	authzCache   map[string]authzEntry
+	now          func() time.Time
 }
 
 func (a *API) SetDraining(draining bool) {
@@ -62,7 +63,8 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 		adminToken:   adminToken,
 		limiter:      ratelimit.NewMemory(),
 		defaultAuthz: authz.Default(),
-		authzCache:   make(map[string]*authz.Authorizer),
+		authzCache:   make(map[string]authzEntry),
+		now:          time.Now,
 
 		maxOrgsPerUser: DefaultMaxOrgsPerUser,
 	}
@@ -71,21 +73,33 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 func (a *API) authorizerFor(ctx context.Context, orgID string) *authz.Authorizer {
 	a.authzMu.Lock()
 	defer a.authzMu.Unlock()
-	if az, ok := a.authzCache[orgID]; ok {
-		return az
+	now := a.now()
+	if e, ok := a.authzCache[orgID]; ok && now.Before(e.expires) {
+		return e.az
 	}
 	pol, err := a.data.GetOrgPolicy(ctx, orgID)
-	if err != nil || pol.CedarSrc == "" {
-		a.authzCache[orgID] = a.defaultAuthz
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		a.log.Warn("org policy lookup failed, using defaults", "org", orgID, "err", err)
 		return a.defaultAuthz
 	}
-	az, err := authz.New([]byte(pol.CedarSrc))
-	if err != nil {
-		a.log.Warn("org policy parse failed, using defaults", "org", orgID, "err", err)
-		az = a.defaultAuthz
+	az := a.defaultAuthz
+	if err == nil && pol.CedarSrc != "" {
+		parsed, perr := authz.New([]byte(pol.CedarSrc))
+		if perr != nil {
+			a.log.Warn("org policy parse failed, using defaults", "org", orgID, "err", perr)
+		} else {
+			az = parsed
+		}
 	}
-	a.authzCache[orgID] = az
+	a.authzCache[orgID] = authzEntry{az: az, expires: now.Add(authzCacheTTL)}
 	return az
+}
+
+const authzCacheTTL = 5 * time.Second
+
+type authzEntry struct {
+	az      *authz.Authorizer
+	expires time.Time
 }
 
 func (a *API) invalidateAuthz(orgID string) {

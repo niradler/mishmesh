@@ -58,7 +58,7 @@ Each org can replace the default matrix (compiled to Cedar):
 | Method | Path | Notes |
 | --- | --- | --- |
 | GET | `/policy` | → `{is_default, roles, actions, matrix:{role:{action:bool}}, cedar_src}` |
-| PUT | `/policy` | `{matrix:{role:[action]}}` replaces the org's whole policy. A role that is left out gets no actions. Unknown roles or actions → 400. Returns the GET shape. Audited as `policy.update`. Removing `policy:write` from `owner` also locks out the admin bearer token for that org |
+| PUT | `/policy` | `{matrix:{role:[action]}}` replaces the org's whole policy. A role that is left out gets no actions. Unknown roles or actions → 400. Returns the GET shape. Audited as `policy.update`. Each node caches an org's compiled policy for at most 5 seconds, so in a cluster a change reaches every node within 5s. Removing `policy:write` from `owner` also locks out the admin bearer token for that org |
 
 ## Auth & identity
 
