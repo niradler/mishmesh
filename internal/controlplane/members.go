@@ -107,7 +107,7 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	orgID := a.orgScope(r)
 	userID := r.PathValue("user_id")
-	if _, err := a.data.GetMembership(r.Context(), orgID, userID); a.handleErr(w, err) {
+	if !a.authorizeMemberChange(w, r, orgID, userID, req.Role) {
 		return
 	}
 	if err := a.data.UpdateMembership(r.Context(), &store.Membership{OrgID: orgID, UserID: userID, Role: req.Role}); a.handleErr(w, err) {
@@ -120,7 +120,7 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := a.orgScope(r)
 	userID := r.PathValue("user_id")
-	if _, err := a.data.GetMembership(r.Context(), orgID, userID); a.handleErr(w, err) {
+	if !a.authorizeMemberChange(w, r, orgID, userID, "") {
 		return
 	}
 	if err := a.data.DeleteMembership(r.Context(), orgID, userID); a.handleErr(w, err) {
@@ -128,6 +128,43 @@ func (a *API) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "member.remove", userID, "")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) authorizeMemberChange(w http.ResponseWriter, r *http.Request, orgID, userID, newRole string) bool {
+	target, err := a.data.GetMembership(r.Context(), orgID, userID)
+	if a.handleErr(w, err) {
+		return false
+	}
+	if roleRank(target.Role) > roleRank(a.callerRole(r)) {
+		writeError(w, http.StatusForbidden, "cannot modify a member above your own role")
+		return false
+	}
+	if target.Role != store.RoleOwner || newRole == store.RoleOwner {
+		return true
+	}
+	owners, err := a.countOwners(r, orgID)
+	if a.handleErr(w, err) {
+		return false
+	}
+	if owners <= 1 {
+		writeError(w, http.StatusConflict, "an organization must keep at least one owner")
+		return false
+	}
+	return true
+}
+
+func (a *API) countOwners(r *http.Request, orgID string) (int, error) {
+	ms, err := a.data.ListMembershipsByOrg(r.Context(), orgID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, m := range ms {
+		if m.Role == store.RoleOwner {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func validRole(role string) bool {

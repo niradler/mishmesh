@@ -48,6 +48,10 @@ func (a *API) getPolicyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) putPolicyHandler(w http.ResponseWriter, r *http.Request) {
+	if a.callerRole(r) != store.RoleOwner {
+		writeError(w, http.StatusForbidden, "only owners can change the authorization policy")
+		return
+	}
 	var req struct {
 		Matrix map[string][]string `json:"matrix"`
 	}

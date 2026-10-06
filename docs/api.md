@@ -171,6 +171,7 @@ New orgs start from the server defaults `MISHMESH_QUOTA_MAX_*`. Quota writes are
 
 - The raw token is returned once, and only its SHA-256 is stored.
 - The role may not exceed the caller's own (403).
+- `PATCH` and `DELETE /members/{user_id}` apply the same ranking (`owner` > `admin` > `member`): a caller cannot change or remove a member who outranks them, or grant a role above their own (403). An org's last owner cannot be demoted or removed (409). `PUT /policy` is owner-only (403 otherwise), whatever the org's policy says.
 - Nobody is added until the invite is redeemed: through `/auth/register`, `/auth/accept-invite`, or a Google login whose `email_verified` is true.
 
 ## Audit
