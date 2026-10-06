@@ -35,6 +35,7 @@ type API struct {
 	trustedProxies     []*net.IPNet
 	allowedOrigins     map[string]struct{}
 	proxyGuard         *proxy.Guard
+	maxOrgsPerUser     int
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
@@ -62,6 +63,8 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 		limiter:      ratelimit.NewMemory(),
 		defaultAuthz: authz.Default(),
 		authzCache:   make(map[string]*authz.Authorizer),
+
+		maxOrgsPerUser: DefaultMaxOrgsPerUser,
 	}
 }
 
@@ -356,13 +359,29 @@ func (a *API) createOrgHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name required")
 		return
 	}
+	su, hasSession := a.resolveSession(r)
+	if hasSession && !a.isAdmin(r) && a.maxOrgsPerUser > 0 {
+		owned, err := a.ownedOrgCount(r.Context(), su.user.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "create org failed")
+			return
+		}
+		if owned >= a.maxOrgsPerUser {
+			writeError(w, http.StatusConflict, "organization limit reached")
+			return
+		}
+	}
 	org, err := a.createOrg(r.Context(), req.Name)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create org failed")
 		return
 	}
-	if su, ok := a.resolveSession(r); ok {
-		_ = a.data.CreateMembership(r.Context(), &store.Membership{OrgID: org.ID, UserID: su.user.ID, Role: store.RoleOwner, CreatedAt: time.Now()})
+	if hasSession {
+		if err := a.data.CreateMembership(r.Context(), &store.Membership{OrgID: org.ID, UserID: su.user.ID, Role: store.RoleOwner, CreatedAt: time.Now()}); err != nil {
+			a.log.Warn("create owner membership", "org", org.ID, "err", err)
+			writeError(w, http.StatusInternalServerError, "create org failed")
+			return
+		}
 	}
 	a.audit(r, "org.create", org.ID, org.Name)
 	writeJSON(w, http.StatusCreated, toOrgDTO(org))

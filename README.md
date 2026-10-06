@@ -424,6 +424,7 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `TRUSTED_PROXIES` | empty | IPs/CIDRs whose `X-Forwarded-For` is trusted |
 | `ALLOWED_ORIGINS` | empty | extra origins allowed to send cookie-authenticated writes (for example the Vite dev server `http://localhost:5173`) |
 | `QUOTA_MAX_AGENTS` / `QUOTA_MAX_ENDPOINTS` / `QUOTA_MAX_BANDWIDTH_BYTES` | `0` | default per-org quota (0 = unlimited) |
+| `MAX_ORGS_PER_USER` | `3` | orgs one user may own via `POST /orgs` (0 = unlimited; operator exempt) |
 | `METRICS_ENABLED` / `METRICS_TOKEN` | `true` / empty | Prometheus `/metrics` on the control listener |
 | `ENDPOINT_OIDC_KEY` | derived from `API_AUTH_TOKEN` | signing key for per-endpoint OIDC cookies |
 | `OIDC_ALLOW_PRIVATE_ISSUERS` | `false` | allow endpoint OIDC issuers on private addresses |

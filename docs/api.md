@@ -159,7 +159,7 @@ New orgs start from the server defaults `MISHMESH_QUOTA_MAX_*`. Quota writes are
 | --- | --- | --- |
 | GET | `/orgs` | orgs the caller belongs to → `[{id, name, created_at}]` |
 | GET | `/orgs/{id}` | members only, else 404 |
-| POST | `/orgs` | `{name}` → 201. Creates the org, and the caller becomes owner |
+| POST | `/orgs` | `{name}` → 201. Creates the org, and the caller becomes owner. A user may own at most `MISHMESH_MAX_ORGS_PER_USER` orgs (default 3); beyond that → 409. The operator token is exempt |
 | GET | `/members` | current org's memberships → `[{user:{id, email, name}, role, created_at}]` |
 | POST | `/members` | `{email, role}` → 201 `{id, email, role, invited_by, created_at, expires_at, invite_token, invite_url}`. See below |
 | GET | `/invites` | pending invites (no tokens) |

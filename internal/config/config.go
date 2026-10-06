@@ -71,6 +71,7 @@ type Server struct {
 	EndpointOIDCKey    string
 	OIDCAllowPrivate   bool
 
+	MaxOrgsPerUser         int
 	QuotaMaxAgents         int
 	QuotaMaxEndpoints      int
 	QuotaMaxBandwidthBytes int64
@@ -160,6 +161,7 @@ func LoadServer() Server {
 		EndpointOIDCKey:    env("ENDPOINT_OIDC_KEY", ""),
 		OIDCAllowPrivate:   envBool("OIDC_ALLOW_PRIVATE_ISSUERS", false),
 
+		MaxOrgsPerUser:         envInt("MAX_ORGS_PER_USER", 3),
 		QuotaMaxAgents:         envInt("QUOTA_MAX_AGENTS", 0),
 		QuotaMaxEndpoints:      envInt("QUOTA_MAX_ENDPOINTS", 0),
 		QuotaMaxBandwidthBytes: int64(envInt("QUOTA_MAX_BANDWIDTH_BYTES", 0)),

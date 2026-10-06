@@ -175,6 +175,7 @@ func serve() error {
 	cp.SetTrustedProxies(trustedProxies)
 	cp.SetAllowedOrigins(cfg.AllowedOrigins)
 	cp.SetProxyGuard(proxyGuard)
+	cp.SetMaxOrgsPerUser(cfg.MaxOrgsPerUser)
 	cp.SetDefaultQuota(store.Quota{
 		MaxAgents:         cfg.QuotaMaxAgents,
 		MaxEndpoints:      cfg.QuotaMaxEndpoints,
