@@ -34,7 +34,24 @@ One Go module builds two binaries: `mishmesh-server` (gateway, public ingress, c
 
 Use mishmesh when tunnels are part of your product or platform: many customer sites, many tenants, or a control plane that must call into networks it cannot route to. If you only need to show one laptop service to a colleague, a hosted tunnel is less work.
 
-Not supported: UDP, peer-to-peer or WireGuard data paths, multi-region routing. mishmesh is version 0.1.0 and no images are published yet, so you build them from this repo (see [Deployment shapes](#deployment-shapes)).
+Not supported: UDP, peer-to-peer or WireGuard data paths, multi-region routing. mishmesh is in beta (see [Beta limitations](#beta-limitations)).
+
+## Install
+
+Every release tag publishes:
+
+| Artifact | Where |
+| --- | --- |
+| Server and agent binaries (linux, macOS, Windows; amd64, arm64), web UI bundle, `checksums.txt` | [GitHub releases](https://github.com/niradler/mishmesh/releases) |
+| Container images (linux/amd64, linux/arm64) | `ghcr.io/niradler/mishmesh-server:<version>`, `ghcr.io/niradler/mishmesh-agent:<version>` |
+| Helm charts | `oci://ghcr.io/niradler/charts/mishmesh`, `oci://ghcr.io/niradler/charts/mishmesh-agent` |
+
+```bash
+helm upgrade --install mishmesh oci://ghcr.io/niradler/charts/mishmesh --version 0.1.0-beta.1 \
+  -n mishmesh --create-namespace -f values-company.yaml
+```
+
+The chart's default image tag is the chart's `appVersion`, so pinning the chart version pins the server version. The `helm` commands below use the in-repo chart path, and the OCI reference works the same way.
 
 ## Quickstart (5 minutes, Docker)
 
@@ -361,7 +378,19 @@ Cluster mode requires `MISHMESH_CLUSTER_ENABLED=true`, `MISHMESH_CONN_BACKEND=re
 
 ### Sizing
 
-TBD: measured numbers from load test
+Measured in Docker with the server limited to 4 vCPU / 8 GB, Postgres 16, 200 agents and 10 s runs (`c` = concurrent clients):
+
+| Path | 1 KB requests | 1 MB requests |
+| --- | --- | --- |
+| Single pod | 18.6k req/s, p99 6 ms (c50); 20.2k req/s, p99 37 ms (c200) | ~2.3 GB/s |
+| Cluster, agent on the receiving pod | 16.9-17.4k req/s | ~2.0-2.3 GB/s |
+| Cluster, relayed to the owner pod | 9.6-11.8k req/s, +2.5 ms p50 | ~1.2-1.4 GB/s |
+
+- **Agents are cheap.** An idle agent costs about 70 KB of RSS: 5,000 agents use about 350 MB and connect in about 8 s. Plan for 10-20k agents per pod. File descriptors and reconnect storms limit the count before memory does.
+- **Request rate scales with CPU.** Expect about 5k req/s of small requests per core, and about 60% of that for traffic relayed between pods.
+- **Postgres.** Keep `MISHMESH_DATA_MAX_CONNS` at the default of 25, because raising it gives no extra throughput. Set Postgres `max_connections` to at least `pods × 25 + 20`.
+- **Pod count.** For N agents, run `max(2, ceil(N / 10,000))` pods, then add pods for request rate at about 15k req/s per pod.
+- **Failover.** When a pod dies, its agents are back on another pod within about 3 s. Requests for those agents fail for about 2 s, with 503s while the agents reconnect.
 
 ## Server configuration
 
@@ -373,6 +402,7 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `PUBLIC_SCHEME` | `http` | `http` or `https`; also marks cookies `Secure` |
 | `INGRESS_ADDR` / `HTTPS_ADDR` / `API_ADDR` | `127.0.0.1:8080` / `:8443` / `:8081` | listeners |
 | `DATA_BACKEND` / `DATA_DSN` | inferred / `mishmesh.db` | `postgres` (a `postgres://` DSN selects it) or `sqlite` for dev |
+| `DATA_MAX_CONNS` / `DATA_MAX_IDLE_CONNS` | `25` / | Postgres connection pool bound per pod |
 | `CONN_BACKEND` / `REDIS_URL` | `memory` / empty | `redis` for clusters |
 | `API_AUTH_TOKEN` | empty | admin bearer token for `/api/v1`; required unless `API_AUTH_DISABLED=true` |
 | `BOOTSTRAP_TOKEN` | empty | seed one agent token (`ag_bootstrap` in `org_default`) at startup |
@@ -399,9 +429,27 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 
 Server CLI: `mishmesh-server [serve]`, `mishmesh-server token create --org NAME --name AGENT [--dsn DSN]`, `mishmesh-server version`, `mishmesh-server help`. On startup the server deletes ephemeral endpoints whose agent has no live session. In cluster mode it only deletes those whose agent is owned by no pod.
 
+## Operations: backup and upgrade
+
+- **What to back up.** Postgres is the only durable state: orgs, users, agents, token hashes, endpoints, domains, quotas and the audit log. Back it up with your usual Postgres tooling (`pg_dump -Fc`, managed-database snapshots, or WAL archiving). Redis holds only live routing and rate-limit state, which agents rebuild by reconnecting, so it needs no backup. Also keep the ACME cache directory (single-pod ACME) or your wildcard certificate Secret, and the secrets you configured (`API_AUTH_TOKEN`, `CLUSTER_SECRET`, `ENDPOINT_OIDC_KEY`, Google OIDC credentials).
+- **Upgrades.** The schema migrates forward automatically when the server starts. An advisory lock serializes it, so a rolling upgrade of many pods is safe. Take a database backup first. Downgrading after a migration is not supported, so restore that backup instead. Upgrade the server before the agents. Agents reconnect with backoff during a rollout and need no action.
+- **Version.** `mishmesh-server version` and `mishmesh-agent version` print the release tag.
+
+## Beta limitations
+
+- HTTP reach-in buffers the response (8 MB cap). Use the stream route for large or long transfers.
+- ACME runs on a single pod only. Clusters use a wildcard certificate Secret.
+- TCP and TLS-passthrough endpoints have no rate limiting and no in-flight bandwidth metering. HTTP has both.
+- Custom domains are verified once and not re-verified periodically.
+- Quota usage is shared across pods within a couple of seconds, so a burst can briefly overshoot a bandwidth quota in cluster mode.
+- The pod-to-pod relay is authenticated but not encrypted, so keep it on a private network (see [Security model](#security-model)).
+- An unverified password signup can hold an email address. A later Google login for that address is refused (409) rather than merged.
+- Endpoint OIDC client secrets are stored unencrypted in Postgres, so protect database access and backups.
+- The Go module path is `github.com/mishmesh/mishmesh`, so install from the release binaries or images, not `go install`.
+
 ## Status and roadmap
 
-Version 0.1.0. Built and tested:
+Version 0.1.0-beta.1. Built and tested:
 
 - HTTP/HTTPS (subdomain, path, custom domain), WebSocket/SSE streaming, public TCP ports, TLS passthrough, clientless SSH, agentless proxy endpoints
 - HTTPS with your own certificate, ACME, or self-signed; custom-domain ownership verification
@@ -411,15 +459,9 @@ Version 0.1.0. Built and tested:
 - HTTP and raw-stream reach-in
 - Postgres and Redis backends, cluster mode with pod-to-pod relay, Helm charts for the three shapes, Prometheus metrics
 
-The ship-blocking gaps from the productionization pass are closed. Known limitations:
+Known gaps are listed in [Beta limitations](#beta-limitations).
 
-- No published images or chart repository yet; build them from this repo.
-- HTTP reach-in buffers the response (8 MB cap). Use the stream route for large or long transfers.
-- ACME runs on a single pod only. Clusters use a wildcard certificate Secret.
-- TCP and TLS-passthrough endpoints have no rate limiting and no in-flight bandwidth metering (HTTP has both).
-- Custom domains are not re-verified periodically.
-
-Next: load-test numbers (see [Sizing](#sizing)), request inspector, webhook verification, endpoint pooling. Not planned for now: UDP, P2P or WireGuard data paths, SAML, multi-region, a Kubernetes operator, billing.
+Next: request inspector, webhook verification, endpoint pooling, HTTP reach-in streaming. Not planned for now: UDP, P2P or WireGuard data paths, SAML, multi-region, a Kubernetes operator, billing.
 
 ## Development
 

@@ -2,7 +2,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 image:
-  repository: ghcr.io/mishmesh/mishmesh-server
+  repository: ghcr.io/niradler/mishmesh-server
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []

@@ -1,0 +1,38 @@
+mishmesh Beta License
+
+Copyright (c) 2026 Nir Adler. All rights reserved.
+
+This software, including its source code, binaries, container images, Helm charts and
+documentation (the "Software"), is proprietary and is made available only to parties that
+have been invited to the mishmesh beta program ("Beta Participants").
+
+1. Grant. Subject to these terms, each Beta Participant receives a limited, non-exclusive,
+   non-transferable, non-sublicensable, revocable license to install and use the Software
+   for the duration of the beta program, for internal evaluation and internal business use.
+
+2. Restrictions. A Beta Participant may not: (a) redistribute, sell, lease or sublicense
+   the Software; (b) offer the Software, or any derivative of it, to third parties as a
+   hosted or managed service; (c) modify, or create derivative works of, the Software
+   except for configuration; (d) remove or alter any notice of proprietary rights.
+
+3. Feedback. Feedback, bug reports and suggestions may be used by the copyright holder
+   without restriction or obligation.
+
+4. Termination. This license ends at the end of the beta program, on written notice, or
+   automatically on breach of these terms. On termination the Beta Participant must stop
+   using the Software and delete all copies.
+
+5. Pre-release software. The Software is pre-release and may contain defects, change
+   incompatibly, or be discontinued.
+
+6. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+7. Limitation of liability. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+A separate written agreement between the copyright holder and a Beta Participant takes
+precedence over these terms where they conflict.

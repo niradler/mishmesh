@@ -2,7 +2,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 image:
-  repository: ghcr.io/mishmesh/mishmesh-agent
+  repository: ghcr.io/niradler/mishmesh-agent
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []

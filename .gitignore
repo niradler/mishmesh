@@ -23,3 +23,8 @@
 
 # Go
 /vendor/
+
+# Release
+/dist/
+/dist-web/
+/dist-charts/
