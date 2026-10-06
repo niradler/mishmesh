@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -203,7 +204,7 @@ func serve() error {
 		log.Info("bootstrap token seeded", "agent_id", "ag_bootstrap")
 	}
 
-	servers := []*http.Server{{Addr: cfg.APIAddr, Handler: apiMux}}
+	servers := []*http.Server{newHTTPServer(cfg.APIAddr, apiMux, nil)}
 	log.Info("api listener", "addr", cfg.APIAddr)
 
 	if cfg.IngressEnabled {
@@ -226,16 +227,16 @@ func serve() error {
 			if err != nil {
 				return err
 			}
-			servers = append(servers, &http.Server{Addr: cfg.HTTPSAddr, Handler: ing, TLSConfig: tc})
+			servers = append(servers, newHTTPServer(cfg.HTTPSAddr, ing, tc))
 			log.Info("ingress https listener", "addr", cfg.HTTPSAddr, "base_domain", cfg.BaseDomain)
 			httpHandler := http.Handler(ing)
 			if acmeHTTP != nil {
 				httpHandler = acmeHTTP
 			}
-			servers = append(servers, &http.Server{Addr: cfg.IngressAddr, Handler: httpHandler})
+			servers = append(servers, newHTTPServer(cfg.IngressAddr, httpHandler, nil))
 			log.Info("ingress http listener", "addr", cfg.IngressAddr)
 		} else {
-			servers = append(servers, &http.Server{Addr: cfg.IngressAddr, Handler: ing})
+			servers = append(servers, newHTTPServer(cfg.IngressAddr, ing, nil))
 			log.Info("ingress listener", "addr", cfg.IngressAddr, "base_domain", cfg.BaseDomain)
 		}
 		if cfg.TLSPassthroughEnabled {
@@ -402,6 +403,21 @@ func spaHandler(dir string) http.Handler {
 type shutdownHooks struct {
 	onDrainStart     func()
 	onServersStopped func(ctx context.Context)
+}
+
+const (
+	serverReadHeaderTimeout = 10 * time.Second
+	serverIdleTimeout       = 120 * time.Second
+)
+
+func newHTTPServer(addr string, handler http.Handler, tc *tls.Config) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		TLSConfig:         tc,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		IdleTimeout:       serverIdleTimeout,
+	}
 }
 
 const (
