@@ -55,6 +55,7 @@ type ClusterOptions struct {
 	Relay     *cluster.Client
 	TTL       time.Duration
 	Log       *slog.Logger
+	PoolSize  int
 }
 
 type ownerInfo struct {
@@ -92,6 +93,9 @@ func NewClusterConnStore(ctx context.Context, redisURL string, opts ClusterOptio
 	ropts, err := goredis.ParseURL(redisURL)
 	if err != nil {
 		return nil, fmt.Errorf("redis: parse url: %w", err)
+	}
+	if opts.PoolSize > 0 {
+		ropts.PoolSize = opts.PoolSize
 	}
 	return newClusterWithClient(ctx, goredis.NewClient(ropts), opts)
 }
@@ -147,7 +151,7 @@ func (c *ClusterConnStore) Close() error {
 	c.cancel()
 	_ = c.sub.Close()
 	c.wg.Wait()
-	return c.rdb.Close()
+	return c.ConnStore.Close()
 }
 
 func (c *ClusterConnStore) opCtx() (context.Context, context.CancelFunc) {

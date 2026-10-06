@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -25,15 +24,18 @@ type ConnStore struct {
 	agents    map[string]store.AgentConn
 	endpoints map[string]string
 
-	usage sync.Map
+	usage *usageTracker
 }
 
 var _ store.ConnectionStore = (*ConnStore)(nil)
 
-func NewConnStore(redisURL string) (*ConnStore, error) {
+func NewConnStore(redisURL string, poolSize int) (*ConnStore, error) {
 	opts, err := goredis.ParseURL(redisURL)
 	if err != nil {
 		return nil, fmt.Errorf("redis: parse url: %w", err)
+	}
+	if poolSize > 0 {
+		opts.PoolSize = poolSize
 	}
 	rdb := goredis.NewClient(opts)
 	return newWithClient(rdb), nil
@@ -44,7 +46,17 @@ func newWithClient(rdb *goredis.Client) *ConnStore {
 		rdb:       rdb,
 		agents:    make(map[string]store.AgentConn),
 		endpoints: make(map[string]string),
+		usage:     newUsageTracker(rdb),
 	}
+}
+
+func (c *ConnStore) AddUsage(orgID string, bytes int64) { c.usage.add(orgID, bytes) }
+
+func (c *ConnStore) Usage(orgID string) int64 { return c.usage.get(orgID) }
+
+func (c *ConnStore) Close() error {
+	c.usage.close()
+	return c.rdb.Close()
 }
 
 func (c *ConnStore) AddAgent(conn store.AgentConn) (superseded store.AgentConn) {
@@ -115,34 +127,6 @@ func (c *ConnStore) ResolveEndpoint(endpointID string) (store.AgentConn, bool) {
 	conn, ok := c.agents[agentID]
 	c.mu.RUnlock()
 	return conn, ok
-}
-
-func (c *ConnStore) AddUsage(orgID string, bytes int64) {
-	v, _ := c.usage.LoadOrStore(orgID, new(atomic.Int64))
-	v.(*atomic.Int64).Add(bytes)
-
-	ctx, cancel := context.WithTimeout(context.Background(), redisOpTimeout)
-	defer cancel()
-	key := fmt.Sprintf("mm:usage:%s", orgID)
-	if err := c.rdb.IncrBy(ctx, key, bytes).Err(); err != nil {
-		slog.Warn("redis incrby usage failed", "org_id", orgID, "err", err)
-	}
-}
-
-func (c *ConnStore) Usage(orgID string) int64 {
-	ctx, cancel := context.WithTimeout(context.Background(), redisOpTimeout)
-	defer cancel()
-	key := fmt.Sprintf("mm:usage:%s", orgID)
-	val, err := c.rdb.Get(ctx, key).Int64()
-	if err == nil {
-		return val
-	}
-	slog.Warn("redis get usage failed, using local counter", "org_id", orgID, "err", err)
-	v, ok := c.usage.Load(orgID)
-	if !ok {
-		return 0
-	}
-	return v.(*atomic.Int64).Load()
 }
 
 func (c *ConnStore) OwnedElsewhere(string) bool { return false }

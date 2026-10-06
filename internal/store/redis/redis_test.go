@@ -29,7 +29,7 @@ func newTestStore(t *testing.T) *ConnStore {
 	if redisURL == "" {
 		t.Skip("MISHMESH_TEST_REDIS_URL not set")
 	}
-	s, err := NewConnStore(redisURL)
+	s, err := NewConnStore(redisURL, 0)
 	if err != nil {
 		t.Fatalf("new conn store: %v", err)
 	}

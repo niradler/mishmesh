@@ -99,6 +99,9 @@ func serve() error {
 		return err
 	}
 	defer clusterRT.close()
+	if closer, ok := conns.(io.Closer); ok && clusterRT == nil {
+		defer closer.Close()
+	}
 	limiter := newLimiter(clusterRT, log)
 	trustedProxies, err := ingress.ParseTrustedProxies(cfg.TrustedProxies)
 	if err != nil {
@@ -350,7 +353,7 @@ func openConnStore(cfg config.Server, log *slog.Logger) (store.ConnectionStore, 
 		if cfg.ClusterEnabled {
 			return openClusterConnStore(cfg, log)
 		}
-		cs, err := redis.NewConnStore(cfg.RedisURL)
+		cs, err := redis.NewConnStore(cfg.RedisURL, cfg.RedisPoolSize)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -369,6 +372,7 @@ func openClusterConnStore(cfg config.Server, log *slog.Logger) (store.Connection
 		NodeID:    cfg.NodeID,
 		Advertise: cfg.RelayAdvertise,
 		Relay:     cluster.NewClient(secret),
+		PoolSize:  cfg.RedisPoolSize,
 		Log:       log,
 	})
 	if err != nil {

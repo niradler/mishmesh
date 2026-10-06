@@ -54,6 +54,7 @@ type Server struct {
 	PprofAddr           string
 	ConnBackend         string
 	RedisURL            string
+	RedisPoolSize       int
 
 	MetricsEnabled bool
 	ReachInEnabled bool
@@ -138,6 +139,7 @@ func LoadServer() Server {
 		PprofAddr:           env("PPROF_ADDR", ""),
 		ConnBackend:         env("CONN_BACKEND", "memory"),
 		RedisURL:            env("REDIS_URL", ""),
+		RedisPoolSize:       envInt("REDIS_POOL_SIZE", 0),
 
 		MetricsEnabled: envBool("METRICS_ENABLED", true),
 		ReachInEnabled: envBool("REACHIN_ENABLED", false),
