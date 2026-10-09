@@ -20,6 +20,11 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l $(git ls-files '*.go'))"
       - run: go vet ./...
+      - name: profiling harness
+        run: |
+          go vet ./.claude/scripts/loadtest/lt ./.claude/scripts/loadtest/ltserver
+          go build -o /tmp/mishmesh-loadtest ./.claude/scripts/loadtest/lt
+          go build -o /tmp/mishmesh-loadtest-server ./.claude/scripts/loadtest/ltserver
       - run: go test -race -count=1 ./...
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...

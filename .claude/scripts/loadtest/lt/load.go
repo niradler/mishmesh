@@ -61,7 +61,9 @@ func runLoad(args []string) error {
 
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	tr := &http.Transport{
-		DialContext:         func(ctx context.Context, network, _ string) (net.Conn, error) { return dialer.DialContext(ctx, network, *addr) },
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, *addr)
+		},
 		MaxIdleConns:        *clients * 2,
 		MaxIdleConnsPerHost: *clients * 2,
 		MaxConnsPerHost:     0,
