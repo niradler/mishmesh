@@ -71,6 +71,12 @@ To test the clientless front door (row 5), run this from the `lan` container: `s
 
 These runs prove the stated duration and fixture behavior. Public DNS, publicly trusted TLS, identity-provider credentials, off-site backup retention, native ARM hardware, and multi-day capacity require separate deployment validation.
 
+`check-published-tls.py` verifies the isolated CA chain and hostname, then requires rejection of untrusted and wrong-host certificates. `check-published-tenancy.py` verifies separate organization isolation and member/owner role enforcement using fixture accounts. Both use only the guarded test cluster.
+
+`check-published-edge.py` checks the separate `mm-beta-edge-proof` fixture behind Traefik: verified HTTPS, repeated unary/bidirectional gRPC over Traefik's HTTP/1 backend hop, and a healthy WSS agent using a mounted trusted test CA. Its gRPC harness checks protocol/data integrity; curl independently verifies the certificate chain and hostname.
+
+    python .claude/scripts/protocols/check-published-edge.py --output <scratch>/edge.json
+
 ## Clean up
 
     timeout 120 docker compose -p proto down -v

@@ -179,7 +179,13 @@ func TestAuthConfigAdvertisesSignup(t *testing.T) {
 	srv := newModeAPI(t, "invite")
 	var cfg map[string]any
 	doc(t, &http.Client{}, srv, http.MethodGet, "/api/v1/auth/config", "", http.StatusOK, &cfg)
-	if cfg["signup_mode"] != "invite" || cfg["password_signup"] != true {
+	if cfg["signup_mode"] != "invite" || cfg["password_signup"] != true || cfg["bootstrap_required"] != true {
 		t.Fatalf("config: %+v", cfg)
 	}
+	register(t, srv, "owner@example.com", http.StatusCreated)
+	doc(t, &http.Client{}, srv, http.MethodGet, "/api/v1/auth/config", "", http.StatusOK, &cfg)
+	if cfg["bootstrap_required"] != false {
+		t.Fatalf("config after bootstrap: %+v", cfg)
+	}
+	register(t, srv, "stranger@example.com", http.StatusForbidden)
 }

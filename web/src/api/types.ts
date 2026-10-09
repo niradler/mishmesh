@@ -7,6 +7,7 @@ export type EndpointKind = "http" | "tcp" | "tls";
 export type EndpointLifecycle = "ephemeral" | "reserved";
 
 export interface AuthConfig {
+  bootstrap_required?: boolean;
   auth_enabled: boolean;
   password_enabled: boolean;
   password_signup: boolean;

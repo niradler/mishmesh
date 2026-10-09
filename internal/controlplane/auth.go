@@ -103,18 +103,28 @@ func (a *API) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/auth/google/callback", a.googleCallbackHandler)
 }
 
-func (a *API) authConfigHandler(w http.ResponseWriter, _ *http.Request) {
+func (a *API) authConfigHandler(w http.ResponseWriter, r *http.Request) {
 	mode := SignupModeOrg
 	if a.auth != nil {
 		mode = a.auth.signupMode
 	}
 	passwordEnabled := a.auth != nil && a.auth.passwordEnabled
+	bootstrapRequired := false
+	if a.authEnabled() && passwordEnabled {
+		count, err := a.data.CountUsers(r.Context())
+		if err != nil {
+			writeStoreUnavailable(w)
+			return
+		}
+		bootstrapRequired = count == 0
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"auth_enabled":     a.authEnabled(),
-		"password_enabled": passwordEnabled,
-		"password_signup":  a.authEnabled() && passwordEnabled,
-		"google_enabled":   a.googleEnabled(),
-		"signup_mode":      mode,
+		"bootstrap_required": bootstrapRequired,
+		"auth_enabled":       a.authEnabled(),
+		"password_enabled":   passwordEnabled,
+		"password_signup":    a.authEnabled() && passwordEnabled,
+		"google_enabled":     a.googleEnabled(),
+		"signup_mode":        mode,
 	})
 }
 

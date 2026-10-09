@@ -47,7 +47,7 @@ Every release tag publishes:
 | Helm charts | `oci://ghcr.io/niradler/charts/mishmesh`, `oci://ghcr.io/niradler/charts/mishmesh-agent` |
 
 ```bash
-helm upgrade --install mishmesh oci://ghcr.io/niradler/charts/mishmesh --version 0.1.0-beta.1 \
+helm upgrade --install mishmesh oci://ghcr.io/niradler/charts/mishmesh --version 0.1.0-beta.3 \
   -n mishmesh --create-namespace -f values-company.yaml
 ```
 
@@ -461,10 +461,10 @@ Before serving beta customers, validate the actual deployment: public API and tu
 
 ## Status and roadmap
 
-Version 0.1.0-beta.1. Built and tested:
+Version 0.1.0-beta.3. Built and tested:
 
 - HTTP/HTTPS (subdomain, path, custom domain), WebSocket/SSE streaming, public TCP ports, TLS passthrough, clientless SSH, agentless proxy endpoints
-- Native gRPC unary and bidirectional streaming through HTTP/2 ingress, with h2c or HTTPS upstreams; configurable long-poll response-header timeout
+- Native gRPC unary and bidirectional streaming through HTTP/2 ingress or an HTTP/1.1 reverse-proxy hop, with h2c or HTTPS upstreams; configurable long-poll response-header timeout
 - HTTPS with your own certificate, ACME, or self-signed; custom-domain ownership verification
 - endpoint policy, including OIDC, mTLS and rate limits
 - orgs, roles, a Cedar policy per org, invites, password and Google login, quotas, audit log, web UI

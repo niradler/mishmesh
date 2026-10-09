@@ -12,6 +12,7 @@ export function Register({ authConfig, onBack }: { authConfig: AuthConfig; onBac
   const [password, setPassword] = useState("");
   const [inviteToken, setInviteToken] = useState(() => new URLSearchParams(window.location.search).get("invite") ?? "");
   const register = useRegister();
+  const inviteRequired = authConfig.signup_mode === "invite" && !authConfig.bootstrap_required;
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -27,7 +28,7 @@ export function Register({ authConfig, onBack }: { authConfig: AuthConfig; onBac
 
   return (
     <form onSubmit={onSubmit} className="space-y-4">
-      {authConfig.signup_mode === "invite" && (
+      {inviteRequired && (
         <p className="text-sm text-muted-foreground">
           Registration is by invitation. Use the email address your administrator invited.
         </p>
@@ -39,8 +40,8 @@ export function Register({ authConfig, onBack }: { authConfig: AuthConfig; onBac
           autoComplete="off"
           value={inviteToken}
           onChange={(e) => setInviteToken(e.target.value.trim())}
-          placeholder={authConfig.signup_mode === "invite" ? "Required" : "Optional"}
-          required={authConfig.signup_mode === "invite"}
+          placeholder={inviteRequired ? "Required" : "Optional"}
+          required={inviteRequired}
         />
       </div>
       <div className="space-y-1.5">

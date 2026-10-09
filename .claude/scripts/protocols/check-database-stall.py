@@ -19,8 +19,9 @@ def curl(arguments):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--server", choices=["mm-beta-deadline-server", "mm-beta-published-deadline", "mm-beta-published-binary"], default="mm-beta-deadline-server")
     args = parser.parse_args()
-    api = "http://mm-beta-deadline-server:8081"
+    api = f"http://{args.server}:8081"
     cookie = "/tmp/mm-deadline-cookie"
     login = '{"email":"beta-proof@example.test","password":"beta-proof-test-only-password"}'
     status = curl(["-o", "/dev/null", "-w", "%{http_code}", "-c", cookie, "-H", "Content-Type: application/json", "--data-binary", login, api + "/api/v1/auth/login"])
@@ -42,7 +43,7 @@ def main():
     recovered = curl(["-f", "-b", cookie, api + "/api/v1/endpoints"])
     if len(json.loads(recovered)) != 1:
         raise RuntimeError("Endpoint did not recover")
-    summary = {"passed": True, "stalled_api_status": status, "stalled_api_seconds": round(elapsed, 2), "retry_after": 1, "generic_error": True, "recovered_endpoint_count": 1}
+    summary = {"passed": True, "server": args.server, "stalled_api_status": status, "stalled_api_seconds": round(elapsed, 2), "retry_after": 1, "generic_error": True, "recovered_endpoint_count": 1}
     args.output.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary), flush=True)
 

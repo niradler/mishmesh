@@ -21,6 +21,7 @@ Use only isolated test networks. The instrumented server exposes unauthenticated
 
 ## Run
 
+    export W5_ROOT=<absolute-scratch-directory>
     source env.sh
     export CLUSTER=false CONN_BACKEND=memory PG_MAX_CONN=1000 SERVER_BIN=/bin/w5/ltserver LT_PG_POOL=32
     dc up -d postgres redis server-a lt

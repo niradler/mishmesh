@@ -209,12 +209,21 @@ func (i *Ingress) meterTargetFor(ep *store.Endpoint, kind string, limit int64) m
 }
 
 func (i *Ingress) proxyHTTP(w http.ResponseWriter, r *http.Request, conn store.AgentConn, ep *store.Endpoint, outPath string, limit int64) {
+	if r.ProtoMajor == 1 && isGRPCRequest(r) {
+		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+			http.Error(w, "bidirectional streaming unavailable", http.StatusServiceUnavailable)
+			i.recordCode(http.StatusServiceUnavailable)
+			i.log.Warn("enable gRPC full duplex failed", "err", err)
+			return
+		}
+	}
 	u := &upstream{
-		agent:   conn,
-		ep:      ep,
-		outPath: outPath,
-		target:  i.meterTargetFor(ep, store.KindHTTP, limit),
-		trusted: i.trusted,
+		agent:       conn,
+		ep:          ep,
+		outPath:     outPath,
+		target:      i.meterTargetFor(ep, store.KindHTTP, limit),
+		trusted:     i.trusted,
+		clientHTTP1: r.ProtoMajor == 1,
 	}
 	i.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), upstreamKey{}, u)))
 }

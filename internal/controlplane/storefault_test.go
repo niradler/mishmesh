@@ -24,6 +24,13 @@ type flakyStore struct {
 
 var errDBDown = errors.New("db down")
 
+func (f *flakyStore) CountUsers(ctx context.Context) (int, error) {
+	if f.failing.Load() {
+		return 0, errDBDown
+	}
+	return f.DataStore.CountUsers(ctx)
+}
+
 func (f *flakyStore) GetSession(ctx context.Context, idHash string) (*store.Session, error) {
 	if f.failing.Load() {
 		return nil, errDBDown
@@ -59,10 +66,12 @@ func TestStoreFailureIsNotReportedAsAuthFailure(t *testing.T) {
 	doc(t, client, srv, http.MethodGet, "/api/v1/auth/me", "", http.StatusOK, nil)
 
 	data.failing.Store(true)
+	doc(t, &http.Client{}, srv, http.MethodGet, "/api/v1/auth/config", "", http.StatusServiceUnavailable, nil)
 	doc(t, client, srv, http.MethodGet, "/api/v1/agents", "", http.StatusServiceUnavailable, nil)
 	doc(t, &http.Client{}, srv, http.MethodPost, "/api/v1/auth/login", `{"email":"o@example.com","password":"supersecret"}`, http.StatusServiceUnavailable, nil)
 
 	data.failing.Store(false)
+	doc(t, &http.Client{}, srv, http.MethodGet, "/api/v1/auth/config", "", http.StatusOK, nil)
 	doc(t, client, srv, http.MethodGet, "/api/v1/agents", "", http.StatusOK, nil)
 	doc(t, &http.Client{}, srv, http.MethodPost, "/api/v1/auth/login", `{"email":"nobody@example.com","password":"x"}`, http.StatusUnauthorized, nil)
 	doc(t, &http.Client{}, srv, http.MethodGet, "/api/v1/agents", "", http.StatusUnauthorized, nil)

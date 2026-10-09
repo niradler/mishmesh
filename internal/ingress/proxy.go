@@ -28,12 +28,13 @@ var errAgentRefused = errors.New("agent could not reach the local service")
 type upstreamKey struct{}
 
 type upstream struct {
-	agent   store.AgentConn
-	ep      *store.Endpoint
-	outPath string
-	target  meterTarget
-	trusted []*net.IPNet
-	http2   bool
+	agent       store.AgentConn
+	ep          *store.Endpoint
+	outPath     string
+	target      meterTarget
+	trusted     []*net.IPNet
+	http2       bool
+	clientHTTP1 bool
 
 	mu          sync.Mutex
 	openErr     error
@@ -134,12 +135,16 @@ type upstreamTransport struct {
 }
 
 func (t *upstreamTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	if err == nil && (mediaType == "application/grpc" || strings.HasPrefix(mediaType, "application/grpc+")) {
+	if isGRPCRequest(request) {
 		upstreamOf(request).http2 = true
 		return t.http2.RoundTrip(request)
 	}
 	return t.http1.RoundTrip(request)
+}
+
+func isGRPCRequest(request *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	return err == nil && (mediaType == "application/grpc" || strings.HasPrefix(mediaType, "application/grpc+"))
 }
 
 func upstreamOf(r *http.Request) *upstream {
@@ -242,6 +247,10 @@ func peerInNets(remoteAddr string, nets []*net.IPNet) bool {
 
 func (i *Ingress) modifyResponse(resp *http.Response) error {
 	u := upstreamOf(resp.Request)
+	if u.clientHTTP1 && len(resp.Trailer) > 0 {
+		resp.Header.Del("Content-Length")
+		resp.ContentLength = -1
+	}
 	applyResponsePolicy(resp.Header, u.ep)
 	if shouldCompress(u.ep, resp.Request, resp) {
 		resp.Header.Del("Content-Length")
