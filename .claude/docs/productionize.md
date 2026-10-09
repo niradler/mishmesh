@@ -1,5 +1,17 @@
 # mishmesh — productionize (started 2026-10-05)
 
+## Current release state (2026-10-09)
+
+v0.1.0-beta.3 is published at immutable source 5c61ea0. CI 37960833520 and release 37961205098 pass all jobs. All four GHCR packages are public; anonymous chart installs/image pulls, all 13 archive checksums and Windows version checks pass. Downloaded Linux server/agent run successfully together: 20 verified downloads and unary/100-message bidi gRPC.
+
+Confirmed release blockers are fixed: long-poll timeout, direct and reverse-proxy gRPC, reserved endpoint reconnect, concurrent bootstrap, disabled path URLs, bounded database operations, and first-owner UI bootstrap. Helm exposes new security/query-timeout settings. Published Helm upgrades preserve token/session. A fresh published chart passes browser first-owner signup and secure-cookie/CSRF/invite checks over HTTPS. Published beta.3 WSS agent verifies the fixture CA; HTTPS data-plane and gRPC pass.
+
+Evidence includes two 30-minute published-image baseline soaks; three-minute Traefik long-poll; ten-minute Traefik WS idle; real database restore and stall/recovery; protocol/cluster/security matrix in `.claude/scripts/protocols/results-2026-10-09.md`. Final published beta.3 five-minute sustained check passed: 4,980 verified downloads (5.22 GB), repeated gRPC/WS, no failures or pod restarts. Earlier sections below retain historical state and superseded pending steps.
+
+Customer go-live gate remains deployment-specific: actual public DNS/CA, hosting/ingress/network policies, off-site backups and alert delivery, live identity provider if enabled, and workload-duration/capacity validation. Hosting target/hostname requested; none supplied. Local CA and emulated ARM checks do not prove publicly trusted customer TLS or native ARM hardware. No 100%/GA claim.
+
+Repository maintenance remains: branch protection, action/runner upgrades and existing Vite ~511 KB warning. Test fixtures and unrelated worktrees are preserved; no destructive cleanup authorized.
+
 Goal: mishmesh is the one reusable transport layer for reaching private networks (behind NAT /
 firewall / proxy / no inbound). Ready to share as a working product in 3 deployment shapes, one
 binary, one chart:
@@ -203,6 +215,8 @@ Release (decided: images/charts at ghcr.io/niradler; LICENSE proprietary beta te
 
 ### Wind-down state (2026-10-06 end of session 4)
 
+Historical checkpoint, superseded by Current release state above and Customer readiness follow-through below.
+
 - main is local only (nothing pushed). HEAD f83ac38, make check green.
 - [x] SEC-B merged (dc4222c..f83ac38), all 8 findings fixed, each with a regression test:
   - CSRF: JSON content type + same-origin on cookie writes.
@@ -324,3 +338,8 @@ github.com/mishmesh/mishmesh does not match repo (use release binaries, not go i
 - Fresh browser signup exposed another blocker: invite-only UI requires a token even when no owner exists, although backend supports bootstrap. Adding bootstrap_required to auth configuration and aligning UI required validation; server-side invitation enforcement remains authoritative. Regression and browser proof pending. These fixes require a new immutable beta.3 release; beta.2 is not the final customer-ready candidate.
 - Customer public DNS/trusted public TLS/provider details still not supplied. Keep public deployment validation gated on actual target details.
 - Candidate beta.3 deployed through Traefik passes 20 unary/bidi runs (2,000 x 64 KiB verified messages) with verified HTTPS and CA-verified WSS. Browser first-owner registration without invite, owner session reload, UI-created member invitation and invited-member registration pass. Config switches bootstrap_required to false; subsequent uninvited registration returns 403. Full make check, candidate image/web compile pass; existing ~511 KB Vite warning remains. Added store-failure regression for auth configuration (503 then recovery).
+- CI 37960833520 and publication 37961205098 pass all jobs at immutable beta.3 source 5c61ea0. All 13 archive hashes, Windows versions, anonymous pulls and multiarch manifests pass; four packages remain public. Actual beta.3 image returns safe endpoint/config 503 at 5.26s/5.25s during DB stall, then recovers. Candidate Traefik three-minute long-poll passes after 184.435s; ten-minute WS idle passes with 4 x 16 MiB verified echoes (10m0.498s harness duration).
+- Published beta.3 charts upgrade both server and agent; generated API token/session and smoke checks pass. Fresh mm-beta3-firstowner chart/browser signup passes with Secure/HttpOnly/SameSite=Lax cookie, CSRF 403 and uninvited signup 403. Actual beta.3 agent connects via CA-verified WSS; direct verified HTTPS and unary/bidi traffic pass. Published server behind Traefik passes 20 unary/bidi runs (2,000 messages). Downloaded Linux server/agent together pass 20 downloads and 100-message bidi.
+- Rollout observation: immediate edge probe failed before agent reconnected; logs show old session EOF then reconnect at 16:53:34.675, 539ms backoff. Subsequent full probe passes. Single-node rollouts can interrupt tunnel traffic as documented; do not claim zero downtime. Fresh fixture's direct HTTPS check initially timed out because listeners.https.enabled was omitted; enabling the listener exposes service port 443. First probe during Service endpoint transition refused; subsequent verified TLS/gRPC pass. These observations are retained, not suppressed.
+- Final published beta.3 sustained check passes 300 seconds, 249 batches, 4,980 verified 1 MiB downloads (5,221,908,480 bytes), repeated gRPC/WS and zero failures/pod restarts. Published beta.3 tenancy and TLS rejection helpers pass. Anonymous archive downloads verify all 13 hashes; Linux downloaded binaries pass traffic, Windows versions pass without listeners, ARM image version commands pass under emulation. All new Docker test processes have zero host port bindings.
+- Final application source is immutable beta.3 at 5c61ea0; evidence/helper/first-owner setup guidance is being committed to main. No remaining confirmed code release blocker in the tested beta scope. Actual customer deployment gate above remains open; do not describe this as universally production-proven.

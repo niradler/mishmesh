@@ -447,6 +447,8 @@ Server CLI: `mishmesh-server [serve]`, `mishmesh-server token create --org NAME 
 
 Before serving beta customers, validate the actual deployment: public API and tunnel names resolve correctly; TLS chains validate without insecure client flags; API authentication and cross-origin rejection pass; agents reconnect after a server restart; a backup restores into a separate instance with identities and endpoints intact; and alerting detects unavailable pods, database failures and failed tunnels. Keep the relay on a private network, restrict control/API access as required, and protect database backups and deployment secrets. Validate Google login and endpoint OIDC with the actual provider before enabling them. Start within measured capacity and monitor the deployment; local fixture results do not prove a customer's DNS, certificates, provider configuration or multi-day workload.
 
+Restrict portal access to operators until the first owner has registered. In invite mode the first registration claims the default organization; after that, accounts require an invitation. Open customer access after completing that setup.
+
 ## Beta limitations
 
 - HTTP reach-in buffers the response (8 MB cap). Use the stream route for large or long transfers.

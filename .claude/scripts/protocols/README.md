@@ -77,6 +77,12 @@ These runs prove the stated duration and fixture behavior. Public DNS, publicly 
 
     python .claude/scripts/protocols/check-published-edge.py --output <scratch>/edge.json
 
+`check-release-artifacts.py` anonymously downloads a named beta release, verifies all 13 archive hashes including the web UI, and runs only the Windows amd64 version commands. It creates a fresh output directory and starts no Windows server listeners.
+
+    python .claude/scripts/protocols/check-release-artifacts.py --tag v0.1.0-beta.3 --output <scratch>/beta3-archives
+
+For beta.3's public login-configuration deadline, add `--auth-config` to `check-database-stall.py`; older releases omit that field/probe. The fixture name `mm-beta3-published-deadline` is accepted for the actual beta.3 image.
+
 ## Clean up
 
     timeout 120 docker compose -p proto down -v
