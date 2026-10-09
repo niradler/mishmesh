@@ -40,6 +40,8 @@ archives:
 
 checksum:
   name_template: checksums.txt
+  extra_files:
+    - glob: ./dist-web/mishmesh-webui_*.tar.gz
 
 release:
   prerelease: auto
