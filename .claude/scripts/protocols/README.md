@@ -1,10 +1,10 @@
 # mishmesh protocol validation harness
 
-Black-box end-to-end checks of real customer protocols through the tunnel. Compose project `proto` only.
+Black-box end-to-end checks of real customer protocols through the tunnel. Compose projects `proto` and `proto-cluster`, plus the isolated published-chart proof namespace.
 
 ## Status
 
-Validation started on 2026-10-09 against f83ac38. See [results-2026-10-09.md](results-2026-10-09.md) for measured results and remaining checks.
+Validation completed on 2026-10-09 for v0.1.0-beta.1, including published binaries, images and OCI charts. See [results-2026-10-09.md](results-2026-10-09.md) for measured results, fixes and deployment evidence.
 
 ## Layout
 
@@ -48,6 +48,12 @@ Example commands from the client container:
     /proto/kit par -url http://server-a:8080/gen -host kit.mm.test -n 200 -size 10M
 
 To test the clientless front door (row 5), run this from the `lan` container: `sshpass -p mm_proto_bootstrap_token_0123456789 ssh -N -R 80:kit:8080 front@server-a -p 2222`.
+
+## Published chart smoke check
+
+`check-published-helm.ps1` checks the existing isolated `k3d-mmhelm` cluster, namespace `mm-beta-proof`, published server release `mm-beta`, and a `kit` fixture pod. It verifies authenticated API access, owner login, invitation enforcement, CSRF rejection, endpoint URLs, and bundled UI assets. It uses a test-only account and refuses other cluster contexts.
+
+    pwsh -NoProfile -File .claude/scripts/protocols/check-published-helm.ps1
 
 ## Clean up
 
