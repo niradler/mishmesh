@@ -413,6 +413,7 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `DOMAIN_VERIFICATION` | `true` in `org` mode | require TXT proof for custom domains |
 | `PATH_ROUTING` | `false` in `org` mode, `true` in `invite` | serve endpoints at `/tunnel/{id}` on the base domain; off keeps tenants on separate origins |
 | `UPSTREAM_RESPONSE_TIMEOUT` | `5m` | positive duration to wait for upstream response headers, including long-poll requests; streaming bodies have no fixed timeout |
+| `DATA_QUERY_TIMEOUT` | `5s` | positive deadline for each Postgres store operation, including pool waits; tune through Helm `dataPool.queryTimeout` |
 | `TLS_PASSTHROUGH_PUBLIC_PORT` | `8444` | externally reachable passthrough port used in `tls://host:port` endpoint URLs; set when a proxy maps a different public port |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `OIDC_REDIRECT_URL` / `OIDC_ISSUER` | | Google login |
 | `SESSION_TTL_HOURS` | `168` | login session lifetime |
@@ -443,6 +444,8 @@ Server CLI: `mishmesh-server [serve]`, `mishmesh-server token create --org NAME 
 - **What to back up.** Postgres is the only durable state: orgs, users, agents, token hashes, endpoints, domains, quotas and the audit log. Back it up with your usual Postgres tooling (`pg_dump -Fc`, managed-database snapshots, or WAL archiving). Redis holds only live routing and rate-limit state, which agents rebuild by reconnecting, so it needs no backup. Also keep the ACME cache directory (single-pod ACME) or your wildcard certificate Secret, and the secrets you configured (`API_AUTH_TOKEN`, `CLUSTER_SECRET`, `ENDPOINT_OIDC_KEY`, Google OIDC credentials).
 - **Upgrades.** The schema migrates forward automatically when the server starts. An advisory lock serializes it, so a rolling upgrade of many pods is safe. Take a database backup first. Downgrading after a migration is not supported, so restore that backup instead. Upgrade the server before the agents. Agents reconnect with backoff during a rollout and need no action.
 - **Version.** `mishmesh-server version` and `mishmesh-agent version` print the release tag.
+
+Before serving beta customers, validate the actual deployment: public API and tunnel names resolve correctly; TLS chains validate without insecure client flags; API authentication and cross-origin rejection pass; agents reconnect after a server restart; a backup restores into a separate instance with identities and endpoints intact; and alerting detects unavailable pods, database failures and failed tunnels. Keep the relay on a private network, restrict control/API access as required, and protect database backups and deployment secrets. Validate Google login and endpoint OIDC with the actual provider before enabling them. Start within measured capacity and monitor the deployment; local fixture results do not prove a customer's DNS, certificates, provider configuration or multi-day workload.
 
 ## Beta limitations
 

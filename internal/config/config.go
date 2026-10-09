@@ -53,6 +53,7 @@ type Server struct {
 	DataMaxIdleConns        int
 	DataConnMaxLifetime     time.Duration
 	DataConnMaxIdleTime     time.Duration
+	DataQueryTimeout        time.Duration
 	IngressCacheTTL         time.Duration
 	UpstreamResponseTimeout time.Duration
 	PprofAddr               string
@@ -145,8 +146,9 @@ func LoadServer() Server {
 		DataMaxIdleConns:        envInt("DATA_MAX_IDLE_CONNS", 0),
 		DataConnMaxLifetime:     envDuration("DATA_CONN_MAX_LIFETIME", 30*time.Minute),
 		DataConnMaxIdleTime:     envDuration("DATA_CONN_MAX_IDLE_TIME", 5*time.Minute),
+		DataQueryTimeout:        strictDuration("DATA_QUERY_TIMEOUT", "5s"),
 		IngressCacheTTL:         envDuration("INGRESS_CACHE_TTL", 2*time.Second),
-		UpstreamResponseTimeout: upstreamResponseTimeout(),
+		UpstreamResponseTimeout: strictDuration("UPSTREAM_RESPONSE_TIMEOUT", "5m"),
 		PprofAddr:               env("PPROF_ADDR", ""),
 		ConnBackend:             env("CONN_BACKEND", "memory"),
 		RedisURL:                env("REDIS_URL", ""),
@@ -265,6 +267,9 @@ func (s Server) Validate() error {
 	if s.UpstreamResponseTimeout <= 0 {
 		return fmt.Errorf("config: UPSTREAM_RESPONSE_TIMEOUT must be a positive duration")
 	}
+	if s.DataQueryTimeout <= 0 {
+		return fmt.Errorf("config: DATA_QUERY_TIMEOUT must be a positive duration")
+	}
 	if s.TLSPassthroughEnabled && (s.TLSPassthroughPublicPort < 1 || s.TLSPassthroughPublicPort > 65535) {
 		return fmt.Errorf("config: TLS_PASSTHROUGH_PUBLIC_PORT must be between 1 and 65535")
 	}
@@ -317,8 +322,8 @@ func envDuration(key string, def time.Duration) time.Duration {
 	return d
 }
 
-func upstreamResponseTimeout() time.Duration {
-	value := env("UPSTREAM_RESPONSE_TIMEOUT", "5m")
+func strictDuration(name, defaultValue string) time.Duration {
+	value := env(name, defaultValue)
 	duration, err := time.ParseDuration(strings.TrimSpace(value))
 	if err != nil {
 		return -1

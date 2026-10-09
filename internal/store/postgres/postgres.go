@@ -15,7 +15,8 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db           *sql.DB
+	queryTimeout time.Duration
 }
 
 var _ store.DataStore = (*Store)(nil)
@@ -25,12 +26,14 @@ type PoolConfig struct {
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
 	ConnMaxIdleTime time.Duration
+	QueryTimeout    time.Duration
 }
 
 const (
 	DefaultMaxOpenConns    = 25
 	DefaultConnMaxLifetime = 30 * time.Minute
 	DefaultConnMaxIdleTime = 5 * time.Minute
+	DefaultQueryTimeout    = 5 * time.Second
 )
 
 func (p PoolConfig) withDefaults() PoolConfig {
@@ -46,6 +49,9 @@ func (p PoolConfig) withDefaults() PoolConfig {
 	if p.ConnMaxIdleTime <= 0 {
 		p.ConnMaxIdleTime = DefaultConnMaxIdleTime
 	}
+	if p.QueryTimeout <= 0 {
+		p.QueryTimeout = DefaultQueryTimeout
+	}
 	return p
 }
 
@@ -60,10 +66,10 @@ func (p PoolConfig) apply(db *sql.DB) {
 func Open(dsn string, pool PoolConfig) (*Store, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open postgres %q: %w", dsn, err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 	pool.apply(db)
-	s := &Store{db: db}
+	s := &Store{db: db, queryTimeout: pool.withDefaults().QueryTimeout}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -214,11 +220,15 @@ CREATE TABLE IF NOT EXISTS org_policies (
 }
 
 func (s *Store) CreateOrg(ctx context.Context, o *store.Org) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO orgs (id, name, created_at) VALUES ($1, $2, $3)`, o.ID, o.Name, ns(o.CreatedAt))
 	return wrap("create org", err)
 }
 
 func (s *Store) GetOrg(ctx context.Context, id string) (*store.Org, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT id, name, created_at FROM orgs WHERE id = $1`, id)
 	var o store.Org
 	var created int64
@@ -230,6 +240,8 @@ func (s *Store) GetOrg(ctx context.Context, id string) (*store.Org, error) {
 }
 
 func (s *Store) ListOrgs(ctx context.Context) ([]*store.Org, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created_at FROM orgs ORDER BY created_at`)
 	if err != nil {
 		return nil, wrap("list orgs", err)
@@ -249,6 +261,8 @@ func (s *Store) ListOrgs(ctx context.Context) ([]*store.Org, error) {
 }
 
 func (s *Store) CreateAgent(ctx context.Context, a *store.Agent) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO agents (id, org_id, name, status, created_at, last_seen_at) VALUES ($1, $2, $3, $4, $5, $6)`,
 		a.ID, a.OrgID, a.Name, a.Status, ns(a.CreatedAt), nsPtr(a.LastSeenAt))
@@ -256,11 +270,15 @@ func (s *Store) CreateAgent(ctx context.Context, a *store.Agent) error {
 }
 
 func (s *Store) GetAgent(ctx context.Context, id string) (*store.Agent, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT id, org_id, name, status, created_at, last_seen_at FROM agents WHERE id = $1`, id)
 	return scanAgent(row.Scan)
 }
 
 func (s *Store) ListAgents(ctx context.Context, orgID string) ([]*store.Agent, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, org_id, name, status, created_at, last_seen_at FROM agents WHERE org_id = $1 ORDER BY created_at`, orgID)
 	if err != nil {
@@ -279,21 +297,29 @@ func (s *Store) ListAgents(ctx context.Context, orgID string) ([]*store.Agent, e
 }
 
 func (s *Store) UpdateAgent(ctx context.Context, a *store.Agent) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `UPDATE agents SET name = $1, status = $2 WHERE id = $3`, a.Name, a.Status, a.ID)
 	return wrap("update agent", err)
 }
 
 func (s *Store) DeleteAgent(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = $1`, id)
 	return wrap("delete agent", err)
 }
 
 func (s *Store) TouchAgent(ctx context.Context, id string, seenAt time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `UPDATE agents SET last_seen_at = $1 WHERE id = $2`, ns(seenAt), id)
 	return wrap("touch agent", err)
 }
 
 func (s *Store) CountAgents(ctx context.Context, orgID string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return s.count(ctx, `SELECT COUNT(*) FROM agents WHERE org_id = $1 AND status != $2`, orgID, store.AgentRevoked)
 }
 
@@ -313,6 +339,8 @@ func scanAgent(scan func(...any) error) (*store.Agent, error) {
 }
 
 func (s *Store) CreateToken(ctx context.Context, t *store.Token) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO tokens (id, org_id, agent_id, hash, created_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6)`,
 		t.ID, t.OrgID, t.AgentID, t.Hash, ns(t.CreatedAt), nsPtr(t.RevokedAt))
@@ -320,6 +348,8 @@ func (s *Store) CreateToken(ctx context.Context, t *store.Token) error {
 }
 
 func (s *Store) GetTokenByHash(ctx context.Context, hash string) (*store.Token, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, org_id, agent_id, hash, created_at, revoked_at FROM tokens WHERE hash = $1 AND revoked_at IS NULL`, hash)
 	var t store.Token
@@ -337,6 +367,8 @@ func (s *Store) GetTokenByHash(ctx context.Context, hash string) (*store.Token, 
 }
 
 func (s *Store) ListTokensByAgent(ctx context.Context, agentID string) ([]*store.Token, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, org_id, agent_id, hash, created_at, revoked_at FROM tokens WHERE agent_id = $1 ORDER BY created_at`, agentID)
 	if err != nil {
@@ -362,11 +394,15 @@ func (s *Store) ListTokensByAgent(ctx context.Context, agentID string) ([]*store
 }
 
 func (s *Store) RevokeToken(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `UPDATE tokens SET revoked_at = $1 WHERE id = $2 AND revoked_at IS NULL`, ns(time.Now()), id)
 	return wrap("revoke token", err)
 }
 
 func (s *Store) RevokeTokensByAgent(ctx context.Context, agentID string) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `UPDATE tokens SET revoked_at = $1 WHERE agent_id = $2 AND revoked_at IS NULL`, ns(time.Now()), agentID)
 	return wrap("revoke agent tokens", err)
 }
@@ -374,6 +410,8 @@ func (s *Store) RevokeTokensByAgent(ctx context.Context, agentID string) error {
 const endpointCols = `id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, policy, created_at, method`
 
 func (s *Store) CreateEndpoint(ctx context.Context, e *store.Endpoint) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	pol, err := marshalPolicy(e.Policy)
 	if err != nil {
 		return wrap("create endpoint", err)
@@ -385,22 +423,32 @@ func (s *Store) CreateEndpoint(ctx context.Context, e *store.Endpoint) error {
 }
 
 func (s *Store) GetEndpoint(ctx context.Context, id string) (*store.Endpoint, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return scanEndpoint(s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE id = $1`, id).Scan)
 }
 
 func (s *Store) GetEndpointBySubdomain(ctx context.Context, subdomain string) (*store.Endpoint, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return scanEndpoint(s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE subdomain = $1`, subdomain).Scan)
 }
 
 func (s *Store) GetEndpointByDomain(ctx context.Context, domain string) (*store.Endpoint, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return scanEndpoint(s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE domain = $1`, domain).Scan)
 }
 
 func (s *Store) ListEndpointsByAgent(ctx context.Context, agentID string) ([]*store.Endpoint, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return s.queryEndpoints(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE agent_id = $1 ORDER BY created_at`, agentID)
 }
 
 func (s *Store) ListEndpointsByOrg(ctx context.Context, orgID string) ([]*store.Endpoint, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return s.queryEndpoints(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE org_id = $1 ORDER BY created_at`, orgID)
 }
 
@@ -422,6 +470,8 @@ func (s *Store) queryEndpoints(ctx context.Context, query string, args ...any) (
 }
 
 func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	pol, err := marshalPolicy(e.Policy)
 	if err != nil {
 		return wrap("update endpoint", err)
@@ -433,11 +483,15 @@ func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
 }
 
 func (s *Store) DeleteEndpoint(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM endpoints WHERE id = $1`, id)
 	return wrap("delete endpoint", err)
 }
 
 func (s *Store) CountEndpoints(ctx context.Context, orgID string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return s.count(ctx, `SELECT COUNT(*) FROM endpoints WHERE org_id = $1`, orgID)
 }
 
@@ -463,6 +517,8 @@ func scanEndpoint(scan func(...any) error) (*store.Endpoint, error) {
 }
 
 func (s *Store) GetQuota(ctx context.Context, orgID string) (*store.Quota, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx,
 		`SELECT org_id, max_agents, max_endpoints, max_bandwidth_bytes, updated_at FROM quotas WHERE org_id = $1`, orgID)
 	var q store.Quota
@@ -475,6 +531,8 @@ func (s *Store) GetQuota(ctx context.Context, orgID string) (*store.Quota, error
 }
 
 func (s *Store) SetQuota(ctx context.Context, q *store.Quota) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO quotas (org_id, max_agents, max_endpoints, max_bandwidth_bytes, updated_at)
 		 VALUES ($1, $2, $3, $4, $5)
@@ -486,6 +544,8 @@ func (s *Store) SetQuota(ctx context.Context, q *store.Quota) error {
 }
 
 func (s *Store) CreateUser(ctx context.Context, u *store.User) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO users (id, email, name, password_hash, google_sub, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
 		u.ID, strings.ToLower(u.Email), u.Name, nullStr(u.PasswordHash), nullStr(u.GoogleSub), ns(u.CreatedAt))
@@ -493,18 +553,26 @@ func (s *Store) CreateUser(ctx context.Context, u *store.User) error {
 }
 
 func (s *Store) GetUserByID(ctx context.Context, id string) (*store.User, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE id = $1`, id).Scan)
 }
 
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*store.User, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE email = $1`, strings.ToLower(email)).Scan)
 }
 
 func (s *Store) GetUserByGoogleSub(ctx context.Context, sub string) (*store.User, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE google_sub = $1`, sub).Scan)
 }
 
 func (s *Store) UpdateUser(ctx context.Context, u *store.User) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET email = $1, name = $2, password_hash = $3, google_sub = $4 WHERE id = $5`,
 		strings.ToLower(u.Email), u.Name, nullStr(u.PasswordHash), nullStr(u.GoogleSub), u.ID)
@@ -512,6 +580,8 @@ func (s *Store) UpdateUser(ctx context.Context, u *store.User) error {
 }
 
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return s.count(ctx, `SELECT COUNT(*) FROM users`)
 }
 
@@ -529,6 +599,8 @@ func scanUser(scan func(...any) error) (*store.User, error) {
 }
 
 func (s *Store) CreateMembership(ctx context.Context, m *store.Membership) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO memberships (org_id, user_id, role, created_at) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (org_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
@@ -537,15 +609,21 @@ func (s *Store) CreateMembership(ctx context.Context, m *store.Membership) error
 }
 
 func (s *Store) GetMembership(ctx context.Context, orgID, userID string) (*store.Membership, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT org_id, user_id, role, created_at FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID)
 	return scanMembership(row.Scan)
 }
 
 func (s *Store) ListMembershipsByUser(ctx context.Context, userID string) ([]*store.Membership, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return s.queryMemberships(ctx, `SELECT org_id, user_id, role, created_at FROM memberships WHERE user_id = $1 ORDER BY created_at`, userID)
 }
 
 func (s *Store) ListMembershipsByOrg(ctx context.Context, orgID string) ([]*store.Membership, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return s.queryMemberships(ctx, `SELECT org_id, user_id, role, created_at FROM memberships WHERE org_id = $1 ORDER BY created_at`, orgID)
 }
 
@@ -567,11 +645,15 @@ func (s *Store) queryMemberships(ctx context.Context, query string, args ...any)
 }
 
 func (s *Store) UpdateMembership(ctx context.Context, m *store.Membership) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `UPDATE memberships SET role = $1 WHERE org_id = $2 AND user_id = $3`, m.Role, m.OrgID, m.UserID)
 	return wrap("update membership", err)
 }
 
 func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID)
 	return wrap("delete membership", err)
 }
@@ -587,6 +669,8 @@ func scanMembership(scan func(...any) error) (*store.Membership, error) {
 }
 
 func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions (id_hash, user_id, org_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)`,
 		sess.IDHash, sess.UserID, sess.OrgID, ns(sess.CreatedAt), ns(sess.ExpiresAt))
@@ -594,6 +678,8 @@ func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
 }
 
 func (s *Store) GetSession(ctx context.Context, idHash string) (*store.Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT id_hash, user_id, org_id, created_at, expires_at FROM sessions WHERE id_hash = $1`, idHash)
 	var sess store.Session
 	var created, expires int64
@@ -606,11 +692,15 @@ func (s *Store) GetSession(ctx context.Context, idHash string) (*store.Session, 
 }
 
 func (s *Store) DeleteSession(ctx context.Context, idHash string) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = $1`, idHash)
 	return wrap("delete session", err)
 }
 
 func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < $1`, ns(now))
 	return wrap("delete expired sessions", err)
 }
@@ -618,6 +708,8 @@ func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) error 
 const inviteCols = `id, token_hash, org_id, email, role, invited_by, created_at, expires_at`
 
 func (s *Store) CreateInvite(ctx context.Context, i *store.Invite) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO invites (`+inviteCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		i.ID, i.TokenHash, i.OrgID, i.Email, i.Role, i.InvitedBy, ns(i.CreatedAt), ns(i.ExpiresAt))
@@ -625,19 +717,27 @@ func (s *Store) CreateInvite(ctx context.Context, i *store.Invite) error {
 }
 
 func (s *Store) GetInviteByTokenHash(ctx context.Context, tokenHash string) (*store.Invite, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT `+inviteCols+` FROM invites WHERE token_hash = $1`, tokenHash)
 	return scanInvite(row)
 }
 
 func (s *Store) ListInvitesByOrg(ctx context.Context, orgID string) ([]*store.Invite, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return s.queryInvites(ctx, `SELECT `+inviteCols+` FROM invites WHERE org_id = $1 ORDER BY created_at`, orgID)
 }
 
 func (s *Store) ListInvitesByEmail(ctx context.Context, email string) ([]*store.Invite, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	return s.queryInvites(ctx, `SELECT `+inviteCols+` FROM invites WHERE email = $1 ORDER BY created_at`, email)
 }
 
 func (s *Store) DeleteInvite(ctx context.Context, orgID, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	res, err := s.db.ExecContext(ctx, `DELETE FROM invites WHERE id = $1 AND org_id = $2`, id, orgID)
 	if err != nil {
 		return wrap("delete invite", err)
@@ -677,6 +777,8 @@ func scanInvite(row interface{ Scan(...any) error }) (*store.Invite, error) {
 }
 
 func (s *Store) GetOrgPolicy(ctx context.Context, orgID string) (*store.OrgPolicy, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT org_id, cedar_src, updated_at FROM org_policies WHERE org_id = $1`, orgID)
 	var p store.OrgPolicy
 	var updated int64
@@ -688,6 +790,8 @@ func (s *Store) GetOrgPolicy(ctx context.Context, orgID string) (*store.OrgPolic
 }
 
 func (s *Store) SetOrgPolicy(ctx context.Context, p *store.OrgPolicy) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO org_policies (org_id, cedar_src, updated_at) VALUES ($1, $2, $3)
 		 ON CONFLICT (org_id) DO UPDATE SET cedar_src = EXCLUDED.cedar_src, updated_at = EXCLUDED.updated_at`,
@@ -696,6 +800,8 @@ func (s *Store) SetOrgPolicy(ctx context.Context, p *store.OrgPolicy) error {
 }
 
 func (s *Store) AppendAudit(ctx context.Context, e *store.AuditEvent) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO audit (id, org_id, actor, action, target, detail, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		e.ID, e.OrgID, e.Actor, e.Action, nullStr(e.Target), nullStr(e.Detail), ns(e.CreatedAt))
@@ -703,6 +809,8 @@ func (s *Store) AppendAudit(ctx context.Context, e *store.AuditEvent) error {
 }
 
 func (s *Store) ListAudit(ctx context.Context, orgID string, limit int) ([]*store.AuditEvent, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
@@ -782,6 +890,8 @@ func scanErr(op string, err error) error {
 const domainCols = `id, org_id, name, token, verified_at, created_at`
 
 func (s *Store) CreateDomain(ctx context.Context, d *store.Domain) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO domains (`+domainCols+`) VALUES ($1, $2, $3, $4, $5, $6)`,
 		d.ID, d.OrgID, d.Name, d.Token, nsPtr(d.VerifiedAt), ns(d.CreatedAt))
@@ -789,16 +899,22 @@ func (s *Store) CreateDomain(ctx context.Context, d *store.Domain) error {
 }
 
 func (s *Store) GetDomain(ctx context.Context, orgID, name string) (*store.Domain, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT `+domainCols+` FROM domains WHERE org_id = $1 AND name = $2`, orgID, name)
 	return scanDomain(row.Scan)
 }
 
 func (s *Store) GetVerifiedDomain(ctx context.Context, name string) (*store.Domain, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT `+domainCols+` FROM domains WHERE name = $1 AND verified_at IS NOT NULL`, name)
 	return scanDomain(row.Scan)
 }
 
 func (s *Store) ListDomainsByOrg(ctx context.Context, orgID string) ([]*store.Domain, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `SELECT `+domainCols+` FROM domains WHERE org_id = $1 ORDER BY created_at`, orgID)
 	if err != nil {
 		return nil, wrap("list domains", err)
@@ -816,6 +932,8 @@ func (s *Store) ListDomainsByOrg(ctx context.Context, orgID string) ([]*store.Do
 }
 
 func (s *Store) SetDomainVerified(ctx context.Context, id string, at time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	res, err := s.db.ExecContext(ctx, `UPDATE domains SET verified_at = $1 WHERE id = $2`, ns(at), id)
 	if err != nil {
 		return wrap("verify domain", err)
@@ -827,6 +945,8 @@ func (s *Store) SetDomainVerified(ctx context.Context, id string, at time.Time) 
 }
 
 func (s *Store) DeleteDomain(ctx context.Context, orgID, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	res, err := s.db.ExecContext(ctx, `DELETE FROM domains WHERE id = $1 AND org_id = $2`, id, orgID)
 	if err != nil {
 		return wrap("delete domain", err)

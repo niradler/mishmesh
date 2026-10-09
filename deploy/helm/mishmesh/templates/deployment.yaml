@@ -247,6 +247,8 @@ spec:
               value: {{ $v.dataPool.connMaxLifetime | quote }}
             - name: MISHMESH_DATA_CONN_MAX_IDLE_TIME
               value: {{ $v.dataPool.connMaxIdleTime | quote }}
+            - name: MISHMESH_DATA_QUERY_TIMEOUT
+              value: {{ $v.dataPool.queryTimeout | quote }}
             - name: MISHMESH_INGRESS_CACHE_TTL
               value: {{ $v.ingressCacheTTL | quote }}
             {{- if $v.pprofAddr }}

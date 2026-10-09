@@ -55,6 +55,22 @@ To test the clientless front door (row 5), run this from the `lan` container: `s
 
     pwsh -NoProfile -File .claude/scripts/protocols/check-published-helm.ps1
 
+## Sustained traffic and database recovery
+
+`soak-published-helm.py` sends continuous batches of 20 concurrent checksum-verified 1 MiB downloads through the published Helm deployment. It repeats gRPC and WebSocket probes, records resource samples, and fails on transfer errors or pod restarts. It requires the same isolated cluster and fixture pod as the smoke check. The output must be a new file.
+
+    python .claude/scripts/protocols/soak-published-helm.py --minutes 30 --output <scratch>/soak.jsonl
+
+`check-backup-restore.py` dumps the isolated Helm database, restores it into fresh Docker containers, compares every durable table by row count and sorted row-content hash, logs in using the existing fixture owner, and reconnects the backed-up agent identity for verified tunnel downloads. It uses the existing `proto-cluster_edge` and `proto-cluster_private` networks and client/backend fixtures. The output directory and `mm-beta-restore-pg`, `mm-beta-restored-server`, `mm-beta-restored-agent` container names must be unused. It does not modify the source database or publish any host ports. Backups contain credentials and must be stored securely; this harness contains only test accounts.
+
+    python .claude/scripts/protocols/check-backup-restore.py --output <scratch>/recovery
+
+`check-database-stall.py` pauses only the isolated `mm-beta-restore-pg` fixture, proves the candidate `mm-beta-deadline-server` returns a safe retryable 503 at the default five-second query deadline, always resumes the fixture, and checks recovery. The candidate must use the restored database and the fixture account.
+
+    python .claude/scripts/protocols/check-database-stall.py --output <scratch>/database-stall.json
+
+These runs prove the stated duration and fixture behavior. Public DNS, publicly trusted TLS, identity-provider credentials, off-site backup retention, native ARM hardware, and multi-day capacity require separate deployment validation.
+
 ## Clean up
 
     timeout 120 docker compose -p proto down -v

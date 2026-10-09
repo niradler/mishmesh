@@ -13,9 +13,9 @@ func TestPoolConfigDefaults(t *testing.T) {
 		in   PoolConfig
 		want PoolConfig
 	}{
-		{"zero value", PoolConfig{}, PoolConfig{DefaultMaxOpenConns, DefaultMaxOpenConns, DefaultConnMaxLifetime, DefaultConnMaxIdleTime}},
-		{"idle clamped to max", PoolConfig{MaxOpenConns: 5, MaxIdleConns: 50}, PoolConfig{5, 5, DefaultConnMaxLifetime, DefaultConnMaxIdleTime}},
-		{"explicit", PoolConfig{10, 2, time.Minute, time.Second}, PoolConfig{10, 2, time.Minute, time.Second}},
+		{"zero value", PoolConfig{}, PoolConfig{DefaultMaxOpenConns, DefaultMaxOpenConns, DefaultConnMaxLifetime, DefaultConnMaxIdleTime, DefaultQueryTimeout}},
+		{"idle clamped to max", PoolConfig{MaxOpenConns: 5, MaxIdleConns: 50}, PoolConfig{5, 5, DefaultConnMaxLifetime, DefaultConnMaxIdleTime, DefaultQueryTimeout}},
+		{"explicit", PoolConfig{10, 2, time.Minute, time.Second, time.Second}, PoolConfig{10, 2, time.Minute, time.Second, time.Second}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.0-beta.2
+
+- Bound runtime Postgres operations and connection-pool waits with a configurable five-second deadline (`MISHMESH_DATA_QUERY_TIMEOUT`, Helm `dataPool.queryTimeout`), so a stalled database produces a retryable API error instead of leaving requests waiting indefinitely.
+- Preserve shorter caller deadlines; reject invalid/nonpositive timeout settings.
+- Avoid including database passwords in startup configuration errors.
+- Add repeatable published-image sustained traffic, backup/restore and database-stall validation. Fix the historical profiling harness for the current Redis pool configuration.
+
 ## v0.1.0-beta.1
 
 First beta. One server binary, one agent binary, one Helm chart, three deployment shapes:

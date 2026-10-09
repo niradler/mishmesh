@@ -6,7 +6,7 @@ import (
 )
 
 func baseValid() Server {
-	return Server{BaseDomain: "localhost:8080", PublicScheme: "http", APIAuthToken: "tok", UpstreamResponseTimeout: 5 * time.Minute}
+	return Server{BaseDomain: "localhost:8080", PublicScheme: "http", APIAuthToken: "tok", UpstreamResponseTimeout: 5 * time.Minute, DataQueryTimeout: 5 * time.Second}
 }
 
 func TestUpstreamResponseTimeout(t *testing.T) {
@@ -32,6 +32,20 @@ func TestUpstreamResponseTimeout(t *testing.T) {
 			}
 			if err := config.Validate(); (err == nil) != test.valid {
 				t.Fatalf("Validate = %v, valid = %v", err, test.valid)
+			}
+		})
+	}
+}
+
+func TestDataQueryTimeout(t *testing.T) {
+	for _, value := range []string{"5s", "250ms", "0", "-1s", "invalid", ""} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("MISHMESH_DATA_QUERY_TIMEOUT", value)
+			t.Setenv("MISHMESH_API_AUTH_TOKEN", "test-token")
+			config := LoadServer()
+			valid := value == "5s" || value == "250ms"
+			if err := config.Validate(); (err == nil) != valid {
+				t.Fatalf("Validate = %v, valid = %v", err, valid)
 			}
 		})
 	}

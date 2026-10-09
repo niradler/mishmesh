@@ -321,6 +321,7 @@ func openDataStore(cfg config.Server) (store.DataStore, error) {
 			MaxIdleConns:    cfg.DataMaxIdleConns,
 			ConnMaxLifetime: cfg.DataConnMaxLifetime,
 			ConnMaxIdleTime: cfg.DataConnMaxIdleTime,
+			QueryTimeout:    cfg.DataQueryTimeout,
 		})
 	case "sqlite":
 		return sqlite.Open(cfg.DataDSN)

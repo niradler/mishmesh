@@ -112,6 +112,7 @@ dataPool:
   maxIdleConns: 0
   connMaxLifetime: 30m
   connMaxIdleTime: 5m
+  queryTimeout: 5s
 
 ingressCacheTTL: 2s
 upstreamResponseTimeout: 5m

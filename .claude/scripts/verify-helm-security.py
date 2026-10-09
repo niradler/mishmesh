@@ -31,6 +31,7 @@ def main():
         "MISHMESH_ALLOWED_ORIGINS": "",
         "MISHMESH_MAX_ORGS_PER_USER": "3",
         "MISHMESH_UPSTREAM_RESPONSE_TIMEOUT": "5m",
+        "MISHMESH_DATA_QUERY_TIMEOUT": "5s",
         "MISHMESH_TLS_PASSTHROUGH_PUBLIC_PORT": "8444",
     }
     for profile in [None, "company", "saas"]:
@@ -49,6 +50,7 @@ def main():
         "--set", "auth.allowedOrigins[1]=https://control.example.com",
         "--set", "auth.maxOrgsPerUser=7",
         "--set", "upstreamResponseTimeout=4m",
+        "--set", "dataPool.queryTimeout=8s",
         "--set", "listeners.tlsPassthrough.servicePort=9443",
     ])
     expected = {
@@ -58,6 +60,7 @@ def main():
         "MISHMESH_ALLOWED_ORIGINS": "http://localhost:5173,https://control.example.com",
         "MISHMESH_MAX_ORGS_PER_USER": "7",
         "MISHMESH_UPSTREAM_RESPONSE_TIMEOUT": "4m",
+        "MISHMESH_DATA_QUERY_TIMEOUT": "8s",
         "MISHMESH_TLS_PASSTHROUGH_PUBLIC_PORT": "9443",
     }
     for name, value in expected.items():
