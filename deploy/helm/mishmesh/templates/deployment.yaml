@@ -88,6 +88,10 @@ spec:
               value: "0.0.0.0:{{ $v.listeners.api.containerPort }}"
             - name: MISHMESH_INGRESS_ENABLED
               value: {{ $v.features.ingressEnabled | quote }}
+            {{- if ne (toString $v.features.pathRouting) "" }}
+            - name: MISHMESH_PATH_ROUTING
+              value: {{ $v.features.pathRouting | quote }}
+            {{- end }}
             - name: MISHMESH_INGRESS_ADDR
               value: "0.0.0.0:{{ $v.listeners.http.containerPort }}"
             - name: MISHMESH_TLS_ENABLED
@@ -142,6 +146,10 @@ spec:
               value: {{ $v.features.reachInEnabled | quote }}
             - name: MISHMESH_PROXY_ALLOW_LOOPBACK
               value: {{ $v.features.proxyAllowLoopback | quote }}
+            - name: MISHMESH_PROXY_ALLOW_PRIVATE
+              value: {{ $v.features.proxyAllowPrivate | quote }}
+            - name: MISHMESH_PROXY_ALLOWED_CIDRS
+              value: {{ join "," $v.features.proxyAllowedCIDRs | quote }}
             - name: MISHMESH_OIDC_ALLOW_PRIVATE_ISSUERS
               value: {{ $v.features.oidcAllowPrivateIssuers | quote }}
             - name: MISHMESH_AUTH_ENABLED
@@ -150,6 +158,10 @@ spec:
               value: {{ $v.auth.passwordEnabled | quote }}
             - name: MISHMESH_SIGNUP_MODE
               value: {{ $v.auth.signupMode | quote }}
+            - name: MISHMESH_ALLOWED_ORIGINS
+              value: {{ join "," $v.auth.allowedOrigins | quote }}
+            - name: MISHMESH_MAX_ORGS_PER_USER
+              value: {{ $v.auth.maxOrgsPerUser | quote }}
             {{- if ne (toString $v.auth.domainVerification) "" }}
             - name: MISHMESH_DOMAIN_VERIFICATION
               value: {{ $v.auth.domainVerification | quote }}

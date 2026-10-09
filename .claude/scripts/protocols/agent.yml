@@ -1,0 +1,45 @@
+gateway: ws://server-a:8081
+token: ${MISHMESH_TOKEN}
+log_level: info
+allow:
+  - 172.31.77.0/24
+
+tunnels:
+  kit:
+    proto: http
+    addr: kit:8080
+    subdomain: kit
+  kits:
+    proto: http
+    addr: kit:8443
+    subdomain: kits
+    target_https: true
+    insecure: true
+  pt:
+    proto: tls
+    addr: kit:8443
+    subdomain: pt
+  ssh:
+    proto: tcp
+    addr: sshd:22
+    port: 10001
+  pg:
+    proto: tcp
+    addr: pgtarget:5432
+    port: 10002
+  redis:
+    proto: tcp
+    addr: redistarget:6379
+    port: 10003
+  raw:
+    proto: tcp
+    addr: kit:9000
+    port: 10004
+  grpc:
+    proto: tcp
+    addr: kit:9090
+    port: 10005
+  grpctls:
+    proto: tcp
+    addr: kit:9443
+    port: 10006

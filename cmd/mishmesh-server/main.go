@@ -149,12 +149,13 @@ func serve() error {
 	}
 
 	gwOpts := gateway.Options{
-		Data:         data,
-		Conns:        conns,
-		Log:          log,
-		BaseDomain:   cfg.BaseDomain,
-		PublicScheme: cfg.PublicScheme,
-		Metrics:      mx,
+		Data:               data,
+		Conns:              conns,
+		Log:                log,
+		BaseDomain:         cfg.BaseDomain,
+		PublicScheme:       cfg.PublicScheme,
+		DisablePathRouting: !cfg.PathRouting,
+		Metrics:            mx,
 	}
 	if tcpIngress != nil {
 		gwOpts.Ports = tcpIngress
@@ -171,6 +172,7 @@ func serve() error {
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
 	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
 	cp.SetPublicConfig(cfg.BaseDomain, cfg.PublicScheme)
+	cp.SetPathRouting(cfg.PathRouting)
 	cp.SetLimiter(limiter)
 	cp.SetTrustedProxies(trustedProxies)
 	cp.SetAllowedOrigins(cfg.AllowedOrigins)
@@ -261,11 +263,12 @@ func serve() error {
 
 	if cfg.SSHEnabled {
 		sshOpts := sshfwd.Options{
-			Data:         data,
-			Conns:        conns,
-			Log:          log,
-			BaseDomain:   cfg.BaseDomain,
-			PublicScheme: cfg.PublicScheme,
+			Data:               data,
+			Conns:              conns,
+			Log:                log,
+			BaseDomain:         cfg.BaseDomain,
+			PublicScheme:       cfg.PublicScheme,
+			DisablePathRouting: !cfg.PathRouting,
 		}
 		if tcpIngress != nil {
 			sshOpts.Ports = tcpIngress

@@ -26,6 +26,7 @@ type API struct {
 	defaultQuota       store.Quota
 	baseDomain         string
 	publicScheme       string
+	disablePathRouting bool
 	reachInEnabled     bool
 	domainVerification bool
 	resolver           DNSResolver
@@ -50,6 +51,10 @@ func (a *API) SetDraining(draining bool) {
 func (a *API) SetPublicConfig(baseDomain, scheme string) {
 	a.baseDomain = baseDomain
 	a.publicScheme = scheme
+}
+
+func (a *API) SetPathRouting(enabled bool) {
+	a.disablePathRouting = !enabled
 }
 
 func New(data store.DataStore, conns store.ConnectionStore, adminToken string, log *slog.Logger) *API {

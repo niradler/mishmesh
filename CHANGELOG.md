@@ -11,6 +11,7 @@ homelab, company / on-prem, SaaS.
 - Automatic HTTPS via ACME (single pod) or a wildcard certificate secret (cluster)
 - Endpoint policy: basic auth, OIDC login, IP allow/deny, mTLS, per-endpoint rate limits
 - Forwarded headers with a trusted-proxy allowlist; clear 502/503/504 pages
+- Path routing disabled consistently in ingress, agent announcements, control API URLs and SSH forwards
 
 ### Agent
 - `agent.yml` with many tunnels per session, `start`, `validate`, `tls` commands
@@ -33,6 +34,9 @@ homelab, company / on-prem, SaaS.
 - Cluster mode: stateless pods behind a load balancer, pod-to-pod relay, cluster-wide TCP port claims, drain on shutdown
 - Prometheus metrics (token protected), readiness and liveness endpoints
 - Docker Compose and Helm (homelab, company and SaaS profiles)
+- Helm values for allowed origins, private proxy target rules and organization creation limits
+- Concurrent bootstrap seeding across pods, with shared agent/token conflict validation
+- Go 1.26.9 and x/net v0.60.0 security patches
 
 ### Measured (4 vCPU / 8 GB pod)
 - ~20k req/s at 1 KB, ~2.3 GB/s at 1 MB on one pod; cross-pod relay ~11k req/s at +2.5 ms p50

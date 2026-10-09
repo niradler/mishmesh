@@ -201,5 +201,8 @@ func (g *Gateway) publicURL(ep *store.Endpoint) string {
 }
 
 func (g *Gateway) pathURL(ep *store.Endpoint) string {
+	if g.disablePathRouting {
+		return ""
+	}
 	return fmt.Sprintf("%s://%s/tunnel/%s", g.publicScheme, g.baseDomain, ep.ID)
 }

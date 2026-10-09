@@ -28,26 +28,28 @@ type Metrics interface {
 }
 
 type Options struct {
-	Data         store.DataStore
-	Conns        store.ConnectionStore
-	Log          *slog.Logger
-	BaseDomain   string
-	PublicScheme string
-	Ports        PortOpener
-	Metrics      Metrics
+	Data               store.DataStore
+	Conns              store.ConnectionStore
+	Log                *slog.Logger
+	BaseDomain         string
+	PublicScheme       string
+	DisablePathRouting bool
+	Ports              PortOpener
+	Metrics            Metrics
 
 	KindUnavailable map[string]string
 }
 
 type Gateway struct {
-	data         store.DataStore
-	conns        store.ConnectionStore
-	log          *slog.Logger
-	baseDomain   string
-	publicScheme string
-	ports        PortOpener
-	metrics      Metrics
-	unavailable  map[string]string
+	data               store.DataStore
+	conns              store.ConnectionStore
+	log                *slog.Logger
+	baseDomain         string
+	publicScheme       string
+	disablePathRouting bool
+	ports              PortOpener
+	metrics            Metrics
+	unavailable        map[string]string
 }
 
 func New(opts Options) *Gateway {
@@ -56,14 +58,15 @@ func New(opts Options) *Gateway {
 		log = slog.Default()
 	}
 	return &Gateway{
-		data:         opts.Data,
-		conns:        opts.Conns,
-		log:          log,
-		baseDomain:   opts.BaseDomain,
-		publicScheme: opts.PublicScheme,
-		ports:        opts.Ports,
-		metrics:      opts.Metrics,
-		unavailable:  opts.KindUnavailable,
+		data:               opts.Data,
+		conns:              opts.Conns,
+		log:                log,
+		baseDomain:         opts.BaseDomain,
+		publicScheme:       opts.PublicScheme,
+		disablePathRouting: opts.DisablePathRouting,
+		ports:              opts.Ports,
+		metrics:            opts.Metrics,
+		unavailable:        opts.KindUnavailable,
 	}
 }
 

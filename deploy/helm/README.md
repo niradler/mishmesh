@@ -215,6 +215,11 @@ helm template t deploy/helm/mishmesh-agent --set token=x
 | `auth.*`, `quotas.*`, `features.*` | | map 1:1 to `MISHMESH_*` env |
 | `auth.signupMode` | `invite` | `invite` or `org` (`MISHMESH_SIGNUP_MODE`); `values-saas.yaml` sets `org` |
 | `auth.domainVerification` | `""` | `"true"` or `"false"` forces DNS TXT custom-domain verification; empty keeps the server default (on when `signupMode=org`) |
+| `features.pathRouting` | `""` | Empty keeps the server default (off in `org` mode); explicit `true` or `false` overrides it. Disabled path routing also removes `/tunnel/{id}` URLs from API responses and connection announcements. |
+| `features.proxyAllowPrivate` | `false` | Allows agentless proxy targets on private networks; enable only for trusted deployments. |
+| `features.proxyAllowedCIDRs` | `[]` | Additional allowed agentless proxy target networks, comma-joined into `MISHMESH_PROXY_ALLOWED_CIDRS`. |
+| `auth.allowedOrigins` | `[]` | Exact additional origins allowed for cookie-authenticated writes; same-origin is already allowed. Include the Vite origin for development. |
+| `auth.maxOrgsPerUser` | `3` | Maximum organizations a user can create (`MISHMESH_MAX_ORGS_PER_USER`). |
 | `trustedProxies` | `[]` | CIDRs or IPs of proxies whose `X-Forwarded-For` is trusted (`MISHMESH_TRUSTED_PROXIES`, comma-joined) |
 | `secrets.metricsToken` | `""` | bearer token required on `/metrics` (`MISHMESH_METRICS_TOKEN`); with `secrets.existingSecret`, store it under key `metrics-token` |
 | `drain.preStopSleepSeconds` / `terminationGracePeriodSeconds` | 10 / 45 | |

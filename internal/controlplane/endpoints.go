@@ -77,6 +77,9 @@ func (a *API) publicURL(ep *store.Endpoint) string {
 	case ep.Subdomain != "":
 		return fmt.Sprintf("%s://%s.%s", scheme, ep.Subdomain, a.baseDomain)
 	default:
+		if a.disablePathRouting {
+			return ""
+		}
 		return fmt.Sprintf("%s://%s/tunnel/%s", scheme, a.baseDomain, ep.ID)
 	}
 }

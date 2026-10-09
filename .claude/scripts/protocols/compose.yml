@@ -1,0 +1,167 @@
+name: proto
+
+x-server: &server
+  image: alpine:3.20
+  command: ["/proto/mishmesh-server"]
+  networks: [edge, infra]
+  volumes:
+    - ${PROTO_BIN:?set PROTO_BIN}:/proto:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  environment: &server-env
+    MISHMESH_BASE_DOMAIN: mm.test
+    MISHMESH_PUBLIC_SCHEME: http
+    MISHMESH_API_AUTH_TOKEN: proto-admin-token-0123456789abcdef
+    MISHMESH_BOOTSTRAP_TOKEN: mm_proto_bootstrap_token_0123456789
+    MISHMESH_SIGNUP_MODE: invite
+    MISHMESH_INGRESS_ADDR: 0.0.0.0:8080
+    MISHMESH_API_ADDR: 0.0.0.0:8081
+    MISHMESH_TLS_ENABLED: "true"
+    MISHMESH_SELF_SIGNED_TLS: "true"
+    MISHMESH_HTTPS_ADDR: 0.0.0.0:8443
+    MISHMESH_TCP_BIND_HOST: 0.0.0.0
+    MISHMESH_TCP_PORT_MIN: "10001"
+    MISHMESH_TCP_PORT_MAX: "10012"
+    MISHMESH_TLS_PASSTHROUGH_ENABLED: "true"
+    MISHMESH_TLS_PASSTHROUGH_ADDR: 0.0.0.0:8444
+    MISHMESH_SSH_ENABLED: "true"
+    MISHMESH_SSH_ADDR: 0.0.0.0:2222
+    MISHMESH_SSH_HOST_KEY_FILE: /tmp/ssh_host_ed25519.pem
+    MISHMESH_REACHIN_ENABLED: "true"
+    MISHMESH_DATA_DSN: postgres://mishmesh:mishmesh@postgres:5432/mishmesh?sslmode=disable
+    MISHMESH_CONN_BACKEND: ${CONN_BACKEND:-memory}
+    MISHMESH_REDIS_URL: redis://redis:6379
+    MISHMESH_CLUSTER_ENABLED: ${CLUSTER:-false}
+    MISHMESH_CLUSTER_SECRET: proto-cluster-secret-0123456789abcdef
+    MISHMESH_RELAY_ADDR: 0.0.0.0:7443
+    MISHMESH_LOG_LEVEL: ${SERVER_LOG_LEVEL:-info}
+
+x-tools: &tools
+  image: alpine:3.20
+  volumes:
+    - ${PROTO_BIN:?set PROTO_BIN}:/proto:ro
+    - keys:/keys
+  command:
+    - /bin/sh
+    - -c
+    - apk add --no-cache curl openssh-client sshpass postgresql16-client redis netcat-openbsd openssl coreutils bash >/dev/null && touch /ready && exec sleep infinity
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    networks: [infra]
+    environment:
+      POSTGRES_USER: mishmesh
+      POSTGRES_PASSWORD: mishmesh
+      POSTGRES_DB: mishmesh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mishmesh -d mishmesh"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    networks: [infra]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  server-a:
+    <<: *server
+    ports:
+      - "127.0.0.1:38181:8081"
+    environment:
+      <<: *server-env
+      MISHMESH_NODE_ID: server-a
+      MISHMESH_RELAY_ADVERTISE: server-a:7443
+
+  server-b:
+    <<: *server
+    profiles: [cluster]
+    environment:
+      <<: *server-env
+      MISHMESH_NODE_ID: server-b
+      MISHMESH_RELAY_ADVERTISE: server-b:7443
+
+  kit:
+    image: alpine:3.20
+    networks: [private]
+    volumes:
+      - ${PROTO_BIN:?set PROTO_BIN}:/proto:ro
+    command: ["/proto/kit", "serve"]
+
+  sshd:
+    image: alpine:3.20
+    networks: [private]
+    volumes:
+      - keys:/keys
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        apk add --no-cache openssh openssh-sftp-server >/dev/null
+        ssh-keygen -A >/dev/null
+        [ -f /keys/id ] || ssh-keygen -t ed25519 -N '' -f /keys/id >/dev/null
+        chmod 644 /keys/id /keys/id.pub
+        adduser -D tester
+        echo tester:tester | chpasswd 2>/dev/null
+        mkdir -p /home/tester/.ssh
+        cp /keys/id.pub /home/tester/.ssh/authorized_keys
+        chown -R tester:tester /home/tester/.ssh
+        chmod 700 /home/tester/.ssh
+        chmod 600 /home/tester/.ssh/authorized_keys
+        exec /usr/sbin/sshd -D -e -o AllowTcpForwarding=yes -o PasswordAuthentication=no
+
+  pgtarget:
+    image: postgres:16-alpine
+    networks: [private]
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redistarget:
+    image: redis:7-alpine
+    networks: [private]
+
+  agent:
+    image: alpine:3.20
+    networks: [edge, private]
+    volumes:
+      - ${PROTO_BIN:?set PROTO_BIN}:/proto:ro
+      - ./agent.yml:/cfg/agent.yml:ro
+    environment:
+      MISHMESH_TOKEN: mm_proto_bootstrap_token_0123456789
+    command: ["/proto/mishmesh-agent", "start", "--config", "/cfg/agent.yml"]
+    depends_on: [server-a, kit, sshd, pgtarget, redistarget]
+
+  client:
+    <<: *tools
+    networks: [edge]
+
+  lan:
+    <<: *tools
+    networks: [edge, private]
+
+networks:
+  edge: {}
+  infra: {}
+  private:
+    ipam:
+      config:
+        - subnet: 172.31.77.0/24
+
+volumes:
+  keys: {}

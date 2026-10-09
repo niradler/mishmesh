@@ -201,6 +201,15 @@ func TestRegisterHTTPIncludesPathURL(t *testing.T) {
 	}
 }
 
+func TestRegisterHTTPWithPathRoutingDisabled(t *testing.T) {
+	g, agent, _, _ := newRegisterFixture(t, Options{DisablePathRouting: true})
+	ack := g.handleRegister(context.Background(), agent, &tunnel.RegisterPayload{Endpoints: []tunnel.EndpointRequest{{Ref: "0", Kind: store.KindHTTP, Subdomain: "shop"}}})
+	binding := ack.Endpoints[0]
+	if binding.Error != "" || binding.PathURL != "" || binding.PublicURL != "https://shop.example.com" {
+		t.Fatalf("unexpected binding: %+v", binding)
+	}
+}
+
 func TestRegisterRebindsOwnSubdomainAndCustomDomain(t *testing.T) {
 	g, ag1, _, data := newRegisterFixture(t, Options{})
 	ctx := context.Background()

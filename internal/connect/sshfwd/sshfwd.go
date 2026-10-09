@@ -26,25 +26,27 @@ type Metrics interface {
 }
 
 type Options struct {
-	Data         store.DataStore
-	Conns        store.ConnectionStore
-	Log          *slog.Logger
-	BaseDomain   string
-	PublicScheme string
-	Ports        PortOpener
-	Metrics      Metrics
-	HostKeyPEM   []byte
+	Data               store.DataStore
+	Conns              store.ConnectionStore
+	Log                *slog.Logger
+	BaseDomain         string
+	PublicScheme       string
+	DisablePathRouting bool
+	Ports              PortOpener
+	Metrics            Metrics
+	HostKeyPEM         []byte
 }
 
 type Server struct {
-	data         store.DataStore
-	conns        store.ConnectionStore
-	log          *slog.Logger
-	baseDomain   string
-	publicScheme string
-	ports        PortOpener
-	metrics      Metrics
-	sshConfig    *ssh.ServerConfig
+	data               store.DataStore
+	conns              store.ConnectionStore
+	log                *slog.Logger
+	baseDomain         string
+	publicScheme       string
+	disablePathRouting bool
+	ports              PortOpener
+	metrics            Metrics
+	sshConfig          *ssh.ServerConfig
 
 	ln     net.Listener
 	mu     sync.Mutex
@@ -61,13 +63,14 @@ func New(opts Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		data:         opts.Data,
-		conns:        opts.Conns,
-		log:          log,
-		baseDomain:   opts.BaseDomain,
-		publicScheme: opts.PublicScheme,
-		ports:        opts.Ports,
-		metrics:      opts.Metrics,
+		data:               opts.Data,
+		conns:              opts.Conns,
+		log:                log,
+		baseDomain:         opts.BaseDomain,
+		publicScheme:       opts.PublicScheme,
+		disablePathRouting: opts.DisablePathRouting,
+		ports:              opts.Ports,
+		metrics:            opts.Metrics,
 	}
 	cfg := &ssh.ServerConfig{PasswordCallback: s.authPassword}
 	cfg.AddHostKey(signer)
@@ -366,6 +369,9 @@ func (s *Server) publicURL(ep *store.Endpoint) string {
 	}
 	if ep.Subdomain != "" {
 		return fmt.Sprintf("%s://%s.%s", s.publicScheme, ep.Subdomain, s.baseDomain)
+	}
+	if s.disablePathRouting {
+		return ""
 	}
 	return fmt.Sprintf("%s://%s/tunnel/%s", s.publicScheme, s.baseDomain, ep.ID)
 }

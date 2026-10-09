@@ -28,14 +28,20 @@ func (a *API) EnsureBootstrap(ctx context.Context, rawToken string) (string, err
 	if _, err := a.data.GetAgent(ctx, bootstrapAgentID); errors.Is(err, store.ErrNotFound) {
 		agent := &store.Agent{ID: bootstrapAgentID, OrgID: org.ID, Name: "bootstrap", Status: store.AgentActive, CreatedAt: time.Now()}
 		if err := a.data.CreateAgent(ctx, agent); err != nil {
-			return "", err
+			existing, lookupErr := a.data.GetAgent(ctx, bootstrapAgentID)
+			if lookupErr != nil || existing.OrgID != org.ID || existing.Status != store.AgentActive {
+				return "", err
+			}
 		}
 	} else if err != nil {
 		return "", err
 	}
 	tok := &store.Token{ID: store.NewID("tok"), OrgID: org.ID, AgentID: bootstrapAgentID, Hash: hash, CreatedAt: time.Now()}
 	if err := a.data.CreateToken(ctx, tok); err != nil {
-		return "", err
+		existing, lookupErr := a.data.GetTokenByHash(ctx, hash)
+		if lookupErr != nil || existing.AgentID != bootstrapAgentID || existing.OrgID != org.ID {
+			return "", err
+		}
 	}
 	return bootstrapAgentID, nil
 }

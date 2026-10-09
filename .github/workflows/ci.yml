@@ -52,6 +52,7 @@ jobs:
           for f in deploy/helm/mishmesh/values-*.yaml; do
             helm template t deploy/helm/mishmesh -f "$f" >/dev/null || exit 1
           done
+      - run: python3 .claude/scripts/verify-helm-security.py
 
   docker:
     runs-on: ubuntu-latest

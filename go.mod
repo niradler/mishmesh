@@ -1,6 +1,6 @@
 module github.com/mishmesh/mishmesh
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/alicebob/miniredis/v2 v2.39.0
@@ -36,7 +36,7 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
