@@ -10,6 +10,7 @@ func TestEndpointURLsWithPathRoutingDisabled(t *testing.T) {
 	api := New(nil, nil, "", nil)
 	api.SetPublicConfig("example.com", "https")
 	api.SetPathRouting(false)
+	api.SetTLSPublicPort(9443)
 	for _, test := range []struct {
 		name     string
 		endpoint store.Endpoint
@@ -19,6 +20,7 @@ func TestEndpointURLsWithPathRoutingDisabled(t *testing.T) {
 		{"subdomain", store.Endpoint{Subdomain: "shop", Kind: store.KindHTTP}, "https://shop.example.com"},
 		{"domain", store.Endpoint{Domain: "shop.example.org", Kind: store.KindHTTP}, "https://shop.example.org"},
 		{"tcp", store.Endpoint{Port: 10001, Kind: store.KindTCP}, "tcp://example.com:10001"},
+		{"tls", store.Endpoint{Subdomain: "db", Kind: store.KindTLS}, "tls://db.example.com:9443"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := api.toEndpointDTO(&test.endpoint).PublicURL; got != test.want {

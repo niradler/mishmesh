@@ -27,6 +27,7 @@ type API struct {
 	baseDomain         string
 	publicScheme       string
 	disablePathRouting bool
+	tlsPublicPort      int
 	reachInEnabled     bool
 	domainVerification bool
 	resolver           DNSResolver
@@ -55,6 +56,10 @@ func (a *API) SetPublicConfig(baseDomain, scheme string) {
 
 func (a *API) SetPathRouting(enabled bool) {
 	a.disablePathRouting = !enabled
+}
+
+func (a *API) SetTLSPublicPort(port int) {
+	a.tlsPublicPort = port
 }
 
 func New(data store.DataStore, conns store.ConnectionStore, adminToken string, log *slog.Logger) *API {

@@ -10,6 +10,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
+	"github.com/mishmesh/mishmesh/internal/endpointurl"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/subdomain"
 )
@@ -70,6 +71,8 @@ func (a *API) publicURL(ep *store.Endpoint) string {
 		scheme = "http"
 	}
 	switch {
+	case ep.Kind == store.KindTLS:
+		return endpointurl.TLS(ep, a.baseDomain, a.tlsPublicPort)
 	case ep.Domain != "":
 		return fmt.Sprintf("%s://%s", scheme, ep.Domain)
 	case ep.Kind == store.KindTCP && ep.Port > 0:

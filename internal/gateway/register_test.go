@@ -132,7 +132,7 @@ func TestRegisterReasons(t *testing.T) {
 		{
 			name:    "tls with subdomain",
 			req:     tunnel.EndpointRequest{Ref: "0", Kind: store.KindTLS, Subdomain: "secure"},
-			wantURL: "https://secure.example.com",
+			wantURL: "tls://secure.example.com:8444",
 		},
 		{
 			name:      "tls custom domain not registered",
@@ -210,6 +210,28 @@ func TestRegisterHTTPWithPathRoutingDisabled(t *testing.T) {
 	}
 }
 
+func TestRegisterTCPRebindsOwnReservedPort(t *testing.T) {
+	g, agent, other, data := newRegisterFixture(t, Options{Ports: &fakePorts{}})
+	ctx := context.Background()
+	request := tunnel.EndpointRequest{Kind: store.KindTCP, Port: 10001, Lifecycle: store.LifecycleReserved}
+	first, err := g.registerOne(ctx, agent, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := g.registerOne(ctx, agent, request)
+	if err != nil || second.EndpointID != first.EndpointID || second.PublicURL != "tcp://example.com:10001" {
+		t.Fatalf("rebind %+v, first %+v, err %v", second, first, err)
+	}
+	endpoints, err := data.ListEndpointsByAgent(ctx, agent.ID)
+	if err != nil || len(endpoints) != 1 {
+		t.Fatalf("endpoints = %d, err = %v", len(endpoints), err)
+	}
+	g.ports = &fakePorts{err: errors.New("port occupied")}
+	if _, err := g.registerOne(ctx, other, request); err == nil {
+		t.Fatal("another agent must not reuse the reserved port")
+	}
+}
+
 func TestRegisterRebindsOwnSubdomainAndCustomDomain(t *testing.T) {
 	g, ag1, _, data := newRegisterFixture(t, Options{})
 	ctx := context.Background()
@@ -231,7 +253,7 @@ func TestRegisterRebindsOwnSubdomainAndCustomDomain(t *testing.T) {
 			t.Fatalf("endpoint %d changed across registrations", i)
 		}
 	}
-	if got := second.Endpoints[1]; got.EndpointID != "ep_dom" || got.PublicURL != "https://api.example.org" {
+	if got := second.Endpoints[1]; got.EndpointID != "ep_dom" || got.PublicURL != "tls://api.example.org:8444" {
 		t.Fatalf("domain binding = %+v", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/endpointurl"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/subdomain"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
@@ -158,6 +159,22 @@ func (g *Gateway) registerTCP(ctx context.Context, agent *store.Agent, req tunne
 		}
 		return tunnel.EndpointBinding{}, errors.New("tcp ingress is disabled on this server")
 	}
+	if req.Port > 0 {
+		endpoints, err := g.data.ListEndpointsByAgent(ctx, agent.ID)
+		if err != nil {
+			g.log.Warn("tcp endpoint lookup failed", "agent_id", agent.ID, "err", err)
+			return tunnel.EndpointBinding{}, errors.New("internal error looking up tcp endpoint")
+		}
+		for _, endpoint := range endpoints {
+			if endpoint.Kind != store.KindTCP || endpoint.Port != req.Port {
+				continue
+			}
+			if _, err := g.ports.Open(endpoint.ID, endpoint.Port); err != nil {
+				return tunnel.EndpointBinding{}, fmt.Errorf("tcp port %d unavailable: %v", req.Port, err)
+			}
+			return g.bindExisting(agent, req, endpoint), nil
+		}
+	}
 	if !g.quotaAllowsEndpoint(ctx, agent.OrgID) {
 		return tunnel.EndpointBinding{}, errors.New("endpoint quota exceeded for this organization")
 	}
@@ -191,6 +208,10 @@ func (g *Gateway) registerTCP(ctx context.Context, agent *store.Agent, req tunne
 
 func (g *Gateway) publicURL(ep *store.Endpoint) string {
 	switch {
+	case ep.Kind == store.KindTLS:
+		return endpointurl.TLS(ep, g.baseDomain, g.tlsPublicPort)
+	case ep.Kind == store.KindTCP:
+		return fmt.Sprintf("tcp://%s:%d", g.publicHost(), ep.Port)
 	case ep.Domain != "":
 		return fmt.Sprintf("%s://%s", g.publicScheme, ep.Domain)
 	case ep.Subdomain != "":

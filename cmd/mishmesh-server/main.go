@@ -155,6 +155,7 @@ func serve() error {
 		BaseDomain:         cfg.BaseDomain,
 		PublicScheme:       cfg.PublicScheme,
 		DisablePathRouting: !cfg.PathRouting,
+		TLSPublicPort:      cfg.TLSPassthroughPublicPort,
 		Metrics:            mx,
 	}
 	if tcpIngress != nil {
@@ -173,6 +174,7 @@ func serve() error {
 	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
 	cp.SetPublicConfig(cfg.BaseDomain, cfg.PublicScheme)
 	cp.SetPathRouting(cfg.PathRouting)
+	cp.SetTLSPublicPort(cfg.TLSPassthroughPublicPort)
 	cp.SetLimiter(limiter)
 	cp.SetTrustedProxies(trustedProxies)
 	cp.SetAllowedOrigins(cfg.AllowedOrigins)
@@ -221,34 +223,35 @@ func serve() error {
 
 	if cfg.IngressEnabled {
 		ing := ingress.New(ingress.Options{
-			Data:               data,
-			Conns:              conns,
-			Log:                log,
-			BaseDomain:         cfg.BaseDomain,
-			Meter:              mx,
-			OIDCSignKey:        endpointOIDCKey(cfg),
-			CookieSecure:       cfg.PublicScheme == "https",
-			OIDCAllowPrivate:   cfg.OIDCAllowPrivate,
-			TrustedProxies:     trustedProxies,
-			Limiter:            limiter,
-			LookupCacheTTL:     cfg.IngressCacheTTL,
-			DisablePathRouting: !cfg.PathRouting,
+			Data:                    data,
+			Conns:                   conns,
+			Log:                     log,
+			BaseDomain:              cfg.BaseDomain,
+			Meter:                   mx,
+			OIDCSignKey:             endpointOIDCKey(cfg),
+			CookieSecure:            cfg.PublicScheme == "https",
+			OIDCAllowPrivate:        cfg.OIDCAllowPrivate,
+			TrustedProxies:          trustedProxies,
+			Limiter:                 limiter,
+			LookupCacheTTL:          cfg.IngressCacheTTL,
+			DisablePathRouting:      !cfg.PathRouting,
+			UpstreamResponseTimeout: cfg.UpstreamResponseTimeout,
 		})
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg, data)
 			if err != nil {
 				return err
 			}
-			servers = append(servers, newHTTPServer(cfg.HTTPSAddr, ing, tc))
+			servers = append(servers, newIngressHTTPServer(cfg.HTTPSAddr, ing, tc))
 			log.Info("ingress https listener", "addr", cfg.HTTPSAddr, "base_domain", cfg.BaseDomain)
 			httpHandler := http.Handler(ing)
 			if acmeHTTP != nil {
 				httpHandler = acmeHTTP
 			}
-			servers = append(servers, newHTTPServer(cfg.IngressAddr, httpHandler, nil))
+			servers = append(servers, newIngressHTTPServer(cfg.IngressAddr, httpHandler, nil))
 			log.Info("ingress http listener", "addr", cfg.IngressAddr)
 		} else {
-			servers = append(servers, newHTTPServer(cfg.IngressAddr, ing, nil))
+			servers = append(servers, newIngressHTTPServer(cfg.IngressAddr, ing, nil))
 			log.Info("ingress listener", "addr", cfg.IngressAddr, "base_domain", cfg.BaseDomain)
 		}
 		if cfg.TLSPassthroughEnabled {
@@ -432,6 +435,16 @@ func newHTTPServer(addr string, handler http.Handler, tc *tls.Config) *http.Serv
 		ReadHeaderTimeout: serverReadHeaderTimeout,
 		IdleTimeout:       serverIdleTimeout,
 	}
+}
+
+func newIngressHTTPServer(addr string, handler http.Handler, config *tls.Config) *http.Server {
+	server := newHTTPServer(addr, handler, config)
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true)
+	server.Protocols = protocols
+	return server
 }
 
 const (

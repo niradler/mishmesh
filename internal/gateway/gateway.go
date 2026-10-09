@@ -34,6 +34,7 @@ type Options struct {
 	BaseDomain         string
 	PublicScheme       string
 	DisablePathRouting bool
+	TLSPublicPort      int
 	Ports              PortOpener
 	Metrics            Metrics
 
@@ -47,6 +48,7 @@ type Gateway struct {
 	baseDomain         string
 	publicScheme       string
 	disablePathRouting bool
+	tlsPublicPort      int
 	ports              PortOpener
 	metrics            Metrics
 	unavailable        map[string]string
@@ -64,6 +66,7 @@ func New(opts Options) *Gateway {
 		baseDomain:         opts.BaseDomain,
 		publicScheme:       opts.PublicScheme,
 		disablePathRouting: opts.DisablePathRouting,
+		tlsPublicPort:      opts.TLSPublicPort,
 		ports:              opts.Ports,
 		metrics:            opts.Metrics,
 		unavailable:        opts.KindUnavailable,

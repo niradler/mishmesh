@@ -114,6 +114,7 @@ dataPool:
   connMaxIdleTime: 5m
 
 ingressCacheTTL: 2s
+upstreamResponseTimeout: 5m
 
 pprofAddr: ""
 

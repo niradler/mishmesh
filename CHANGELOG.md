@@ -11,6 +11,8 @@ homelab, company / on-prem, SaaS.
 - Automatic HTTPS via ACME (single pod) or a wildcard certificate secret (cluster)
 - Endpoint policy: basic auth, OIDC login, IP allow/deny, mTLS, per-endpoint rate limits
 - Forwarded headers with a trusted-proxy allowlist; clear 502/503/504 pages
+- gRPC unary and bidirectional streams through HTTP/2 ingress and h2c/HTTPS upstreams
+- Configurable upstream response-header timeout (5m default), including long-poll requests
 - Path routing disabled consistently in ingress, agent announcements, control API URLs and SSH forwards
 
 ### Agent
@@ -36,6 +38,7 @@ homelab, company / on-prem, SaaS.
 - Docker Compose and Helm (homelab, company and SaaS profiles)
 - Helm values for allowed origins, private proxy target rules and organization creation limits
 - Concurrent bootstrap seeding across pods, with shared agent/token conflict validation
+- Reserved TCP endpoints rebind to their existing port claims across agent/server restarts
 - Go 1.26.9 and x/net v0.60.0 security patches
 
 ### Measured (4 vCPU / 8 GB pod)

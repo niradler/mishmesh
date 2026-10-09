@@ -412,6 +412,8 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `SIGNUP_MODE` | `org` | `org` or `invite` |
 | `DOMAIN_VERIFICATION` | `true` in `org` mode | require TXT proof for custom domains |
 | `PATH_ROUTING` | `false` in `org` mode, `true` in `invite` | serve endpoints at `/tunnel/{id}` on the base domain; off keeps tenants on separate origins |
+| `UPSTREAM_RESPONSE_TIMEOUT` | `5m` | positive duration to wait for upstream response headers, including long-poll requests; streaming bodies have no fixed timeout |
+| `TLS_PASSTHROUGH_PUBLIC_PORT` | `8444` | externally reachable passthrough port used in `tls://host:port` endpoint URLs; set when a proxy maps a different public port |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `OIDC_REDIRECT_URL` / `OIDC_ISSUER` | | Google login |
 | `SESSION_TTL_HOURS` | `168` | login session lifetime |
 | `WEBUI_ENABLED` / `WEBUI_DIR` | `false` / empty | serve the SPA (the image bundles it at `/webui`) |
@@ -459,6 +461,7 @@ Server CLI: `mishmesh-server [serve]`, `mishmesh-server token create --org NAME 
 Version 0.1.0-beta.1. Built and tested:
 
 - HTTP/HTTPS (subdomain, path, custom domain), WebSocket/SSE streaming, public TCP ports, TLS passthrough, clientless SSH, agentless proxy endpoints
+- Native gRPC unary and bidirectional streaming through HTTP/2 ingress, with h2c or HTTPS upstreams; configurable long-poll response-header timeout
 - HTTPS with your own certificate, ACME, or self-signed; custom-domain ownership verification
 - endpoint policy, including OIDC, mTLS and rate limits
 - orgs, roles, a Cedar policy per org, invites, password and Google login, quotas, audit log, web UI
@@ -477,5 +480,7 @@ make build    # bin/mishmesh-server, bin/mishmesh-agent
 make check    # fmt + vet + test (race), run before committing
 make test
 ```
+
+On Windows, `make test`, `make test-short`, and `make check` run Go tests in Docker with no published ports. Docker must be running. This keeps test listeners off the Windows host and avoids firewall approval prompts; the complete test suite still runs. Test containers are retained for inspection.
 
 Layout: `cmd/mishmesh-server`, `cmd/mishmesh-agent`, `internal/{tunnel,gateway,agent,ingress,controlplane,cluster,ratelimit,clientip,authz,connect,metrics,config}`, `internal/store/{sqlite,postgres,memory,redis}`, `web/` (React UI), `deploy/` (compose files, Helm charts, examples). Product background: [docs/prd.md](docs/prd.md).

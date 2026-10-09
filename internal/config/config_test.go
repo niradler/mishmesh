@@ -1,9 +1,40 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func baseValid() Server {
-	return Server{BaseDomain: "localhost:8080", PublicScheme: "http", APIAuthToken: "tok"}
+	return Server{BaseDomain: "localhost:8080", PublicScheme: "http", APIAuthToken: "tok", UpstreamResponseTimeout: 5 * time.Minute}
+}
+
+func TestUpstreamResponseTimeout(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  time.Duration
+		valid bool
+	}{
+		{"5m", 5 * time.Minute, true},
+		{"4m", 4 * time.Minute, true},
+		{"250ms", 250 * time.Millisecond, true},
+		{"0", 0, false},
+		{"-1s", -time.Second, false},
+		{"invalid", -1, false},
+		{"", -1, false},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			t.Setenv("MISHMESH_UPSTREAM_RESPONSE_TIMEOUT", test.value)
+			t.Setenv("MISHMESH_API_AUTH_TOKEN", "test-token")
+			config := LoadServer()
+			if config.UpstreamResponseTimeout != test.want {
+				t.Fatalf("timeout = %v, want %v", config.UpstreamResponseTimeout, test.want)
+			}
+			if err := config.Validate(); (err == nil) != test.valid {
+				t.Fatalf("Validate = %v, valid = %v", err, test.valid)
+			}
+		})
+	}
 }
 
 func TestValidateAPIAuthFailClosed(t *testing.T) {

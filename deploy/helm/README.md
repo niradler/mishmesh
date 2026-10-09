@@ -216,6 +216,7 @@ helm template t deploy/helm/mishmesh-agent --set token=x
 | `auth.signupMode` | `invite` | `invite` or `org` (`MISHMESH_SIGNUP_MODE`); `values-saas.yaml` sets `org` |
 | `auth.domainVerification` | `""` | `"true"` or `"false"` forces DNS TXT custom-domain verification; empty keeps the server default (on when `signupMode=org`) |
 | `features.pathRouting` | `""` | Empty keeps the server default (off in `org` mode); explicit `true` or `false` overrides it. Disabled path routing also removes `/tunnel/{id}` URLs from API responses and connection announcements. |
+| `upstreamResponseTimeout` | `5m` | Positive response-header timeout; increase for longer long-poll requests. Streaming bodies remain unrestricted. |
 | `features.proxyAllowPrivate` | `false` | Allows agentless proxy targets on private networks; enable only for trusted deployments. |
 | `features.proxyAllowedCIDRs` | `[]` | Additional allowed agentless proxy target networks, comma-joined into `MISHMESH_PROXY_ALLOWED_CIDRS`. |
 | `auth.allowedOrigins` | `[]` | Exact additional origins allowed for cookie-authenticated writes; same-origin is already allowed. Include the Vite origin for development. |

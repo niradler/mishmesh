@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -20,7 +21,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
-const defaultUpstreamResponseTimeout = 2 * time.Minute
+const defaultUpstreamResponseTimeout = 5 * time.Minute
 
 var errAgentRefused = errors.New("agent could not reach the local service")
 
@@ -32,16 +33,22 @@ type upstream struct {
 	outPath string
 	target  meterTarget
 	trusted []*net.IPNet
+	http2   bool
 
 	mu          sync.Mutex
 	openErr     error
 	agentReason string
 	agentFailed bool
 	metered     *meteredConn
+	readDone    chan struct{}
 }
 
 func (u *upstream) open(ctx context.Context) (net.Conn, error) {
-	stream, err := u.agent.OpenStream(ctx, u.ep.ID, store.KindHTTP, nil)
+	var metadata map[string]string
+	if u.http2 {
+		metadata = map[string]string{"http_protocol": "h2"}
+	}
+	stream, err := u.agent.OpenStream(ctx, u.ep.ID, store.KindHTTP, metadata)
 	if err != nil {
 		u.mu.Lock()
 		u.openErr = err
@@ -49,10 +56,12 @@ func (u *upstream) open(ctx context.Context) (net.Conn, error) {
 		return nil, err
 	}
 	mc := newMeteredConn(stream, u.target)
+	readDone := make(chan struct{})
 	u.mu.Lock()
 	u.metered = mc
+	u.readDone = readDone
 	u.mu.Unlock()
-	return &upstreamConn{Conn: mc, br: bufio.NewReader(mc), u: u}, nil
+	return &upstreamConn{Conn: mc, br: bufio.NewReader(mc), u: u, readDone: readDone}, nil
 }
 
 func (u *upstream) setAgentFailure(reason string) {
@@ -70,14 +79,16 @@ func (u *upstream) snapshot() (openErr error, agentFailed bool, reason string, e
 
 type upstreamConn struct {
 	net.Conn
-	br      *bufio.Reader
-	u       *upstream
-	checked bool
+	br       *bufio.Reader
+	u        *upstream
+	checked  bool
+	readDone chan struct{}
 }
 
 func (c *upstreamConn) Read(p []byte) (int, error) {
 	if !c.checked {
 		c.checked = true
+		defer close(c.readDone)
 		if reason, failed := tunnel.ReadStreamError(c.br); failed {
 			c.u.setAgentFailure(reason)
 			return 0, errAgentRefused
@@ -104,13 +115,31 @@ func (i *Ingress) newProxy(responseTimeout time.Duration) *httputil.ReverseProxy
 	if responseTimeout <= 0 {
 		responseTimeout = defaultUpstreamResponseTimeout
 	}
+	protocols := &http.Protocols{}
+	protocols.SetUnencryptedHTTP2(true)
+	http2Transport := newUpstreamTransport(responseTimeout)
+	http2Transport.Protocols = protocols
 	return &httputil.ReverseProxy{
-		Transport:      newUpstreamTransport(responseTimeout),
+		Transport:      &upstreamTransport{http1: newUpstreamTransport(responseTimeout), http2: http2Transport},
 		Rewrite:        i.rewriteRequest,
 		ModifyResponse: i.modifyResponse,
 		ErrorHandler:   i.proxyError,
 		ErrorLog:       slog.NewLogLogger(i.log.Handler(), slog.LevelDebug),
 	}
+}
+
+type upstreamTransport struct {
+	http1 *http.Transport
+	http2 *http.Transport
+}
+
+func (t *upstreamTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err == nil && (mediaType == "application/grpc" || strings.HasPrefix(mediaType, "application/grpc+")) {
+		upstreamOf(request).http2 = true
+		return t.http2.RoundTrip(request)
+	}
+	return t.http1.RoundTrip(request)
 }
 
 func upstreamOf(r *http.Request) *upstream {
@@ -227,6 +256,18 @@ func (i *Ingress) modifyResponse(resp *http.Response) error {
 
 func (i *Ingress) proxyError(w http.ResponseWriter, r *http.Request, err error) {
 	u := upstreamOf(r)
+	u.mu.Lock()
+	readDone := u.readDone
+	u.mu.Unlock()
+	if readDone != nil {
+		timer := time.NewTimer(100 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-readDone:
+		case <-timer.C:
+		case <-r.Context().Done():
+		}
+	}
 	openErr, agentFailed, reason, exceeded := u.snapshot()
 
 	var code int

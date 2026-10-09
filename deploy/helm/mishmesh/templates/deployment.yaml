@@ -88,6 +88,8 @@ spec:
               value: "0.0.0.0:{{ $v.listeners.api.containerPort }}"
             - name: MISHMESH_INGRESS_ENABLED
               value: {{ $v.features.ingressEnabled | quote }}
+            - name: MISHMESH_UPSTREAM_RESPONSE_TIMEOUT
+              value: {{ $v.upstreamResponseTimeout | quote }}
             {{- if ne (toString $v.features.pathRouting) "" }}
             - name: MISHMESH_PATH_ROUTING
               value: {{ $v.features.pathRouting | quote }}
@@ -116,6 +118,8 @@ spec:
               value: {{ $v.listeners.tlsPassthrough.enabled | quote }}
             - name: MISHMESH_TLS_PASSTHROUGH_ADDR
               value: "0.0.0.0:{{ $v.listeners.tlsPassthrough.containerPort }}"
+            - name: MISHMESH_TLS_PASSTHROUGH_PUBLIC_PORT
+              value: {{ $v.listeners.tlsPassthrough.servicePort | quote }}
             - name: MISHMESH_TCP_ENABLED
               value: {{ $v.listeners.tcp.enabled | quote }}
             - name: MISHMESH_TCP_BIND_HOST

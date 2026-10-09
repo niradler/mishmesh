@@ -44,12 +44,20 @@ lint:
 ## test: run all tests with race detector
 .PHONY: test
 test:
+ifeq ($(OS),Windows_NT)
+	pwsh -NoProfile -File .claude/scripts/test-go.ps1
+else
 	$(GO) test -race -count=1 $(PKG)
+endif
 
 ## test-short: run fast unit tests only
 .PHONY: test-short
 test-short:
+ifeq ($(OS),Windows_NT)
+	pwsh -NoProfile -File .claude/scripts/test-go.ps1 -Short
+else
 	$(GO) test -short -count=1 $(PKG)
+endif
 
 ## build: build server and agent binaries
 .PHONY: build

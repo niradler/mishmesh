@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
@@ -237,7 +239,11 @@ func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 		reportStreamFailure(stream, init, notServedReason(init))
 		return
 	}
-	local, err := dialTarget(tgt)
+	protocol := ""
+	if init.Kind == store.KindHTTP {
+		protocol = init.Meta["http_protocol"]
+	}
+	local, err := dialTarget(tgt, protocol)
 	if err != nil {
 		a.log.Warn("dial local target failed", "target", tgt.addr, "err", err)
 		reportStreamFailure(stream, init, dialFailureReason(err))
@@ -248,8 +254,8 @@ func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 	tunnel.Splice(stream, local)
 }
 
-func dialTarget(tgt localTarget) (net.Conn, error) {
-	conn, err := net.Dial("tcp", tgt.addr)
+func dialTarget(tgt localTarget, protocol string) (net.Conn, error) {
+	conn, err := net.DialTimeout("tcp", tgt.addr, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -264,10 +270,20 @@ func dialTarget(tgt localTarget) (net.Conn, error) {
 			host = tgt.addr
 		}
 	}
-	tc := tls.Client(conn, &tls.Config{ServerName: host, InsecureSkipVerify: tgt.insecure})
-	if err := tc.Handshake(); err != nil {
+	config := &tls.Config{ServerName: host, InsecureSkipVerify: tgt.insecure}
+	if protocol == "h2" {
+		config.NextProtos = []string{"h2"}
+	}
+	tc := tls.Client(conn, config)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("local tls handshake: %w", err)
+	}
+	if protocol == "h2" && tc.ConnectionState().NegotiatedProtocol != "h2" {
+		_ = tc.Close()
+		return nil, errors.New("local tls handshake: upstream does not support HTTP/2")
 	}
 	return tc, nil
 }
