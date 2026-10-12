@@ -38,3 +38,7 @@
 - Task 2: typed store contracts, derived runtime references, aliases and transactional guards; `9ff522a`; SQLite/store/legacy-consumer race suites, six live Postgres cases, Windows/Linux compile and vet passed. Independent review approved with one deferred canonical-hostname fixture correction assigned to Task 14.
 
 Execution order is recorded in the plan and ledger; physical migration runs after Go consumers are converted.
+
+Task 4 in progress: built-in registry, generic Config definitions, pure legacy converter and compatible pinned Kubernetes dependencies. Security regressions verified red/green for raw command output in LastError/logs and host markers discarded by legacy API normalization; implementation committed (`ce31f02`), compatibility race/consumer compile/vet/govulncheck passed, independent review approved; Task 5 readiness is next.
+
+- Task 4: driver registry/generic config and pure legacy service converter (`ce31f02`), reviewed without findings. Raw command output leak and pre-normalize host-marker bypass fixed with red/green regressions; compatibility race/compile/vet and services vulnerability scan passed.

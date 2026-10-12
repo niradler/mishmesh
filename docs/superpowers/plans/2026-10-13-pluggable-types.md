@@ -182,11 +182,11 @@ func TestShouldMigrateExecWithoutChangingArgv(t *testing.T) {
 
 ### Task 4: Register Docker, Compose, and Command drivers
 
-**Files:** Create `internal/services/registry.go`, `driver_types.go`, `registry_test.go`, `readiness.go` (types only at this step), `internal/store/pluggable.go`, `pluggable_test.go`; modify `spec.go`, `manager.go`, `docker_driver.go`, `exec_driver.go`, their tests, `cmd/mishmesh-server/network.go`, `go.mod`, `go.sum`.
+**Files:** Create `internal/services/registry.go`, `driver_types.go`, `registry_test.go`, `readiness.go` (types only at this step), `internal/store/pluggable.go`, `pluggable_test.go`; modify `spec.go`, `manager.go`, `exec_driver.go` and affected tests; consume unchanged `docker_driver.go`/Docker tests where existing constructors already preserve behavior; modify `internal/controlplane/network_services.go`, its regression tests, `cmd/mishmesh-server/network.go`, `go.mod`, `go.sum`.
 
 **Interfaces:** Produce `NewRegistry() *Registry`, `DriverDescriptor{Type, Label, Help string; Fields []typedfields.Field}`, `DriverType` from the spec, `Registry.Register(DriverType) error`, `Registry.Lookup(string) (DriverType, bool)`, `Registry.Descriptors() []DriverDescriptor`. `Deps` carries the definition's `OrgID string`, lazy Docker access and `KubernetesClient(ctx context.Context, orgID, connectionID string) (kubernetes.Interface, error)` through an injected resolver; keep type contracts out of provider implementations. `Definition` uses `Config json.RawMessage`, `Ready Readiness`, `Requires []string`, and existing identity/timeouts. Define `Readiness{TCP string; HTTP *HTTPReadiness}` and `HTTPReadiness{URL string; Status int}` with the spec's JSON tags here; Task 5 adds decoding and HTTP probes. Produce pure `store.MigrateService(driver string, raw json.RawMessage) (newDriver string, config, ready json.RawMessage, err error)` here and use it when FromRecord sees a legacy Spec with absent Config; existing legacy API adapters stay until their consumers move. Pin mutually compatible Kubernetes API/apimachinery/client-go versions here so the resolver's type compiles; Task 10 adds the implementation, not a missing forward dependency.
 
-- [ ] Add tests for duplicate/unknown registrations, deterministic descriptors, valid/invalid config for each driver, and host markers for Command start/stop/status plus Compose file/bin. Preserve the existing Compose-without-file Docker API path. Anchor:
+- [x] Add tests for duplicate/unknown registrations, deterministic descriptors, valid/invalid config for each driver, and host markers for Command start/stop/status plus Compose file/bin. Preserve the existing Compose-without-file Docker API path. Anchor:
 
 ```go
 func TestShouldRejectUnknownDriver(t *testing.T) {
@@ -195,10 +195,11 @@ func TestShouldRejectUnknownDriver(t *testing.T) {
 }
 ```
 
-- [ ] Run `./internal/services`; expect undefined registry constructor.
-- [ ] Implement `NewRegistry() *Registry`, descriptors and `Validate`/`New` methods for each concrete driver type. Replace `hostDrivers.build`'s switch with lookup. Keep lazy Docker creation so Command/Kubernetes do not need a local daemon. Rename public driver ID to `command`, retaining existing argv execution behavior internally.
-- [ ] Use shared metadata for host checks; check explicit input before normalization and defaults. Compose custom bin is a host command even if a file was omitted; never normalize away a value before enforcing permission.
-- [ ] Run the existing Docker/exec manager tests adapted to equivalent configs and all focused registry tests. Commit `refactor: build services through driver registry`.
+- [x] Run `./internal/services`; expect undefined registry constructor.
+- [x] Implement `NewRegistry() *Registry`, descriptors and `Validate`/`New` methods for each concrete driver type. Replace `hostDrivers.build`'s switch with lookup. Keep lazy Docker creation so Command/Kubernetes do not need a local daemon. Rename public driver ID to `command`, retaining existing argv execution behavior internally.
+- [x] Remove captured command stdout/stderr from error strings that reach LastError/logs; preserve internal bounded output return and errors.As/Is exit/context causes. Test a helper printing configured/inherited secrets before failure and verify no public status/error/log leakage.
+- [x] Use shared metadata for host checks; check explicit input before normalization and defaults. Capture marked raw legacy API input before Normalize so no-file bin/whitespace cannot disappear before authorization. Compose custom bin is a host command even if a file was omitted; never normalize away a value before enforcing permission.
+- [x] Run the existing Docker/exec manager tests adapted to equivalent configs and all focused registry tests. Commit `refactor: build services through driver registry`.
 
 ### Task 5: Generic TCP and HTTP readiness
 
