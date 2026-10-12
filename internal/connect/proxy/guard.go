@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 )
 
@@ -117,18 +116,11 @@ func (g *Guard) nameAllowed(host string) bool {
 }
 
 func splitTarget(target string) (host, port string, err error) {
-	host, port, err = net.SplitHostPort(target)
+	t, err := ParseTarget(target)
 	if err != nil {
-		return "", "", fmt.Errorf("proxy: invalid target %q: %w", target, err)
+		return "", "", err
 	}
-	if n, perr := strconv.Atoi(port); perr != nil || n < 1 || n > 65535 {
-		return "", "", fmt.Errorf("proxy: invalid port in target %q", target)
-	}
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	if host == "" {
-		return "", "", fmt.Errorf("proxy: invalid target %q: empty host", target)
-	}
-	return host, port, nil
+	return t.Host, t.Port, nil
 }
 
 func (g *Guard) ValidateTarget(target string) error {

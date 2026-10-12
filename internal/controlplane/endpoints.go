@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -140,12 +141,16 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		kind = store.KindHTTP
 	}
 	method := store.MethodOrDefault(req.Method)
-	if !validMethod(method) {
-		writeError(w, http.StatusBadRequest, "unknown method")
+	if msg := methodError(method); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 	pol, err := buildPolicy(req.Policy, nil)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.validatePolicyForMethod(method, pol); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -167,14 +172,6 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	agentID := req.AgentID
 	if method == store.MethodProxy {
-		if pol == nil || pol.ProxyTarget == "" {
-			writeError(w, http.StatusBadRequest, "proxy_target required for proxy method")
-			return
-		}
-		if err := a.guardProxyTarget(pol.ProxyTarget); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
 		agentID = proxy.AgentID
 	} else {
 		ag, err := a.data.GetAgent(r.Context(), req.AgentID)
@@ -257,15 +254,9 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if ep.Method == store.MethodProxy {
-			if pol == nil || pol.ProxyTarget == "" {
-				writeError(w, http.StatusBadRequest, "proxy_target required for proxy method")
-				return
-			}
-			if err := a.guardProxyTarget(pol.ProxyTarget); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		if err := a.validatePolicyForMethod(ep.Method, pol); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		ep.Policy = pol
 	}
@@ -295,13 +286,42 @@ func (a *API) deleteEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func validMethod(m string) bool {
+func methodError(m string) string {
 	switch m {
-	case store.MethodNative, store.MethodSSH, store.MethodProxy, store.MethodTailscale, store.MethodCloudflare:
-		return true
+	case store.MethodNative, store.MethodSSH, store.MethodProxy:
+		return ""
+	case store.MethodTailscale, store.MethodCloudflare:
+		return "method " + m + " is not implemented"
 	default:
-		return false
+		return "unknown method"
 	}
+}
+
+func (a *API) validatePolicyForMethod(method string, pol *store.EndpointPolicy) error {
+	if method != store.MethodProxy {
+		if pol != nil && len(pol.ProxyTargets) > 0 {
+			return errors.New("proxy_targets is only valid for proxy method")
+		}
+		return nil
+	}
+	return a.validateProxyPolicy(pol)
+}
+
+func (a *API) validateProxyPolicy(pol *store.EndpointPolicy) error {
+	if pol == nil || len(pol.ProxyTargets) == 0 {
+		return errors.New("proxy_targets required for proxy method")
+	}
+	for _, target := range pol.ProxyTargets {
+		if err := a.guardProxyTarget(target); err != nil {
+			return err
+		}
+	}
+	switch pol.LoadBalance {
+	case "", store.LoadBalanceRoundRobin, store.LoadBalanceFailover:
+	default:
+		return fmt.Errorf("load_balance must be %s or %s", store.LoadBalanceRoundRobin, store.LoadBalanceFailover)
+	}
+	return proxy.ValidateOriginTLS(pol.OriginTLS)
 }
 
 func buildPolicy(in *policyInput, existing *store.EndpointPolicy) (*store.EndpointPolicy, error) {

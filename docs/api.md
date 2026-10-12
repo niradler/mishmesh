@@ -106,13 +106,25 @@ Each org can replace the default matrix (compiled to Cedar):
 | PATCH | `/endpoints/{id}` | `{subdomain?, domain?, port?, policy?}` |
 | DELETE | `/endpoints/{id}` | 204 |
 
-`endpointDTO`: `{id, agent_id, org_id, kind, method, lifecycle, subdomain, domain, port, public_url, online, policy}`
+`endpointDTO`: `{id, agent_id, org_id, kind, method, lifecycle, subdomain, domain, port, public_url, online, policy, health}`
 
 `subdomain` is lowercased and must be a DNS label (letters, digits, hyphens, 1-63 chars, no leading or trailing hyphen). The names `app api www admin login auth mail status docs static assets cdn connect dashboard console` and the first label of the configured base domain are reserved. Violations return 400 on POST and PATCH; agents registering the same names are refused too.
 
-`method` (default `native`): `native | ssh | proxy | tailscale | cloudflare`. For `method=proxy`, omit `agent_id` and set `policy.proxy_target` (`host:port`); a target in a blocked range returns 400 (see `MISHMESH_PROXY_ALLOW_PRIVATE`, `MISHMESH_PROXY_ALLOWED_CIDRS`), and PATCH of the policy re-validates it. mishmesh then reverse-proxies the target directly, with no agent. `ssh` endpoints are created implicitly by the clientless SSH remote-forward server (see the deploy guide), not through this API.
+`method` (default `native`): `native | ssh | proxy`. `tailscale` and `cloudflare` are not implemented and return 400 `method <m> is not implemented`; any other value returns 400 `unknown method`. For `method=proxy`, omit `agent_id` and set `policy.proxy_targets` (one or more targets). Each target is `host:port`, `http://host:port` or `https://host:port`; the port is required and paths, queries and userinfo are rejected. A target in a blocked range returns 400 (see `MISHMESH_PROXY_ALLOW_PRIVATE`, `MISHMESH_PROXY_ALLOWED_CIDRS`), and PATCH of the policy re-validates every target. A proxy endpoint without `proxy_targets` returns 400 `proxy_targets required for proxy method`, and `proxy_targets` on any other method returns 400. mishmesh then reverse-proxies the targets directly, with no agent. `ssh` endpoints are created implicitly by the clientless SSH remote-forward server (see the deploy guide), not through this API.
 
-`policy` (all fields optional): `{request_headers_add:{}, request_headers_remove:[], response_headers_add:{}, response_headers_remove:[], host_header, strip_path_prefix, add_path_prefix, basic_auth_user, basic_auth_password (write-only, bcrypt-hashed server-side), ip_allow:[cidr], ip_deny:[cidr], force_https, max_body_bytes, compression, oidc:{issuer, client_id, client_secret, allowed_emails, allowed_domains}, mtls:{client_ca_pem, allowed_cns:[]}, rate_limit:{requests, period_seconds, burst?, scope?}, proxy_target}`
+`policy` (all fields optional): `{request_headers_add:{}, request_headers_remove:[], response_headers_add:{}, response_headers_remove:[], host_header, strip_path_prefix, add_path_prefix, basic_auth_user, basic_auth_password (write-only, bcrypt-hashed server-side), ip_allow:[cidr], ip_deny:[cidr], force_https, max_body_bytes, compression, oidc:{issuer, client_id, client_secret, allowed_emails, allowed_domains}, mtls:{client_ca_pem, allowed_cns:[]}, rate_limit:{requests, period_seconds, burst?, scope?}, proxy_targets:[target], load_balance, origin_tls:{server_name, ca_pem, pin_sha256:[], insecure_skip_verify}, service, front_door}`
+
+Proxy policy fields:
+
+- `proxy_targets` is the list of backends. Requests are spread across healthy targets and a failed dial moves on to the next target.
+- `load_balance` is empty or `round_robin` (default with several targets: rotate across healthy targets) or `failover` (always the first healthy target in order). A target whose last health probe failed is tried only after every healthy or not-yet-probed target. HTTP only.
+- `origin_tls` applies to `https://` targets and is returned unredacted (nothing in it is a secret). The proxy dials the IP the guard validated and wraps it in TLS with ALPN `http/1.1`. `server_name` overrides the verified name (default: the target host; an IP-literal host is checked against IP SANs). Verification: `insecure_skip_verify` skips all checks; otherwise, when `pin_sha256` is set, the leaf certificate's SPKI SHA-256 must equal one pin (standard base64 of the 32-byte hash) and the chain is not checked; otherwise the chain is verified against `ca_pem` when set, else the system roots. An unparseable `ca_pem` or a pin that does not decode to 32 bytes returns 400.
+- `service` and `front_door` are reserved for the services and Cloudflare front-door integration.
+
+`health` (on every endpoint, read-only): `{state, detail?, checked_at, latency_ms?, targets?:[{target, healthy, latency_ms, error?, checked_at}], service?}`.
+
+- `state` is `up`, `down`, `degraded` (some targets down, at least one up), `sleeping` (the endpoint's `service` is stopped or sleeping), `waking` (the service is starting), `offline` (native or ssh endpoint with no agent bound) or `unknown`.
+- Proxy endpoints are probed every `MISHMESH_HEALTH_INTERVAL` with a TCP connect to each target through the proxy guard. `https://` targets also complete a TLS handshake under the endpoint's `origin_tls`, so a certificate problem reports `down` with the reason in `detail`.
 
 `rate_limit` is a token-bucket limit on HTTP(S) ingress requests:
 
