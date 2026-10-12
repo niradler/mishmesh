@@ -2,9 +2,9 @@ import { cn } from "@/lib/utils";
 
 export type StateTone = "success" | "danger" | "warning" | "sleeping" | "waking" | "offline" | "unknown";
 
-const SUCCESS_STATES = ["up", "running", "synced", "ok", "active", "connected", "healthy", "online"];
+const SUCCESS_STATES = ["up", "running", "synced", "ok", "active", "connected", "healthy", "online", "published", "ready", "managed"];
 const DANGER_STATES = ["down", "error", "conflict", "failed", "unhealthy"];
-const WARNING_STATES = ["degraded", "partial", "pending", "orphaned", "missing"];
+const WARNING_STATES = ["degraded", "partial", "pending", "orphaned", "missing", "unclaimed"];
 const SLEEPING_STATES = ["sleeping", "stopped"];
 const WAKING_STATES = ["waking", "starting"];
 

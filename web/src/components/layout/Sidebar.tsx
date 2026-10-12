@@ -5,6 +5,8 @@ import {
   KeyRound,
   LayoutGrid,
   ListTree,
+  Moon,
+  Network,
   ScrollText,
   Settings,
   Users,
@@ -13,9 +15,11 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutGrid, end: true },
-  { to: "/agents", label: "Agents", icon: KeyRound },
+  { to: "/network", label: "Network", icon: Network },
   { to: "/endpoints", label: "Endpoints", icon: ListTree },
-  { to: "/network", label: "Network", icon: Cloud },
+  { to: "/services", label: "Services", icon: Moon },
+  { to: "/cloudflare", label: "Cloudflare", icon: Cloud },
+  { to: "/agents", label: "Agents", icon: KeyRound },
   { to: "/members", label: "Members", icon: Users },
   { to: "/audit", label: "Audit", icon: ScrollText },
   { to: "/settings", label: "Settings", icon: Settings },

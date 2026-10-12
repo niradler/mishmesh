@@ -9,6 +9,10 @@ Content-Type `application/json`. Errors: `{"error": "message"}` with the matchin
 - [Status](#status-dashboard-summary)
 - [Agents](#agents)
 - [Endpoints](#endpoints-reserved--policy-management)
+- [Services](#services-scale-to-zero)
+- [Capabilities](#capabilities)
+- [Cloudflare](#cloudflare-public-access)
+- [Topology](#topology)
 - [Custom domains](#custom-domains-ownership-verification)
 - [Quota](#quota)
 - [Org & members](#org--members)
@@ -42,8 +46,12 @@ Roles: `owner`, `admin`, `member`. Each route requires one action. A caller with
 | --- | --- | --- |
 | `agent:read` | `GET /agents`, `/agents/{id}`, `/agents/{id}/tokens` | owner, admin, member |
 | `agent:write` | agent create/patch/delete/rotate/revoke, reach-in | owner, admin |
-| `endpoint:read` | `GET /endpoints`, `/endpoints/{id}`, `/agents/{id}/endpoints`, `GET /domains` | owner, admin, member |
+| `endpoint:read` | `GET /endpoints`, `/endpoints/{id}`, `/agents/{id}/endpoints`, `GET /domains`, `GET /cloudflare`, `GET /topology` | owner, admin, member |
 | `endpoint:write` | endpoint create/patch/delete, domain create/verify/delete | owner, admin |
+| `service:read` | `GET /services`, `/services/{id}` | owner, admin, member |
+| `service:write` | service create/update/delete/start/stop | owner, admin |
+| `cloudflare:manage` | `PUT`/`DELETE /cloudflare`, `POST /cloudflare/detect`, `POST /cloudflare/sync` | owner, admin |
+| `host:exec` | not a route on its own: also required for host-command services and for `PUT /cloudflare` and `POST /cloudflare/detect` (see [Capabilities](#capabilities)) | owner |
 | `quota:read` / `quota:write` | `GET` / `PUT /quota` | all / operator only (see below) |
 | `member:read` | `GET /members` | owner, admin, member |
 | `member:manage` | `POST`/`PATCH`/`DELETE /members`, `GET`/`DELETE /invites` | owner, admin |
@@ -51,7 +59,9 @@ Roles: `owner`, `admin`, `member`. Each route requires one action. A caller with
 | `status:read` | `GET /status` | owner, admin, member |
 | `policy:read` / `policy:write` | `GET` / `PUT /policy` | all / owner, admin |
 
-`/orgs` routes need only an authenticated caller.
+`/orgs` routes and `GET /capabilities` need only an authenticated caller.
+
+"Host access" below means both: the server runs with `MISHMESH_HOST_COMMANDS=true` and the caller holds `host:exec`. Without it the route returns 403 with the reason (`host commands are disabled on this server (MISHMESH_HOST_COMMANDS)` or `permission denied: host:exec`). The admin bearer token holds every action, so it only needs the server flag.
 
 Each org can replace the default matrix (compiled to Cedar):
 
@@ -112,19 +122,20 @@ Each org can replace the default matrix (compiled to Cedar):
 
 `method` (default `native`): `native | ssh | proxy`. `tailscale` and `cloudflare` are not implemented and return 400 `method <m> is not implemented`; any other value returns 400 `unknown method`. For `method=proxy`, omit `agent_id` and set `policy.proxy_targets` (one or more targets). Each target is `host:port`, `http://host:port` or `https://host:port`; the port is required and paths, queries and userinfo are rejected. A target in a blocked range returns 400 (see `MISHMESH_PROXY_ALLOW_PRIVATE`, `MISHMESH_PROXY_ALLOWED_CIDRS`), and PATCH of the policy re-validates every target. A proxy endpoint without `proxy_targets` returns 400 `proxy_targets required for proxy method`, and `proxy_targets` on any other method returns 400. mishmesh then reverse-proxies the targets directly, with no agent. `ssh` endpoints are created implicitly by the clientless SSH remote-forward server (see the deploy guide), not through this API.
 
-`policy` (all fields optional): `{request_headers_add:{}, request_headers_remove:[], response_headers_add:{}, response_headers_remove:[], host_header, strip_path_prefix, add_path_prefix, basic_auth_user, basic_auth_password (write-only, bcrypt-hashed server-side), ip_allow:[cidr], ip_deny:[cidr], force_https, max_body_bytes, compression, oidc:{issuer, client_id, client_secret, allowed_emails, allowed_domains}, mtls:{client_ca_pem, allowed_cns:[]}, rate_limit:{requests, period_seconds, burst?, scope?}, proxy_targets:[target], load_balance, origin_tls:{server_name, ca_pem, pin_sha256:[], insecure_skip_verify}, service, front_door}`
+`policy` (all fields optional): `{request_headers_add:{}, request_headers_remove:[], response_headers_add:{}, response_headers_remove:[], host_header, strip_path_prefix, add_path_prefix, basic_auth_user, basic_auth_password (write-only, bcrypt-hashed server-side), ip_allow:[cidr], ip_deny:[cidr], force_https, max_body_bytes, compression, oidc:{issuer, client_id, client_secret, allowed_emails, allowed_domains}, mtls:{client_ca_pem, allowed_cns:[]}, rate_limit:{requests, period_seconds, burst?, scope?}, proxy_targets:[target], load_balance, origin_tls:{server_name, ca_pem, pin_sha256:[], insecure_skip_verify}, service_id, public_access}`
 
 Proxy policy fields:
 
 - `proxy_targets` is the list of backends. Requests are spread across healthy targets and a failed dial moves on to the next target.
 - `load_balance` is empty or `round_robin` (default with several targets: rotate across healthy targets) or `failover` (always the first healthy target in order). A target whose last health probe failed is tried only after every healthy or not-yet-probed target. HTTP only.
 - `origin_tls` applies to `https://` targets and is returned unredacted (nothing in it is a secret). The proxy dials the IP the guard validated and wraps it in TLS with ALPN `http/1.1`. `server_name` overrides the verified name (default: the target host; an IP-literal host is checked against IP SANs). Verification: `insecure_skip_verify` skips all checks; otherwise, when `pin_sha256` is set, the leaf certificate's SPKI SHA-256 must equal one pin (standard base64 of the 32-byte hash) and the chain is not checked; otherwise the chain is verified against `ca_pem` when set, else the system roots. An unparseable `ca_pem` or a pin that does not decode to 32 bytes returns 400.
-- `service` names a service from the host-local services file (`MISHMESH_SERVICES_FILE`, see `docs/services.md`) that the org is allowlisted for; any other value returns 400. A request to the endpoint wakes a stopped or sleeping service: browsers (GET/HEAD accepting `text/html`) get a 503 "starting" page that refreshes every 2s, while other clients are held until the service is ready and then proxied. Wakes happen only after IP rules, rate limits and authentication pass. While requests are in flight the service is not idled out.
-- `front_door` is empty or `cloudflare`. `cloudflare` requires the front door to be configured for the org (`MISHMESH_CLOUDFLARE_*`, see `docs/cloudflare.md`) and a custom `domain` on the endpoint, else 400. The front door then keeps the tunnel ingress rule, DNS CNAME and Access application for that domain in sync.
+- `service_id` links a service of the org (see Services); any other value returns 400. A request to the endpoint wakes a stopped or sleeping service: browsers (GET/HEAD accepting `text/html`) get a 503 "starting" page that refreshes every 2s, while other clients are held until the service is ready and then proxied, or get 503 with `Retry-After: 2` when the start fails. Wakes happen only after IP rules, rate limits and authentication pass. While requests are in flight the service is not idled out.
+- `public_access` is empty or `cloudflare`. `cloudflare` always requires a custom `domain` on the endpoint, else 400; the domain is the published hostname. It requires a Cloudflare connection for the org only when it is newly turned on (POST, or a PATCH that turns it on), else 400. An endpoint that is already public stays editable after `DELETE /cloudflare`.
 
 `health` (on every endpoint, read-only): `{state, detail?, checked_at, latency_ms?, targets?:[{target, healthy, latency_ms, error?, checked_at}], service?}`.
 
-- `state` is `up`, `down`, `degraded` (some targets down, at least one up), `sleeping` (the endpoint's `service` is stopped or sleeping), `waking` (the service is starting), `offline` (native or ssh endpoint with no agent bound) or `unknown`.
+- `service` is the linked service ID, when `policy.service_id` is set.
+- `state` is `up`, `down`, `degraded` (some targets down, at least one up), `sleeping` (the endpoint's service is stopped or sleeping), `waking` (the service is starting), `offline` (native or ssh endpoint with no agent bound) or `unknown`.
 - Proxy endpoints are probed every `MISHMESH_HEALTH_INTERVAL` with a TCP connect to each target through the proxy guard. `https://` targets also complete a TLS handshake under the endpoint's `origin_tls`, so a certificate problem reports `down` with the reason in `detail`.
 
 `rate_limit` is a token-bucket limit on HTTP(S) ingress requests:
@@ -142,32 +153,95 @@ Client IP for `ip_allow`/`ip_deny`/`rate_limit` and `X-Forwarded-For` is the soc
 
 ## Services (scale to zero)
 
-Services are defined only in the host-local services file; the API reads and controls them but never creates them.
+A service is something mishmesh starts and stops on the server host: existing Docker containers, a Compose project, or a command pair. Services are stored in the database per org. An endpoint links to a service with `policy.service_id`. An HTTP(S) request to the endpoint wakes the service, and the manager stops it after `idle_timeout_seconds` without traffic. TCP and TLS endpoints do not wake services. Details: [services.md](services.md).
+
+| Method | Path | Action | Notes |
+| --- | --- | --- | --- |
+| GET | `/services` | `service:read` | `[serviceDTO]` |
+| POST | `/services` | `service:write` | create from `serviceInput` → 201 serviceDTO |
+| GET | `/services/{id}` | `service:read` | serviceDTO |
+| PUT | `/services/{id}` | `service:write` | replace with `serviceInput` → serviceDTO. Runtime state is kept unless the definition fails to load |
+| DELETE | `/services/{id}` | `service:write` | 204. 409 `{error, endpoints:[endpoint id]}` while endpoints still link to it |
+| POST | `/services/{id}/start` | `service:write` | start and wait until ready → serviceDTO. The ready check dials the first proxy target of the first linked endpoint (or `spec.ready_tcp`). 502 `{error}` when the start fails or times out |
+| POST | `/services/{id}/stop` | `service:write` | stop now and mark it `sleeping` → serviceDTO. 502 `{error}` when the driver fails |
+
+Errors: 400 for an invalid `serviceInput`, 409 `a service named "x" already exists in this org`, 403 when host access is needed and missing. Start and stop return 409 `service is not loaded; check its definition` when the stored record does not load, and 503 `services are not running on this server` when the server has no service manager.
+
+`serviceInput`: `{name, driver, spec, idle_timeout_seconds, start_timeout_seconds}`
+
+- `name`: unique in the org, `^[a-z0-9][a-z0-9-_.]{0,62}$`.
+- `driver`: `docker | compose | exec`.
+- `spec`: `{docker?:{containers?:[name], label?}, compose?:{project, services?:[name], file?, bin?}, exec?:{start:[argv], stop:[argv], status?:[argv], dir?, env?:{}}, ready_tcp?:"host:port"}`. Exactly one block, matching `driver`. Unknown fields are rejected. `docker` needs `containers` or `label` (`key` or `key=value`); `compose` needs `project`; `exec` needs `start` and `stop`. `compose.bin` defaults to `docker` when `file` is set and is dropped when it is not.
+- `idle_timeout_seconds`: `0` never stops the service. `start_timeout_seconds`: `0` means 120. Both range 0 to 604800.
+- **Host commands**: `driver: exec` and `compose.file` run commands on the server, so creating, updating or deleting such a service needs host access. Updating a service that already uses host commands needs it too, even when the new definition does not. A stored service whose spec cannot be decoded is treated as using host commands.
+
+`serviceDTO`: `{id, name, driver, spec, idle_timeout_seconds, start_timeout_seconds, created_at, updated_at, status:{state, active, last_activity?, last_error?, started_by?, updated_at}, endpoints:[endpoint id]}`
+
+- `spec.exec.env` values are returned as `<redacted>` to callers without `host:exec`.
+- `state`: `running`, `stopped` (stopped outside mishmesh), `sleeping` (stopped by mishmesh), `starting`, `partial` (some containers up), `error` or `unknown`. Both `stopped` and `sleeping` wake on request.
+- `active` counts in-flight requests. `started_by` is `mishmesh` or `external` (found running).
+- `endpoints` lists the org's endpoints whose `policy.service_id` is this service. Link or unlink with `PATCH /endpoints/{id}` and `policy.service_id`.
+
+Audit actions: `service.create`, `service.update`, `service.delete`, `service.start`, `service.stop`.
+
+## Capabilities
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/services` | services the org is allowlisted for → `[serviceDTO]`; `[]` when no services file is configured |
-| POST | `/services/{name}/start` | starts the service and waits until it is ready → serviceDTO. 404 if not visible to the org, 502 if the driver fails |
-| POST | `/services/{name}/stop` | stops it now → serviceDTO. 404 / 502 as above |
+| GET | `/capabilities` | `{host_commands}`: true when the caller has host access. Any authenticated caller. The UI uses it to hide `exec` and the compose file |
 
-`serviceDTO`: `{name, driver, state, active, last_activity?, last_error?, started_by?, updated_at, idle_timeout_seconds, start_timeout_seconds, endpoints:[endpoint id]}`. `state` is `running`, `stopped` (stopped outside mishmesh or never started), `sleeping` (idled out by mishmesh), `starting`, `partial` (some containers up), `error` or `unknown`. `active` is the number of in-flight requests.
+## Cloudflare (public access)
 
-## Front doors
+One Cloudflare tunnel connection per org, stored in the database with its tokens sealed. Importing needs the tunnel token and a cloudflared metrics address on the server host. Adding an API token turns on management. Details: [cloudflare.md](cloudflare.md).
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| GET | `/frontdoors` | `{cloudflare: status}`; `status.enabled` is false when the front door is not configured for the org |
-| POST | `/frontdoors/cloudflare/sync` | runs a reconcile now → `{cloudflare: status}`. 404 if not enabled, 502 if Cloudflare rejects the sync |
+| Method | Path | Action | Notes |
+| --- | --- | --- | --- |
+| GET | `/cloudflare` | `endpoint:read` | cloudflareDTO. `level: "none"` and no `connection` when the org has none |
+| PUT | `/cloudflare` | `cloudflare:manage` + host access | create (audit `cloudflare.import`) or replace (audit `cloudflare.update`) from `cloudflareInput`. Reloads the connection, then syncs once (20 s limit) and returns the fresh cloudflareDTO. A failed reload or sync is logged, not returned as an error: the save stands and the response carries the status as it is |
+| DELETE | `/cloudflare` | `cloudflare:manage` | 204, 404 when not connected. Forgets the connection and stops a managed cloudflared. Nothing in Cloudflare changes. Audit `cloudflare.delete` |
+| POST | `/cloudflare/detect` | `cloudflare:manage` + host access | `{metrics_addr?, tunnel_token?}` → `{account_id?, tunnel_id?, connector, hostnames:[host]}`. Reads the local cloudflared without saving (10 s limit). 400 for a bad token or a non-loopback address. An unreachable cloudflared is not an error: `connector.reachable` is false |
+| POST | `/cloudflare/sync` | `cloudflare:manage` | refresh now → cloudflareDTO. At `imported` it re-inspects the local cloudflared and its route list; at `managed` it reconciles. 404 `no cloudflare connection for this organization`. 502 `{error, status}` when the sync fails. Audit `cloudflare.sync` |
 
-`status`: `{enabled, tunnel?:{id, name, status, connections}, origin, last_sync?, last_error?, hostnames:[{host, endpoint_id, ingress, dns, dns_detail?, access, state, detail?}], supervisor?}`. A hostname `state` is `synced`, `pending` or `conflict`/`error` with the reason in `detail`. An existing DNS record that does not point at the tunnel is reported as a conflict and never overwritten.
+PUT and detect return 503 when the server has no secret key loaded.
+
+`cloudflareInput`: `{name, tunnel_token?, api_token?, clear_api_token?, access_app_id?, origin?, connector?, metrics_addr?, prune?}`
+
+- PUT is a full replace. Only the two tokens are kept when omitted; every other field takes the value sent or its default.
+- `name`: required, at most 100 characters.
+- `tunnel_token`: required on the first PUT. `account_id` and `tunnel_id` are decoded from it. 409 when another org already connected the same tunnel.
+- `api_token`: stored sealed and moves the level to `managed`. `clear_api_token: true` drops it and returns to `imported` (400 when sent together with `api_token`). Tokens are at most 4096 characters.
+- `connector`: `external` (default; you run cloudflared, mishmesh reads its metrics) or `managed` (mishmesh runs cloudflared with the stored tunnel token).
+- `metrics_addr`: default `127.0.0.1:20241`. Must be a loopback `host:port`.
+- `origin`: where the tunnel sends traffic, normally the ingress. Empty means `http://<MISHMESH_INGRESS_ADDR>`, with an unspecified host (`:8080`, `0.0.0.0`, `[::]`) replaced by `127.0.0.1`; the DTO shows that effective value. 400 when empty and the server has no usable ingress address. Must be `http://` or `https://` with no credentials, path, query or fragment.
+- `access_app_id`: a Cloudflare Access application ID (letters, digits, `-`). Used at the managed level.
+- `prune`: remove hostnames mishmesh published that no endpoint wants any more. A hostname that is the domain of an endpoint with Public access off is never pruned. 400 `prune needs an API token (managed level)` without an API token.
+
+`cloudflareDTO`: `{level, connection?, status}`
+
+- `level`: `none`, `imported` (no API token) or `managed` (API token stored).
+- `connection`: `{name, account_id, tunnel_id, access_app_id?, origin, connector, metrics_addr, prune, api_token_set, tunnel_token_set, updated_at}`. Tokens are never returned.
+- `status`: `{level, tunnel?:{id, name, status, connections}, origin?, connector:{reachable, ready_connections, connector_id?, version?, edge_locations:[], error?}, supervisor?:{running, pid?, restarts, last_exit?, ready}, last_sync?, last_error?, hostnames:[hostDTO]}`.
+  - `tunnel.status`: `healthy`, `down` or `unknown` from cloudflared at the imported level; the Cloudflare API value (`healthy`, `degraded`, `down`, `inactive`) at the managed level.
+  - `supervisor` is present only with `connector: managed`.
+- `hostDTO`: `{host, endpoint_id?, ingress, service?, dns, dns_detail?, access, state, detail?, fix?}`.
+  - `ingress`: the tunnel has a route for the host. `service`: where that route points.
+  - `dns`: `ok`, `missing`, `conflict`, `error` or `unchecked` (always at the imported level). `dns_detail` explains it, for example `created` or `deleted by prune`.
+  - `access`: `ok`, `missing`, `error`, `unchecked` or `n/a` (no Access app).
+  - `state`: `published`, `pending`, `conflict` (routed elsewhere, or a DNS record mishmesh does not own), `error` or `unclaimed` (a route on the tunnel that no endpoint publishes; `detail` says whether it goes through mishmesh). When an unclaimed route points at the origin and an endpoint with Public access off has that domain, `endpoint_id` is set, `detail` is `an endpoint serves this domain but its Public access is off` and `fix` says to turn Public access on.
+  - `fix`: the manual change to make in Cloudflare. At the imported level every pending or conflicting route has one; at the managed level it is set only for changes mishmesh will not make (foreign routes and DNS records).
+
+An endpoint opts in with `policy.public_access: "cloudflare"` and a custom `domain`; the domain is the published hostname.
 
 ## Topology
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| GET | `/topology` | the org's network graph → `{nodes:[{id, kind, label, state, detail?}], edges:[{from, to, kind}]}` |
+| Method | Path | Action | Notes |
+| --- | --- | --- | --- |
+| GET | `/topology` | `endpoint:read` | `{nodes:[{id, kind, label, state, detail?, ref?:{kind, id?}}], edges:[{from, to, kind}]}` |
 
-Node kinds: `frontdoor`, `hostname`, `endpoint`, `target`, `service`, `agent`. Edge kinds: `routes` (front door → hostname), `serves` (hostname → endpoint), `proxies` (endpoint → target), `tunnels` (endpoint → agent), `wakes` (endpoint → service). Node `state` uses the endpoint health vocabulary; a node shared by several endpoints shows the worst state.
+- Node kinds: `tunnel`, `hostname`, `endpoint`, `target`, `service`, `agent`. Edge kinds: `routes` (tunnel → hostname), `serves` (hostname → endpoint), `proxies` (endpoint → target), `tunnels` (endpoint → agent), `wakes` (endpoint → service).
+- The `tunnel` node exists only when the org has a Cloudflare connection. Each endpoint with `public_access: "cloudflare"` gets a `hostname` node. `unclaimed` tunnel hostnames get one too: when it carries an `endpoint_id` (an endpoint with Public access off serves that domain) the node has `ref: {kind: "endpoint", id}` and a `serves` edge to that endpoint; otherwise it is linked only to the tunnel.
+- Node `state` uses the endpoint health values (`up`, `down`, `degraded`, `sleeping`, `waking`, `offline`, `unknown`). A node shared by several endpoints shows the worst state. Service nodes map `running` → `up`, `stopped`/`sleeping` → `sleeping`, `starting` → `waking`, `partial` → `degraded`, `error` → `down`; a link to a missing service shows `service no longer exists`.
+- `ref` is the resource the node opens: `{kind: "cloudflare"}`, `{kind: "endpoint", id}`, `{kind: "service", id}` or `{kind: "agent", id}`. Target nodes have none.
 
 ## Custom domains (ownership verification)
 

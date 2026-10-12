@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -105,17 +106,17 @@ type managerFixture struct {
 	dials   atomic.Int64
 }
 
-func newFixture(t *testing.T, svc ServiceConfig, driver *fakeDriver) *managerFixture {
+func newFixture(t *testing.T, svc Definition, driver *fakeDriver) *managerFixture {
 	t.Helper()
 	f := &managerFixture{driver: driver, clock: newFakeClock()}
+	svc.ID, svc.OrgID, svc.Name = "svc", "org_default", "svc"
 	if svc.Driver == "" {
 		svc.Driver = DriverExec
 	}
 	if svc.StartTimeout == 0 {
 		svc.StartTimeout = 5 * time.Second
 	}
-	cfg := &Config{Orgs: []string{"org_default"}, Services: map[string]ServiceConfig{"svc": svc}}
-	f.manager = newManager(cfg, Options{
+	f.manager = newManager(Options{
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now: f.clock.Now,
 		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -128,7 +129,8 @@ func newFixture(t *testing.T, svc ServiceConfig, driver *fakeDriver) *managerFix
 			t.Cleanup(func() { _ = server.Close() })
 			return client, nil
 		},
-	}, map[string]Driver{"svc": driver})
+	}, func(Definition) (Driver, error) { return driver, nil })
+	f.manager.Apply([]Definition{svc})
 	f.manager.pollInterval = 5 * time.Millisecond
 	f.manager.readyHold = 5 * time.Millisecond
 	return f
@@ -136,7 +138,7 @@ func newFixture(t *testing.T, svc ServiceConfig, driver *fakeDriver) *managerFix
 
 func TestEnsureRunningSingleflight(t *testing.T) {
 	driver := &fakeDriver{state: Stopped, gate: make(chan struct{})}
-	f := newFixture(t, ServiceConfig{IdleTimeout: time.Hour}, driver)
+	f := newFixture(t, Definition{IdleTimeout: time.Hour}, driver)
 
 	const callers = 25
 	errs := make(chan error, callers)
@@ -159,7 +161,7 @@ func TestEnsureRunningSingleflight(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if state, _ := f.manager.ServiceState("svc"); state != StateStarting {
+	if _, state, _ := f.manager.ServiceState("svc"); state != StateStarting {
 		t.Errorf("state during start = %s, want starting", state)
 	}
 	close(driver.gate)
@@ -181,7 +183,7 @@ func TestEnsureRunningSingleflight(t *testing.T) {
 
 func TestEnsureRunningAlreadyRunningSkipsStart(t *testing.T) {
 	driver := &fakeDriver{state: Running}
-	f := newFixture(t, ServiceConfig{}, driver)
+	f := newFixture(t, Definition{}, driver)
 	if err := f.manager.EnsureRunning(context.Background(), "svc", "127.0.0.1:80"); err != nil {
 		t.Fatal(err)
 	}
@@ -197,18 +199,18 @@ func TestEnsureRunningAlreadyRunningSkipsStart(t *testing.T) {
 func TestEnsureRunningReadinessTargets(t *testing.T) {
 	tests := []struct {
 		name      string
-		ready     *ReadySpec
+		readyTCP  string
 		readyAddr string
 		wantDial  bool
 	}{
-		{"uses endpoint addr", nil, "http://127.0.0.1:8080/path", true},
-		{"ready spec wins", &ReadySpec{TCP: "127.0.0.1:9"}, "127.0.0.1:1", true},
-		{"no address relies on driver state", nil, "", false},
+		{"uses endpoint addr", "", "http://127.0.0.1:8080/path", true},
+		{"ready spec wins", "127.0.0.1:9", "127.0.0.1:1", true},
+		{"no address relies on driver state", "", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			driver := &fakeDriver{state: Stopped}
-			f := newFixture(t, ServiceConfig{Ready: tt.ready}, driver)
+			f := newFixture(t, Definition{Spec: Spec{ReadyTCP: tt.readyTCP}}, driver)
 			if err := f.manager.EnsureRunning(context.Background(), "svc", tt.readyAddr); err != nil {
 				t.Fatal(err)
 			}
@@ -221,7 +223,7 @@ func TestEnsureRunningReadinessTargets(t *testing.T) {
 
 func TestEnsureRunningReadinessTimeout(t *testing.T) {
 	driver := &fakeDriver{state: Stopped}
-	f := newFixture(t, ServiceConfig{StartTimeout: 150 * time.Millisecond}, driver)
+	f := newFixture(t, Definition{StartTimeout: 150 * time.Millisecond}, driver)
 	f.manager.dial = func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("connection refused")
 	}
@@ -229,7 +231,7 @@ func TestEnsureRunningReadinessTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	state, _ := f.manager.ServiceState("svc")
+	_, state, _ := f.manager.ServiceState("svc")
 	if state != StateError {
 		t.Errorf("state = %s, want error", state)
 	}
@@ -241,7 +243,7 @@ func TestEnsureRunningReadinessTimeout(t *testing.T) {
 
 func TestEnsureRunningStartFailure(t *testing.T) {
 	driver := &fakeDriver{state: Stopped, startErr: errors.New("no such image")}
-	f := newFixture(t, ServiceConfig{}, driver)
+	f := newFixture(t, Definition{}, driver)
 	err := f.manager.EnsureRunning(context.Background(), "svc", "127.0.0.1:1")
 	if err == nil || !errors.Is(err, driver.startErr) {
 		t.Fatalf("err = %v", err)
@@ -265,7 +267,7 @@ func TestEnsureRunningStartFailure(t *testing.T) {
 
 func TestEnsureRunningCallerContextCancel(t *testing.T) {
 	driver := &fakeDriver{state: Stopped, gate: make(chan struct{})}
-	f := newFixture(t, ServiceConfig{}, driver)
+	f := newFixture(t, Definition{}, driver)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	err := f.manager.EnsureRunning(ctx, "svc", "127.0.0.1:1")
@@ -282,7 +284,7 @@ func TestEnsureRunningCallerContextCancel(t *testing.T) {
 }
 
 func TestEnsureRunningUnknownService(t *testing.T) {
-	f := newFixture(t, ServiceConfig{}, &fakeDriver{})
+	f := newFixture(t, Definition{}, &fakeDriver{})
 	if err := f.manager.EnsureRunning(context.Background(), "nope", ""); !errors.Is(err, ErrUnknownService) {
 		t.Errorf("err = %v", err)
 	}
@@ -294,11 +296,11 @@ func TestEnsureRunningUnknownService(t *testing.T) {
 
 func TestStartAsync(t *testing.T) {
 	driver := &fakeDriver{state: Stopped}
-	f := newFixture(t, ServiceConfig{}, driver)
+	f := newFixture(t, Definition{}, driver)
 	f.manager.StartAsync("svc", "127.0.0.1:1")
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if state, _ := f.manager.ServiceState("svc"); state == StateRunning {
+		if _, state, _ := f.manager.ServiceState("svc"); state == StateRunning {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -311,7 +313,7 @@ func TestStartAsync(t *testing.T) {
 
 func TestManualStopSleeps(t *testing.T) {
 	driver := &fakeDriver{state: Stopped}
-	f := newFixture(t, ServiceConfig{}, driver)
+	f := newFixture(t, Definition{}, driver)
 	ctx := context.Background()
 	if err := f.manager.EnsureRunning(ctx, "svc", "127.0.0.1:1"); err != nil {
 		t.Fatal(err)
@@ -319,11 +321,11 @@ func TestManualStopSleeps(t *testing.T) {
 	if err := f.manager.Stop(ctx, "svc"); err != nil {
 		t.Fatal(err)
 	}
-	if state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
+	if _, state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
 		t.Errorf("state = %s, want sleeping", state)
 	}
 	f.manager.Refresh(ctx)
-	if state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
+	if _, state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
 		t.Errorf("state after refresh = %s, want sleeping", state)
 	}
 	status, _ := f.manager.Status("svc")
@@ -334,7 +336,7 @@ func TestManualStopSleeps(t *testing.T) {
 
 func TestManualStopFailure(t *testing.T) {
 	driver := &fakeDriver{state: Running, stopErr: errors.New("busy")}
-	f := newFixture(t, ServiceConfig{}, driver)
+	f := newFixture(t, Definition{}, driver)
 	f.manager.Refresh(context.Background())
 	if err := f.manager.Stop(context.Background(), "svc"); err == nil {
 		t.Fatal("expected error")
@@ -347,7 +349,7 @@ func TestManualStopFailure(t *testing.T) {
 
 func TestIdleStop(t *testing.T) {
 	driver := &fakeDriver{state: Stopped}
-	f := newFixture(t, ServiceConfig{IdleTimeout: 10 * time.Minute}, driver)
+	f := newFixture(t, Definition{IdleTimeout: 10 * time.Minute}, driver)
 	ctx := context.Background()
 	if err := f.manager.EnsureRunning(ctx, "svc", "127.0.0.1:1"); err != nil {
 		t.Fatal(err)
@@ -364,7 +366,7 @@ func TestIdleStop(t *testing.T) {
 	if _, stops := driver.counts(); stops != 1 {
 		t.Fatalf("stops = %d, want 1", stops)
 	}
-	if state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
+	if _, state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
 		t.Errorf("state = %s, want sleeping", state)
 	}
 
@@ -377,7 +379,7 @@ func TestIdleStop(t *testing.T) {
 
 func TestIdleDisabledNeverStops(t *testing.T) {
 	driver := &fakeDriver{state: Running}
-	f := newFixture(t, ServiceConfig{IdleTimeout: 0}, driver)
+	f := newFixture(t, Definition{IdleTimeout: 0}, driver)
 	f.manager.Refresh(context.Background())
 	f.clock.Advance(1000 * time.Hour)
 	f.manager.stopIdle(context.Background())
@@ -388,7 +390,7 @@ func TestIdleDisabledNeverStops(t *testing.T) {
 
 func TestActiveConnectionPreventsStop(t *testing.T) {
 	driver := &fakeDriver{state: Running}
-	f := newFixture(t, ServiceConfig{IdleTimeout: 10 * time.Minute}, driver)
+	f := newFixture(t, Definition{IdleTimeout: 10 * time.Minute}, driver)
 	ctx := context.Background()
 	f.manager.Refresh(ctx)
 
@@ -424,7 +426,7 @@ func TestActiveConnectionPreventsStop(t *testing.T) {
 
 func TestIdleGraceForUnseenService(t *testing.T) {
 	driver := &fakeDriver{state: Running}
-	f := newFixture(t, ServiceConfig{IdleTimeout: 10 * time.Minute}, driver)
+	f := newFixture(t, Definition{IdleTimeout: 10 * time.Minute}, driver)
 	f.manager.mu.Lock()
 	f.manager.services["svc"].state = StateRunning
 	f.manager.mu.Unlock()
@@ -444,10 +446,10 @@ func TestIdleGraceForUnseenService(t *testing.T) {
 
 func TestExternallyStartedServiceGetsFullGrace(t *testing.T) {
 	driver := &fakeDriver{state: Stopped}
-	f := newFixture(t, ServiceConfig{IdleTimeout: 10 * time.Minute}, driver)
+	f := newFixture(t, Definition{IdleTimeout: 10 * time.Minute}, driver)
 	ctx := context.Background()
 	f.manager.Refresh(ctx)
-	if state, _ := f.manager.ServiceState("svc"); state != StateStopped {
+	if _, state, _ := f.manager.ServiceState("svc"); state != StateStopped {
 		t.Fatalf("state = %s, want stopped", state)
 	}
 
@@ -491,14 +493,14 @@ func TestRefreshStateMapping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			driver := &fakeDriver{state: tt.driver, stateErr: tt.driverErr}
-			f := newFixture(t, ServiceConfig{}, driver)
+			f := newFixture(t, Definition{}, driver)
 			f.manager.mu.Lock()
 			svc := f.manager.services["svc"]
 			svc.state = tt.initial
 			svc.stoppedByUs = tt.stoppedByUs
 			f.manager.mu.Unlock()
 			f.manager.Refresh(context.Background())
-			if got, _ := f.manager.ServiceState("svc"); got != tt.want {
+			if _, got, _ := f.manager.ServiceState("svc"); got != tt.want {
 				t.Errorf("state = %s, want %s", got, tt.want)
 			}
 		})
@@ -507,7 +509,7 @@ func TestRefreshStateMapping(t *testing.T) {
 
 func TestRunLoopStopsOnCancel(t *testing.T) {
 	driver := &fakeDriver{state: Running}
-	f := newFixture(t, ServiceConfig{}, driver)
+	f := newFixture(t, Definition{}, driver)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -516,7 +518,7 @@ func TestRunLoopStopsOnCancel(t *testing.T) {
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if state, _ := f.manager.ServiceState("svc"); state == StateRunning {
+		if _, state, _ := f.manager.ServiceState("svc"); state == StateRunning {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -534,54 +536,106 @@ func TestRunLoopStopsOnCancel(t *testing.T) {
 
 func TestVisibilityAndListing(t *testing.T) {
 	clock := newFakeClock()
-	cfg := &Config{
-		Orgs: []string{"org_a", "org_b"},
-		Services: map[string]ServiceConfig{
-			"zeta":  {Driver: DriverExec, StartTimeout: time.Minute},
-			"alpha": {Driver: DriverExec, StartTimeout: time.Minute, IdleTimeout: 90 * time.Second},
-		},
-	}
-	m := newManager(cfg, Options{Now: clock.Now}, map[string]Driver{"zeta": &fakeDriver{}, "alpha": &fakeDriver{}})
+	m := newManager(Options{Now: clock.Now}, func(Definition) (Driver, error) { return &fakeDriver{}, nil })
+	m.Apply([]Definition{
+		{ID: "svc_z", OrgID: "org_b", Name: "zeta", Driver: DriverExec, StartTimeout: time.Minute},
+		{ID: "svc_a", OrgID: "org_a", Name: "alpha", Driver: DriverExec, StartTimeout: time.Minute, IdleTimeout: 90 * time.Second},
+	})
 
-	if got := m.Names(); len(got) != 2 || got[0] != "alpha" || got[1] != "zeta" {
-		t.Errorf("Names = %v", got)
-	}
 	tests := []struct {
-		org, name string
-		want      bool
+		org, id string
+		want    bool
 	}{
-		{"org_a", "alpha", true},
-		{"org_b", "zeta", true},
-		{"org_c", "alpha", false},
+		{"org_a", "svc_a", true},
+		{"org_b", "svc_z", true},
+		{"org_b", "svc_a", false},
+		{"org_c", "svc_a", false},
 		{"org_a", "missing", false},
 	}
 	for _, tt := range tests {
-		if got := m.VisibleTo(tt.org, tt.name); got != tt.want {
-			t.Errorf("VisibleTo(%s,%s) = %v", tt.org, tt.name, got)
+		if got := m.VisibleTo(tt.org, tt.id); got != tt.want {
+			t.Errorf("VisibleTo(%s,%s) = %v", tt.org, tt.id, got)
 		}
 	}
-	if m.Has("missing") || !m.Has("alpha") {
+	if m.Has("missing") || !m.Has("svc_a") {
 		t.Error("Has wrong")
 	}
 	if _, ok := m.Status("missing"); ok {
 		t.Error("Status(missing) ok")
 	}
-	if _, ok := m.ServiceState("missing"); ok {
+	if _, _, ok := m.ServiceState("missing"); ok {
 		t.Error("ServiceState(missing) ok")
 	}
 	list := m.List()
-	if len(list) != 2 || list[0].Name != "alpha" || list[1].Name != "zeta" {
+	if len(list) != 2 || list[0].ID != "svc_a" || list[1].ID != "svc_z" {
 		t.Fatalf("List = %+v", list)
 	}
-	if list[0].State != StateUnknown {
-		t.Errorf("initial state = %s", list[0].State)
+	if list[0].State != StateUnknown || list[0].OrgID != "org_a" || list[0].Name != "alpha" {
+		t.Errorf("first entry = %+v", list[0])
+	}
+}
+
+func TestApplyKeepsRuntimeStateAndDropsRemoved(t *testing.T) {
+	builds := 0
+	driver := &fakeDriver{state: Running}
+	m := newManager(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, func(Definition) (Driver, error) {
+		builds++
+		return driver, nil
+	})
+	def := Definition{ID: "svc_1", OrgID: "org_a", Name: "web", Driver: DriverExec, StartTimeout: time.Minute}
+	m.Apply([]Definition{def})
+	m.Refresh(context.Background())
+	release := m.Acquire("svc_1")
+	defer release()
+
+	m.Apply([]Definition{def})
+	if builds != 1 {
+		t.Fatalf("unchanged definition rebuilt the driver: %d builds", builds)
+	}
+	renamed := def
+	renamed.Name = "website"
+	renamed.IdleTimeout = time.Hour
+	m.Apply([]Definition{renamed})
+	if builds != 2 {
+		t.Fatalf("changed definition must rebuild the driver: %d builds", builds)
+	}
+	st, ok := m.Status("svc_1")
+	if !ok || st.State != StateRunning || st.Active != 1 || st.Name != "website" || st.IdleTimeout != time.Hour {
+		t.Fatalf("runtime state lost on update: %+v", st)
+	}
+
+	m.Apply(nil)
+	if m.Has("svc_1") {
+		t.Fatal("removed definition still present")
+	}
+}
+
+func TestApplyMarksBrokenDefinitions(t *testing.T) {
+	m := newManager(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, func(def Definition) (Driver, error) {
+		if def.Driver == DriverExec {
+			return nil, ErrHostCommandsOff
+		}
+		return &fakeDriver{}, nil
+	})
+	m.Apply([]Definition{{ID: "svc_x", OrgID: "org_a", Name: "x", Driver: DriverExec, StartTimeout: time.Second}})
+	st, _ := m.Status("svc_x")
+	if st.State != StateError || !strings.Contains(st.LastError, "disabled") {
+		t.Fatalf("status = %+v", st)
+	}
+	if err := m.EnsureRunning(context.Background(), "svc_x", ""); !errors.Is(err, ErrHostCommandsOff) {
+		t.Fatalf("EnsureRunning err = %v", err)
+	}
+
+	m.Apply([]Definition{{ID: "svc_x", OrgID: "org_a", Name: "x", Driver: DriverDocker, StartTimeout: time.Second}})
+	if st, _ := m.Status("svc_x"); st.State != StateUnknown || st.LastError != "" {
+		t.Fatalf("fixed definition still broken: %+v", st)
 	}
 }
 
 func TestStatusJSON(t *testing.T) {
 	at := time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC)
 	status := Status{
-		Name: "x", Driver: "docker", State: StateRunning, Active: 2,
+		ID: "svc_1", OrgID: "org_a", Name: "x", Driver: "docker", State: StateRunning, Active: 2,
 		LastActivity: at, IdleTimeout: 30 * time.Minute, StartTimeout: 2 * time.Minute,
 		LastError: "e", StartedBy: StartedByMishmesh, UpdatedAt: at,
 	}
@@ -594,7 +648,7 @@ func TestStatusJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]any{
-		"name": "x", "driver": "docker", "state": "running", "active": float64(2),
+		"id": "svc_1", "org_id": "org_a", "name": "x", "driver": "docker", "state": "running", "active": float64(2),
 		"last_activity": "2026-10-12T08:00:00Z", "idle_timeout_seconds": float64(1800),
 		"start_timeout_seconds": float64(120), "last_error": "e", "started_by": "mishmesh",
 		"updated_at": "2026-10-12T08:00:00Z",
@@ -634,59 +688,52 @@ func TestHostPortOf(t *testing.T) {
 	}
 }
 
-func TestNewManagerBuildsDrivers(t *testing.T) {
-	cfg, err := Parse([]byte(specYAML))
-	if err != nil {
-		t.Fatal(err)
+func TestHostDriversGateHostCommands(t *testing.T) {
+	tests := []struct {
+		name         string
+		def          Definition
+		hostCommands bool
+		wantErr      error
+	}{
+		{"exec blocked", Definition{Driver: DriverExec, Spec: Spec{Exec: &ExecSpec{Start: []string{"x"}, Stop: []string{"y"}}}}, false, ErrHostCommandsOff},
+		{"exec allowed", Definition{Driver: DriverExec, Spec: Spec{Exec: &ExecSpec{Start: []string{"x"}, Stop: []string{"y"}}}}, true, nil},
+		{"compose file blocked", Definition{Driver: DriverCompose, Spec: Spec{Compose: &ComposeSpec{Project: "p", File: "/x.yml", Bin: "docker"}}}, false, ErrHostCommandsOff},
+		{"compose by label allowed", Definition{Driver: DriverCompose, Spec: Spec{Compose: &ComposeSpec{Project: "p"}}}, false, nil},
+		{"docker allowed", Definition{Driver: DriverDocker, Spec: Spec{Docker: &DockerSpec{Containers: []string{"a"}}}}, false, nil},
 	}
-	m, err := NewManager(cfg, Options{})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &hostDrivers{dockerHost: DefaultDockerHost, hostCommands: tt.hostCommands}
+			_, err := h.build(tt.def)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+		})
 	}
-	if len(m.Names()) != 4 {
-		t.Errorf("names = %v", m.Names())
-	}
-
-	cfg.Docker.Host = "ftp://nope"
-	if _, err := NewManager(cfg, Options{}); err == nil {
+	bad := &hostDrivers{dockerHost: "ftp://nope"}
+	if _, err := bad.build(Definition{Driver: DriverDocker, Spec: Spec{Docker: &DockerSpec{Label: "a"}}}); err == nil {
 		t.Error("expected error for bad docker host")
-	}
-
-	execOnly, err := Parse([]byte("docker:\n  host: ftp://ignored\nservices:\n  a:\n    driver: exec\n    exec: {start: [x], stop: [y]}\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewManager(execOnly, Options{}); err != nil {
-		t.Errorf("docker host must be ignored without docker services: %v", err)
 	}
 }
 
 func TestManagerWithDockerEngine(t *testing.T) {
 	engine := newFakeEngine(t, &fakeContainer{ID: "1", Name: "portainer", State: "exited"})
-	cfg := &Config{
-		Orgs:   []string{"org_default"},
-		Docker: DockerConfig{Host: engine.host()},
-		Services: map[string]ServiceConfig{
-			"portainer": {Driver: DriverDocker, Docker: &DockerSpec{Containers: []string{"portainer"}}, StartTimeout: 5 * time.Second},
-		},
-	}
-	m, err := NewManager(cfg, Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := m.EnsureRunning(context.Background(), "portainer", ""); err != nil {
+	m := NewManager(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DockerHost: engine.host()})
+	m.Apply([]Definition{{ID: "svc_p", OrgID: "org_a", Name: "portainer", Driver: DriverDocker,
+		Spec: Spec{Docker: &DockerSpec{Containers: []string{"portainer"}}}, StartTimeout: 5 * time.Second}})
+	if err := m.EnsureRunning(context.Background(), "svc_p", ""); err != nil {
 		t.Fatal(err)
 	}
 	if engine.stateOf("1") != "running" {
 		t.Error("container not running")
 	}
-	if err := m.Stop(context.Background(), "portainer"); err != nil {
+	if err := m.Stop(context.Background(), "svc_p"); err != nil {
 		t.Fatal(err)
 	}
 	if engine.stateOf("1") != "exited" {
 		t.Error("container not stopped")
 	}
-	if state, _ := m.ServiceState("portainer"); state != StateSleeping {
+	if _, state, _ := m.ServiceState("svc_p"); state != StateSleeping {
 		t.Errorf("state = %s", state)
 	}
 }
@@ -717,7 +764,7 @@ func TestProbeRequiresListeningService(t *testing.T) {
 					go tc.serve(c)
 				}
 			}()
-			m := newManager(&Config{}, Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil)
+			m := newManager(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil)
 			m.readyHold = 200 * time.Millisecond
 			err = m.probe(context.Background(), ln.Addr().String())
 			if (err == nil) != tc.wantReady {
@@ -729,7 +776,7 @@ func TestProbeRequiresListeningService(t *testing.T) {
 
 func TestOnChangeFiresOnStateTransitionsOnly(t *testing.T) {
 	driver := &fakeDriver{state: Running}
-	f := newFixture(t, ServiceConfig{}, driver)
+	f := newFixture(t, Definition{}, driver)
 	var changes atomic.Int32
 	f.manager.onChange = func() { changes.Add(1) }
 	ctx := context.Background()

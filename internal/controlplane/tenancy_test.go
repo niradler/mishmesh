@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/mishmesh/mishmesh/internal/cloudflare"
-	"github.com/mishmesh/mishmesh/internal/services"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
 )
@@ -29,6 +29,7 @@ type tenantFixture struct {
 	endpoint string
 	inviteA  string
 	inviteTk string
+	service  string
 }
 
 func newTenantFixture(t *testing.T) *tenantFixture {
@@ -76,7 +77,7 @@ func (f *tenantFixture) fill(pattern string) (string, string) {
 		"/invites/{id}", "/invites/"+f.inviteA,
 		"{user_id}", f.userA,
 		"{agent_id}", f.agentA,
-		"{name}", "alice-svc",
+		"/services/{id}", "/services/"+f.service,
 	)
 	return method, r.Replace(path)
 }
@@ -105,13 +106,17 @@ func (f *tenantFixture) do(t *testing.T, c *http.Client, method, path, body stri
 
 func TestCrossTenantEveryRoute(t *testing.T) {
 	f := newTenantFixture(t)
-	f.api.SetServices(&fakeServiceControl{
-		statuses: map[string]services.Status{"alice-svc": {Name: "alice-svc", Driver: "compose", State: services.StateSleeping}},
-		orgs:     map[string]string{"alice-svc": f.orgA},
-	})
-	f.api.SetFrontDoor(&fakeFrontDoor{orgs: map[string]bool{f.orgA: true}, status: cloudflare.Status{
-		Enabled: true, Hostnames: []cloudflare.HostStatus{{Host: "alice-sub.example.org", EndpointID: f.endpoint, State: "synced"}},
-	}})
+	f.api.SetServices(newFakeServices())
+	f.api.SetCloudflare(newFakeCloudflare(), testSecretBox(t))
+	f.api.SetHostCommands(true)
+	f.api.detectCloudflare = func(context.Context, string, string) (cloudflare.DetectResult, error) {
+		return cloudflare.DetectResult{Hostnames: []string{}}, nil
+	}
+	var svc serviceDTO
+	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/services", `{"name":"alice-svc","driver":"docker","spec":{"docker":{"containers":["alice-c"]}}}`, http.StatusCreated, &svc)
+	f.service = svc.ID
+	aliceTunnel := testTunnelToken("aliceacct", "alicetun")
+	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/cloudflare", `{"name":"alice-lab","tunnel_token":"`+aliceTunnel+`"}`, http.StatusOK, nil)
 
 	type probe struct {
 		body string
@@ -119,46 +124,54 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	}
 	notFound := http.StatusNotFound
 	probes := map[string]probe{
-		"GET /api/v1/orgs/{id}":                   {"", notFound},
-		"PATCH /api/v1/members/{user_id}":         {`{"role":"admin"}`, notFound},
-		"DELETE /api/v1/members/{user_id}":        {"", notFound},
-		"POST /api/v1/agents":                     {`{"name":"x","org_id":"` + f.orgA + `"}`, notFound},
-		"GET /api/v1/agents/{id}":                 {"", notFound},
-		"PATCH /api/v1/agents/{id}":               {`{"name":"hijacked"}`, notFound},
-		"DELETE /api/v1/agents/{id}":              {"", notFound},
-		"POST /api/v1/agents/{id}/rotate":         {"", notFound},
-		"POST /api/v1/agents/{id}/revoke":         {"", notFound},
-		"GET /api/v1/agents/{id}/endpoints":       {"", notFound},
-		"GET /api/v1/agents/{id}/tokens":          {"", notFound},
-		"POST /api/v1/endpoints":                  {`{"agent_id":"` + f.agentA + `","subdomain":"bob-sub"}`, notFound},
-		"GET /api/v1/endpoints/{id}":              {"", notFound},
-		"PATCH /api/v1/endpoints/{id}":            {`{"subdomain":"pwned"}`, notFound},
-		"DELETE /api/v1/endpoints/{id}":           {"", notFound},
-		"POST /api/v1/reach/{agent_id}/http":      {`{"target":"127.0.0.1:1"}`, notFound},
-		"GET /api/v1/reach/{agent_id}/stream":     {"", notFound},
-		"GET /api/v1/invites":                     {"", http.StatusOK},
-		"DELETE /api/v1/invites/{id}":             {"", notFound},
-		"GET /api/v1/agents":                      {"", http.StatusOK},
-		"GET /api/v1/endpoints":                   {"", http.StatusOK},
-		"GET /api/v1/members":                     {"", http.StatusOK},
-		"POST /api/v1/members":                    {`{"email":"carol@example.com","role":"member"}`, http.StatusCreated},
-		"GET /api/v1/orgs":                        {"", http.StatusOK},
-		"POST /api/v1/orgs":                       {`{"name":"bobs-second"}`, http.StatusCreated},
-		"GET /api/v1/quota":                       {"", http.StatusOK},
-		"PUT /api/v1/quota":                       {`{"max_agents":1,"max_endpoints":1,"max_bandwidth_bytes":1}`, http.StatusForbidden},
-		"GET /api/v1/audit":                       {"", http.StatusOK},
-		"GET /api/v1/status":                      {"", http.StatusOK},
-		"GET /api/v1/policy":                      {"", http.StatusOK},
-		"GET /api/v1/services":                    {"", http.StatusOK},
-		"POST /api/v1/services/{name}/start":      {"", notFound},
-		"POST /api/v1/services/{name}/stop":       {"", notFound},
-		"GET /api/v1/frontdoors":                  {"", http.StatusOK},
-		"POST /api/v1/frontdoors/cloudflare/sync": {"", notFound},
-		"GET /api/v1/topology":                    {"", http.StatusOK},
-		"PUT /api/v1/policy":                      {`{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"],"member":["agent:read"]}}`, http.StatusOK},
+		"GET /api/v1/orgs/{id}":               {"", notFound},
+		"PATCH /api/v1/members/{user_id}":     {`{"role":"admin"}`, notFound},
+		"DELETE /api/v1/members/{user_id}":    {"", notFound},
+		"POST /api/v1/agents":                 {`{"name":"x","org_id":"` + f.orgA + `"}`, notFound},
+		"GET /api/v1/agents/{id}":             {"", notFound},
+		"PATCH /api/v1/agents/{id}":           {`{"name":"hijacked"}`, notFound},
+		"DELETE /api/v1/agents/{id}":          {"", notFound},
+		"POST /api/v1/agents/{id}/rotate":     {"", notFound},
+		"POST /api/v1/agents/{id}/revoke":     {"", notFound},
+		"GET /api/v1/agents/{id}/endpoints":   {"", notFound},
+		"GET /api/v1/agents/{id}/tokens":      {"", notFound},
+		"POST /api/v1/endpoints":              {`{"agent_id":"` + f.agentA + `","subdomain":"bob-sub"}`, notFound},
+		"GET /api/v1/endpoints/{id}":          {"", notFound},
+		"PATCH /api/v1/endpoints/{id}":        {`{"subdomain":"pwned"}`, notFound},
+		"DELETE /api/v1/endpoints/{id}":       {"", notFound},
+		"POST /api/v1/reach/{agent_id}/http":  {`{"target":"127.0.0.1:1"}`, notFound},
+		"GET /api/v1/reach/{agent_id}/stream": {"", notFound},
+		"GET /api/v1/invites":                 {"", http.StatusOK},
+		"DELETE /api/v1/invites/{id}":         {"", notFound},
+		"GET /api/v1/agents":                  {"", http.StatusOK},
+		"GET /api/v1/endpoints":               {"", http.StatusOK},
+		"GET /api/v1/members":                 {"", http.StatusOK},
+		"POST /api/v1/members":                {`{"email":"carol@example.com","role":"member"}`, http.StatusCreated},
+		"GET /api/v1/orgs":                    {"", http.StatusOK},
+		"POST /api/v1/orgs":                   {`{"name":"bobs-second"}`, http.StatusCreated},
+		"GET /api/v1/quota":                   {"", http.StatusOK},
+		"PUT /api/v1/quota":                   {`{"max_agents":1,"max_endpoints":1,"max_bandwidth_bytes":1}`, http.StatusForbidden},
+		"GET /api/v1/audit":                   {"", http.StatusOK},
+		"GET /api/v1/status":                  {"", http.StatusOK},
+		"GET /api/v1/policy":                  {"", http.StatusOK},
+		"GET /api/v1/services":                {"", http.StatusOK},
+		"POST /api/v1/services":               {`{"name":"bob-svc","driver":"docker","spec":{"docker":{"containers":["bob"]}}}`, http.StatusCreated},
+		"GET /api/v1/services/{id}":           {"", notFound},
+		"PUT /api/v1/services/{id}":           {`{"name":"pwned","driver":"docker","spec":{"docker":{"containers":["x"]}}}`, notFound},
+		"DELETE /api/v1/services/{id}":        {"", notFound},
+		"POST /api/v1/services/{id}/start":    {"", notFound},
+		"POST /api/v1/services/{id}/stop":     {"", notFound},
+		"GET /api/v1/capabilities":            {"", http.StatusOK},
+		"GET /api/v1/cloudflare":              {"", http.StatusOK},
+		"PUT /api/v1/cloudflare":              {`{"name":"bob","tunnel_token":"` + aliceTunnel + `"}`, http.StatusConflict},
+		"DELETE /api/v1/cloudflare":           {"", notFound},
+		"POST /api/v1/cloudflare/detect":      {`{"metrics_addr":"10.0.0.1:20241"}`, http.StatusBadRequest},
+		"POST /api/v1/cloudflare/sync":        {"", notFound},
+		"GET /api/v1/topology":                {"", http.StatusOK},
+		"PUT /api/v1/policy":                  {`{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"],"member":["agent:read"]}}`, http.StatusOK},
 	}
 
-	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc"}
+	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service}
 
 	for _, rt := range f.api.routes() {
 		pr, ok := probes[rt.pattern]

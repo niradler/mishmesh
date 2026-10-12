@@ -97,13 +97,9 @@ func exitText(err error) string {
 }
 
 func (s *Supervisor) runOnce(ctx context.Context) error {
-	raw, err := os.ReadFile(s.cfg.TokenFile)
-	if err != nil {
-		return fmt.Errorf("read tunnel token file: %w", err)
-	}
-	token := strings.TrimSpace(string(raw))
+	token := strings.TrimSpace(s.cfg.Token)
 	if token == "" {
-		return errors.New("tunnel token file is empty")
+		return errors.New("tunnel token is empty")
 	}
 	cmd := exec.CommandContext(ctx, s.cfg.Bin, "tunnel", "--no-autoupdate", "--metrics", s.cfg.MetricsAddr, "run")
 	cmd.Env = append(os.Environ(), "TUNNEL_TOKEN="+token)

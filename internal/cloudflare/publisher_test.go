@@ -46,7 +46,7 @@ func TestSyncIngressOrdering(t *testing.T) {
 			if tt.config != "" {
 				f.setConfig(t, tt.config)
 			}
-			fd, _ := newTestFrontDoor(t, f, f.testClientConfig(),
+			fd, _ := newTestPublisher(t, f, f.testClientConfig(),
 				Hostname{Host: "b.example.com", EndpointID: "ep2"}, Hostname{Host: "a.example.com", EndpointID: "ep1"})
 			if _, err := fd.Sync(context.Background()); err != nil {
 				t.Fatalf("sync: %v", err)
@@ -63,7 +63,7 @@ func TestSyncPreservesUnknownFields(t *testing.T) {
 	f.setConfig(t, `{"warp-routing":{"enabled":true},"originRequest":{"connectTimeout":"30s"},"ingress":[`+
 		`{"hostname":"x.example.com","service":"http://10.0.0.1:80","originRequest":{"noTLSVerify":true},"futureField":[1,2,{"k":"v"}]},`+
 		`{"service":"http_status:404","extra":"keep"}]}`)
-	fd, _ := newTestFrontDoor(t, f, f.testClientConfig(), Hostname{Host: "a.example.com"})
+	fd, _ := newTestPublisher(t, f, f.testClientConfig(), Hostname{Host: "a.example.com"})
 	if _, err := fd.Sync(context.Background()); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -93,13 +93,13 @@ func TestSyncNoopMakesNoWrites(t *testing.T) {
 	f.setApp(t, `{"id":"app1","self_hosted_domains":[],"destinations":[]}`)
 	cfg := f.testClientConfig()
 	cfg.AccessAppID = testAppID
-	fd, _ := newTestFrontDoor(t, f, cfg, Hostname{Host: "a.example.com"}, Hostname{Host: "b.lab.example.com"})
+	fd, _ := newTestPublisher(t, f, cfg, Hostname{Host: "a.example.com"}, Hostname{Host: "b.lab.example.com"})
 	st, err := fd.Sync(context.Background())
 	if err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
 	for _, h := range st.Hostnames {
-		if h.State != StateSynced {
+		if h.State != StatePublished {
 			t.Fatalf("host %s state = %s detail=%s", h.Host, h.State, h.Detail)
 		}
 	}
@@ -114,14 +114,14 @@ func TestSyncNoopMakesNoWrites(t *testing.T) {
 	if f.configPuts != puts || f.dnsPosts != posts || f.appPuts != appPuts {
 		t.Fatalf("second sync wrote: puts=%d posts=%d appPuts=%d", f.configPuts, f.dnsPosts, f.appPuts)
 	}
-	if h := hostEntryFor(t, st, "b.lab.example.com"); h.State != StateSynced || !h.Ingress || h.DNS != DNSOK || h.Access != AccessOK {
+	if h := hostEntryFor(t, st, "b.lab.example.com"); h.State != StatePublished || !h.Ingress || h.DNS != DNSOK || h.Access != AccessOK {
 		t.Fatalf("unexpected status: %+v", h)
 	}
 }
 
 func TestSyncDNSZoneAndRecord(t *testing.T) {
 	f := newFakeCF(t)
-	fd, _ := newTestFrontDoor(t, f, f.testClientConfig(), Hostname{Host: "svc.lab.example.com"})
+	fd, _ := newTestPublisher(t, f, f.testClientConfig(), Hostname{Host: "svc.lab.example.com"})
 	if _, err := fd.Sync(context.Background()); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSyncDNSZoneAndRecord(t *testing.T) {
 
 func TestSyncNoZoneIsHostError(t *testing.T) {
 	f := newFakeCF(t)
-	fd, _ := newTestFrontDoor(t, f, f.testClientConfig(), Hostname{Host: "a.other.org"})
+	fd, _ := newTestPublisher(t, f, f.testClientConfig(), Hostname{Host: "a.other.org"})
 	st, _ := fd.Sync(context.Background())
 	h := hostEntryFor(t, st, "a.other.org")
 	if h.DNS != DNSError || h.State != StateError {
@@ -154,7 +154,7 @@ func TestSyncDNSConflictUntouched(t *testing.T) {
 			}
 			cfg := f.testClientConfig()
 			cfg.Prune = prune
-			fd, _ := newTestFrontDoor(t, f, cfg, Hostname{Host: "a.example.com"}, Hostname{Host: "b.example.com"})
+			fd, _ := newTestPublisher(t, f, cfg, Hostname{Host: "a.example.com"}, Hostname{Host: "b.example.com"})
 			st, err := fd.Sync(context.Background())
 			if err != nil {
 				t.Fatalf("sync: %v", err)
@@ -175,10 +175,10 @@ func TestSyncDNSConflictUntouched(t *testing.T) {
 func TestSyncForeignIngressHostnameConflicts(t *testing.T) {
 	f := newFakeCF(t)
 	f.setConfig(t, `{"ingress":[{"hostname":"a.example.com","service":"http://10.0.0.1:80"},{"service":"http_status:404"}]}`)
-	fd, _ := newTestFrontDoor(t, f, f.testClientConfig(), Hostname{Host: "a.example.com"})
+	fd, _ := newTestPublisher(t, f, f.testClientConfig(), Hostname{Host: "a.example.com"})
 	st, _ := fd.Sync(context.Background())
 	h := hostEntryFor(t, st, "a.example.com")
-	if h.State != StateConflict || h.Ingress {
+	if h.State != StateConflict || !h.Ingress || h.Service != "http://10.0.0.1:80" || h.Fix == "" {
 		t.Fatalf("status = %+v", h)
 	}
 	if f.configPuts != 0 || f.dnsPosts != 0 {
@@ -208,7 +208,7 @@ func TestSyncPrune(t *testing.T) {
 				"foreign.example.com|http://10.0.0.1:80", "|http_status:404",
 			},
 			wantRecords:  2,
-			wantState:    StateOrphaned,
+			wantState:    StateUnclaimed,
 			wantAppHosts: []string{"keep.example.com", "gone.example.com"},
 		},
 		{
@@ -217,7 +217,7 @@ func TestSyncPrune(t *testing.T) {
 			wantServices: []string{"keep.example.com|http://127.0.0.1:8080", "foreign.example.com|http://10.0.0.1:80", "|http_status:404"},
 			wantRecords:  1,
 			wantDeletes:  1,
-			wantState:    StateOrphaned,
+			wantState:    StateUnclaimed,
 			wantAppHosts: []string{"keep.example.com"},
 		},
 	}
@@ -234,7 +234,7 @@ func TestSyncPrune(t *testing.T) {
 			cfg := f.testClientConfig()
 			cfg.Prune = tt.prune
 			cfg.AccessAppID = testAppID
-			fd, _ := newTestFrontDoor(t, f, cfg, Hostname{Host: "keep.example.com"})
+			fd, _ := newTestPublisher(t, f, cfg, Hostname{Host: "keep.example.com"})
 			st, err := fd.Sync(context.Background())
 			if err != nil {
 				t.Fatalf("sync: %v", err)
@@ -267,8 +267,12 @@ func TestSyncPrune(t *testing.T) {
 			if got := accessDomains(AccessApp(f.app)); !reflect.DeepEqual(got, tt.wantAppHosts) {
 				t.Fatalf("access domains = %v, want %v", got, tt.wantAppHosts)
 			}
-			if len(st.Hostnames) != 2 {
-				t.Fatalf("foreign hostnames must not be reported: %+v", st.Hostnames)
+			if len(st.Hostnames) != 3 {
+				t.Fatalf("hostnames = %+v", st.Hostnames)
+			}
+			foreign := hostEntryFor(t, st, "foreign.example.com")
+			if foreign.State != StateUnclaimed || foreign.Service != "http://10.0.0.1:80" || !strings.Contains(foreign.Detail, "not through mishmesh") {
+				t.Fatalf("foreign = %+v", foreign)
 			}
 		})
 	}
@@ -279,7 +283,7 @@ func TestSyncAccessAddPreservesFields(t *testing.T) {
 	f.setApp(t, `{"id":"app1","name":"lab","aud":"abc","session_duration":"24h","policies":[{"id":"p1","precedence":1}],"self_hosted_domains":["old.example.com"],"destinations":[{"type":"public","uri":"old.example.com"}],"big":12345678901234567890}`)
 	cfg := f.testClientConfig()
 	cfg.AccessAppID = testAppID
-	fd, _ := newTestFrontDoor(t, f, cfg, Hostname{Host: "a.example.com"})
+	fd, _ := newTestPublisher(t, f, cfg, Hostname{Host: "a.example.com"})
 	if _, err := fd.Sync(context.Background()); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -305,7 +309,7 @@ func TestSyncAccessWithoutDestinations(t *testing.T) {
 	f.setApp(t, `{"self_hosted_domains":[]}`)
 	cfg := f.testClientConfig()
 	cfg.AccessAppID = testAppID
-	fd, _ := newTestFrontDoor(t, f, cfg, Hostname{Host: "a.example.com"})
+	fd, _ := newTestPublisher(t, f, cfg, Hostname{Host: "a.example.com"})
 	if _, err := fd.Sync(context.Background()); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -320,7 +324,7 @@ func TestSyncAccessWithoutDestinations(t *testing.T) {
 func TestSyncPerHostErrorIsolation(t *testing.T) {
 	f := newFakeCF(t)
 	f.failPostHosts["bad.example.com"] = true
-	fd, _ := newTestFrontDoor(t, f, f.testClientConfig(),
+	fd, _ := newTestPublisher(t, f, f.testClientConfig(),
 		Hostname{Host: "bad.example.com"}, Hostname{Host: "good.example.com"})
 	st, _ := fd.Sync(context.Background())
 	bad := hostEntryFor(t, st, "bad.example.com")
@@ -328,7 +332,7 @@ func TestSyncPerHostErrorIsolation(t *testing.T) {
 	if bad.State != StateError || bad.DNS != DNSError {
 		t.Fatalf("bad = %+v", bad)
 	}
-	if good.State != StateSynced {
+	if good.State != StatePublished {
 		t.Fatalf("good = %+v", good)
 	}
 	if len(f.records["z-example"]) != 1 {
@@ -339,12 +343,12 @@ func TestSyncPerHostErrorIsolation(t *testing.T) {
 func TestSyncRetries429(t *testing.T) {
 	f := newFakeCF(t)
 	f.limit429 = 2
-	fd, _ := newTestFrontDoor(t, f, f.testClientConfig(), Hostname{Host: "a.example.com"})
+	fd, _ := newTestPublisher(t, f, f.testClientConfig(), Hostname{Host: "a.example.com"})
 	st, err := fd.Sync(context.Background())
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	if hostEntryFor(t, st, "a.example.com").State != StateSynced {
+	if hostEntryFor(t, st, "a.example.com").State != StatePublished {
 		t.Fatalf("status = %+v", st.Hostnames)
 	}
 	if f.limit429 != 0 {
@@ -355,7 +359,7 @@ func TestSyncRetries429(t *testing.T) {
 func TestSyncGivesUpAfterRepeated429(t *testing.T) {
 	f := newFakeCF(t)
 	f.limit429 = 100
-	fd, _ := newTestFrontDoor(t, f, f.testClientConfig(), Hostname{Host: "a.example.com"})
+	fd, _ := newTestPublisher(t, f, f.testClientConfig(), Hostname{Host: "a.example.com"})
 	st, err := fd.Sync(context.Background())
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 429 {
@@ -368,7 +372,7 @@ func TestSyncGivesUpAfterRepeated429(t *testing.T) {
 
 func TestSyncSourceError(t *testing.T) {
 	f := newFakeCF(t)
-	fd, src := newTestFrontDoor(t, f, f.testClientConfig())
+	fd, src := newTestPublisher(t, f, f.testClientConfig())
 	src.err = errors.New("db down")
 	st, err := fd.Sync(context.Background())
 	if err == nil || !strings.Contains(st.LastError, "db down") {
@@ -381,7 +385,7 @@ func TestSyncSourceError(t *testing.T) {
 
 func TestSyncStatusShape(t *testing.T) {
 	f := newFakeCF(t)
-	fd, _ := newTestFrontDoor(t, f, f.testClientConfig(), Hostname{Host: "a.example.com", EndpointID: "ep1"})
+	fd, _ := newTestPublisher(t, f, f.testClientConfig(), Hostname{Host: "a.example.com", EndpointID: "ep1"})
 	st, err := fd.Sync(context.Background())
 	if err != nil {
 		t.Fatalf("sync: %v", err)
@@ -394,24 +398,24 @@ func TestSyncStatusShape(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"enabled", "tunnel", "origin", "last_sync", "hostnames"} {
+	for _, key := range []string{"level", "tunnel", "origin", "connector", "last_sync", "hostnames"} {
 		if _, ok := m[key]; !ok {
 			t.Fatalf("missing key %s in %s", key, raw)
 		}
+	}
+	if m["level"] != LevelManaged {
+		t.Fatalf("level = %v", m["level"])
 	}
 	if _, ok := m["supervisor"]; ok {
 		t.Fatalf("supervisor present without config: %s", raw)
 	}
 	tun := m["tunnel"].(map[string]any)
-	conns := tun["connections"].([]any)
-	conn := conns[0].(map[string]any)
-	for _, key := range []string{"colo_name", "origin_ip", "opened_at", "client_version"} {
-		if _, ok := conn[key]; !ok {
-			t.Fatalf("connection missing %s: %v", key, conn)
-		}
-	}
-	if tun["status"] != "healthy" || tun["name"] != "lab" {
+	if tun["status"] != "healthy" || tun["name"] != "lab" || tun["connections"] != 1.0 {
 		t.Fatalf("tunnel = %v", tun)
+	}
+	conn := m["connector"].(map[string]any)
+	if conn["reachable"] != true || conn["ready_connections"] != 2.0 || conn["version"] != "2026.10.0" {
+		t.Fatalf("connector = %v", conn)
 	}
 	host := m["hostnames"].([]any)[0].(map[string]any)
 	for _, key := range []string{"host", "endpoint_id", "ingress", "dns", "access", "state"} {
@@ -424,29 +428,11 @@ func TestSyncStatusShape(t *testing.T) {
 	}
 }
 
-func TestEnabled(t *testing.T) {
-	cfg := &Config{Orgs: []string{"org_a", "org_b"}}
-	fd := New(cfg, &staticSource{}, nil)
-	tests := []struct {
-		org  string
-		want bool
-	}{{"org_a", true}, {"org_b", true}, {"org_c", false}, {"", false}}
-	for _, tt := range tests {
-		if got := fd.Enabled(tt.org); got != tt.want {
-			t.Errorf("Enabled(%q) = %v", tt.org, got)
-		}
-	}
-	var nilFD *FrontDoor
-	if nilFD.Enabled("org_a") {
-		t.Error("nil FrontDoor must not be enabled")
-	}
-}
-
 func TestRunSyncsOnStartIntervalAndTrigger(t *testing.T) {
 	f := newFakeCF(t)
 	cfg := f.testClientConfig()
 	cfg.SyncInterval = time.Hour
-	fd, _ := newTestFrontDoor(t, f, cfg, Hostname{Host: "a.example.com"})
+	fd, _ := newTestPublisher(t, f, cfg, Hostname{Host: "a.example.com"})
 	fd.debounce = 20 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

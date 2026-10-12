@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { Link } from "react-router-dom";
 import { Cloud, Globe, KeyRound, Network, Power, Server, Target } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StateDot, TONE_SURFACE, toneForState } from "@/components/common/StatusDot";
@@ -6,7 +7,7 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/common/States
 import { useTopology } from "@/api/hooks";
 import { useSession } from "@/context/SessionContext";
 import { cn } from "@/lib/utils";
-import type { Topology, TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind } from "@/api/types";
+import type { Topology, TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind, TopologyRef } from "@/api/types";
 
 interface NodeBox {
   x: number;
@@ -27,14 +28,14 @@ interface ColumnSpec {
 }
 
 const COLUMNS: ColumnSpec[] = [
-  { title: "Front door", kinds: ["frontdoor"] },
+  { title: "Tunnel", kinds: ["tunnel"] },
   { title: "Hostnames", kinds: ["hostname"] },
   { title: "Endpoints", kinds: ["endpoint"] },
   { title: "Upstreams", kinds: ["target", "service", "agent"] },
 ];
 
 const KIND_ICONS: Record<TopologyNodeKind, ComponentType<{ className?: string }>> = {
-  frontdoor: Cloud,
+  tunnel: Cloud,
   hostname: Globe,
   endpoint: Network,
   target: Target,
@@ -51,7 +52,7 @@ const EDGE_DASH: Record<TopologyEdgeKind, string | undefined> = {
 };
 
 const EDGE_LEGEND: { kind: TopologyEdgeKind; description: string }[] = [
-  { kind: "routes", description: "front door routes to hostname" },
+  { kind: "routes", description: "tunnel routes to hostname" },
   { kind: "serves", description: "hostname serves endpoint" },
   { kind: "proxies", description: "endpoint proxies to target" },
   { kind: "tunnels", description: "endpoint tunnels to agent" },
@@ -69,23 +70,24 @@ function edgePath(from: NodeBox, to: NodeBox): string {
   return `M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`;
 }
 
-function NodeCard({
-  node,
-  register,
-}: {
-  node: TopologyNode;
-  register: (id: string, element: HTMLDivElement | null) => void;
-}) {
-  const Icon = KIND_ICONS[node.kind];
-  const tone = toneForState(node.state);
+const REF_LABELS: Record<TopologyRef["kind"], string> = {
+  cloudflare: "Open Cloudflare",
+  endpoint: "Open endpoint",
+  service: "Open service",
+  agent: "Open agent",
+};
+
+function refPath(ref?: TopologyRef): string | null {
+  if (!ref) return null;
+  if (ref.kind === "cloudflare") return "/cloudflare";
+  if (!ref.id) return null;
+  return `/${ref.kind}s/${encodeURIComponent(ref.id)}`;
+}
+
+function NodeBody({ node }: { node: TopologyNode }) {
+  const Icon = KIND_ICONS[node.kind] ?? Server;
   return (
-    <div
-      ref={(element) => {
-        register(node.id, element);
-      }}
-      title={node.detail ? `${node.label}: ${node.detail}` : node.label}
-      className={cn("relative z-10 w-56 rounded-lg border p-3 shadow-sm", TONE_SURFACE[tone])}
-    >
+    <>
       <div className="flex items-center gap-2">
         <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
         <span className="truncate text-sm font-medium">{node.label}</span>
@@ -95,6 +97,62 @@ function NodeCard({
         <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{node.kind}</span>
       </div>
       {node.detail && <p className="mt-1.5 line-clamp-2 break-words text-xs text-muted-foreground">{node.detail}</p>}
+    </>
+  );
+}
+
+function NodeHoverDetail({ node, action }: { node: TopologyNode; action?: string }) {
+  return (
+    <div
+      role="tooltip"
+      className="pointer-events-none invisible absolute left-0 top-full z-30 mt-2 w-72 rounded-md border border-border bg-popover p-3 text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+    >
+      <p className="break-all font-mono text-xs">{node.label}</p>
+      <p className="mt-1 text-xs">
+        <span className="text-muted-foreground">State </span>
+        {node.state}
+      </p>
+      {node.detail && <p className="mt-1 whitespace-pre-wrap break-words text-xs text-muted-foreground">{node.detail}</p>}
+      {action && <p className="mt-2 text-xs font-medium">{action} →</p>}
+    </div>
+  );
+}
+
+function NodeCard({
+  node,
+  register,
+}: {
+  node: TopologyNode;
+  register: (id: string, element: HTMLDivElement | null) => void;
+}) {
+  const tone = toneForState(node.state);
+  const path = refPath(node.ref);
+  const action = node.ref ? REF_LABELS[node.ref.kind] : undefined;
+  const surface = cn("block rounded-lg border p-3 shadow-sm", TONE_SURFACE[tone]);
+  return (
+    <div
+      ref={(element) => {
+        register(node.id, element);
+      }}
+      className="group relative z-10 w-56 hover:z-20 focus-within:z-20"
+    >
+      {path ? (
+        <Link
+          to={path}
+          aria-label={`${action}: ${node.label}`}
+          className={cn(
+            surface,
+            "cursor-pointer transition-shadow hover:shadow-md hover:ring-1 hover:ring-ring/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          )}
+        >
+          <NodeBody node={node} />
+        </Link>
+      ) : (
+        <div className={surface}>
+          <NodeBody node={node} />
+        </div>
+      )}
+      <NodeHoverDetail node={node} action={path ? action : undefined} />
     </div>
   );
 }

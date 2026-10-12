@@ -361,8 +361,8 @@ flowchart LR
 
 - **tunnel** (`internal/tunnel`): the shared transport. WebSocket connection, yamux multiplexing and the wire protocol. Both binaries use it.
 - **gateway**: terminates agent sessions, authenticates tokens, registers endpoints and tracks live sessions. Everything else reaches agents through one seam: `store.AgentConn.OpenStream`.
-- **ingress**: public HTTP/HTTPS (by subdomain, custom domain, or `/tunnel/{id}` path), the TCP port range, TLS passthrough by SNI, and an optional clientless `ssh -R` front door. It applies endpoint policy, then opens a stream to the agent.
-- **control plane**: REST API, auth, orgs, quotas, audit, custom domains and reach-in. See [docs/api.md](docs/api.md).
+- **ingress**: public HTTP/HTTPS (by subdomain, custom domain, or `/tunnel/{id}` path), the TCP port range, TLS passthrough by SNI, and an optional clientless `ssh -R` entry point. It applies endpoint policy, then opens a stream to the agent.
+- **control plane**: REST API, auth, orgs, quotas, audit, custom domains, reach-in, services that sleep when idle ([docs/services.md](docs/services.md)), Cloudflare public access ([docs/cloudflare.md](docs/cloudflare.md)) and the network topology. See [docs/api.md](docs/api.md).
 - **store**: `DataStore` holds durable data (Postgres, or SQLite for dev). `ConnectionStore` holds live sessions (in memory, or Redis for clusters).
 
 ## How it scales
@@ -422,7 +422,7 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `TCP_ENABLED` / `TCP_BIND_HOST` / `TCP_PORT_MIN` / `TCP_PORT_MAX` | `true` / `127.0.0.1` / `10000` / `10100` | public TCP ports |
 | `TLS_ENABLED`, `TLS_CERT_FILE` / `TLS_KEY_FILE`, `ACME_ENABLED` / `ACME_EMAIL` / `ACME_CACHE_DIR`, `SELF_SIGNED_TLS` | | HTTPS ingress |
 | `TLS_PASSTHROUGH_ENABLED` / `TLS_PASSTHROUGH_ADDR` | `false` / `127.0.0.1:8444` | SNI passthrough for `tls` endpoints |
-| `SSH_ENABLED` / `SSH_ADDR` / `SSH_HOST_KEY_FILE` | `false` / `127.0.0.1:2222` | clientless `ssh -R` front door |
+| `SSH_ENABLED` / `SSH_ADDR` / `SSH_HOST_KEY_FILE` | `false` / `127.0.0.1:2222` | clientless `ssh -R` entry point |
 | `REACHIN_ENABLED` | `false` | reach-in API |
 | `TRUSTED_PROXIES` | empty | IPs/CIDRs whose `X-Forwarded-For` is trusted |
 | `ALLOWED_ORIGINS` | empty | extra origins allowed to send cookie-authenticated writes (for example the Vite dev server `http://localhost:5173`) |
@@ -434,6 +434,11 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `PROXY_ALLOW_LOOPBACK` | `false` | let `method=proxy` endpoints target the server's loopback |
 | `PROXY_ALLOW_PRIVATE` | `false` | let `method=proxy` endpoints target private/internal ranges and cluster-local names |
 | `PROXY_ALLOWED_CIDRS` | empty | comma-separated CIDRs `method=proxy` may reach even when private targets are otherwise denied |
+| `HEALTH_INTERVAL` / `HEALTH_TIMEOUT` | `15s` / `3s` | endpoint health probe interval and per-target dial timeout |
+| `SECRET_KEY_FILE` | `mishmesh-secret.key` next to the SQLite file, else in the working directory | AES-256 key that seals stored Cloudflare tokens; created on first start (mode 0600) |
+| `HOST_COMMANDS` | `true` in `invite` mode, else `false` | allow services that run commands on the server host (`exec`, Compose `file`); see [docs/services.md](docs/services.md) |
+| `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker Engine address for `docker` and `compose` services |
+| `CLOUDFLARED_BIN` | `cloudflared` | binary run for a Cloudflare connection with `connector: managed`; see [docs/cloudflare.md](docs/cloudflare.md) |
 | `CLUSTER_ENABLED`, `NODE_ID`, `RELAY_ADDR`, `RELAY_ADVERTISE`, `CLUSTER_SECRET` | | [cluster mode](#how-it-scales) |
 | `LOG_LEVEL` | `info` | |
 
@@ -441,7 +446,7 @@ Server CLI: `mishmesh-server [serve]`, `mishmesh-server token create --org NAME 
 
 ## Operations: backup and upgrade
 
-- **What to back up.** Postgres is the only durable state: orgs, users, agents, token hashes, endpoints, domains, quotas and the audit log. Back it up with your usual Postgres tooling (`pg_dump -Fc`, managed-database snapshots, or WAL archiving). Redis holds only live routing and rate-limit state, which agents rebuild by reconnecting, so it needs no backup. Also keep the ACME cache directory (single-pod ACME) or your wildcard certificate Secret, and the secrets you configured (`API_AUTH_TOKEN`, `CLUSTER_SECRET`, `ENDPOINT_OIDC_KEY`, Google OIDC credentials).
+- **What to back up.** Postgres holds the durable state: orgs, users, agents, token hashes, endpoints, domains, quotas, services, Cloudflare connections and the audit log. Back it up with your usual Postgres tooling (`pg_dump -Fc`, managed-database snapshots, or WAL archiving). Redis holds only live routing and rate-limit state, which agents rebuild by reconnecting, so it needs no backup. Also keep the ACME cache directory (single-pod ACME) or your wildcard certificate Secret, and the secrets you configured (`API_AUTH_TOKEN`, `CLUSTER_SECRET`, `ENDPOINT_OIDC_KEY`, Google OIDC credentials). Back up the `SECRET_KEY_FILE` with the database: without it the stored Cloudflare tokens cannot be decrypted.
 - **Upgrades.** The schema migrates forward automatically when the server starts. An advisory lock serializes it, so a rolling upgrade of many pods is safe. Take a database backup first. Downgrading after a migration is not supported, so restore that backup instead. Upgrade the server before the agents. Agents reconnect with backoff during a rollout and need no action.
 - **Version.** `mishmesh-server version` and `mishmesh-agent version` print the release tag.
 

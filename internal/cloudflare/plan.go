@@ -34,7 +34,7 @@ func isCatchAll(r IngressRule) bool {
 	return r.Hostname() == "" && r.Path() == ""
 }
 
-func planIngress(rules []IngressRule, origin string, desired []string, prune bool) ingressPlan {
+func planIngress(rules []IngressRule, origin string, desired []string, protected map[string]string, prune bool) ingressPlan {
 	originKey := normalizeService(origin)
 	plan := ingressPlan{
 		present:   map[string]bool{},
@@ -76,7 +76,8 @@ func planIngress(rules []IngressRule, origin string, desired []string, prune boo
 	out := make([]IngressRule, 0, len(body)+len(desired)+1)
 	for _, r := range body {
 		h := normalizeHost(r.Hostname())
-		if prune && h != "" && !desiredSet[h] && normalizeService(r.Service()) == originKey {
+		_, isProtected := protected[h]
+		if prune && h != "" && !desiredSet[h] && !isProtected && normalizeService(r.Service()) == originKey {
 			plan.removed[h] = true
 			plan.changed = true
 			continue

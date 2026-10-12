@@ -12,51 +12,51 @@ import (
 )
 
 type ServiceWaker interface {
-	VisibleTo(orgID, name string) bool
-	ServiceState(name string) (string, bool)
-	EnsureRunning(ctx context.Context, name, readyAddr string) error
-	StartAsync(name, readyAddr string)
-	Acquire(name string) func()
+	VisibleTo(orgID, id string) bool
+	ServiceState(id string) (name, state string, ok bool)
+	EnsureRunning(ctx context.Context, id, readyAddr string) error
+	StartAsync(id, readyAddr string)
+	Acquire(id string) func()
 }
 
 const wakingRetrySeconds = "2"
 
 func (i *Ingress) wakeService(w http.ResponseWriter, r *http.Request, ep *store.Endpoint) (release func(), proceed bool) {
-	name := endpointService(ep)
-	if i.services == nil || name == "" {
+	id := endpointServiceID(ep)
+	if i.services == nil || id == "" {
 		return func() {}, true
 	}
-	state, known := i.services.ServiceState(name)
-	if !known || !i.services.VisibleTo(ep.OrgID, name) {
+	name, state, known := i.services.ServiceState(id)
+	if !known || !i.services.VisibleTo(ep.OrgID, id) {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		i.recordCode(http.StatusServiceUnavailable)
-		i.log.Warn("endpoint references unknown service", "endpoint_id", ep.ID, "service", name)
+		i.log.Warn("endpoint references unknown service", "endpoint_id", ep.ID, "service_id", id)
 		return nil, false
 	}
 	if state != services.StateRunning {
 		ready := readyAddr(ep)
 		if wantsWakingPage(r) {
-			i.services.StartAsync(name, ready)
+			i.services.StartAsync(id, ready)
 			writeWakingPage(w, name)
 			i.recordCode(http.StatusServiceUnavailable)
 			return nil, false
 		}
-		if err := i.services.EnsureRunning(r.Context(), name, ready); err != nil {
+		if err := i.services.EnsureRunning(r.Context(), id, ready); err != nil {
 			w.Header().Set("Retry-After", wakingRetrySeconds)
 			http.Error(w, "service is not available yet, retry shortly", http.StatusServiceUnavailable)
 			i.recordCode(http.StatusServiceUnavailable)
-			i.log.Warn("service wake failed", "endpoint_id", ep.ID, "service", name, "err", err)
+			i.log.Warn("service wake failed", "endpoint_id", ep.ID, "service", name, "service_id", id, "err", err)
 			return nil, false
 		}
 	}
-	return i.services.Acquire(name), true
+	return i.services.Acquire(id), true
 }
 
-func endpointService(ep *store.Endpoint) string {
+func endpointServiceID(ep *store.Endpoint) string {
 	if ep == nil || ep.Policy == nil {
 		return ""
 	}
-	return ep.Policy.Service
+	return ep.Policy.ServiceID
 }
 
 func readyAddr(ep *store.Endpoint) string {

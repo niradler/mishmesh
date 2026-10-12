@@ -63,18 +63,13 @@ func freeAddr(t *testing.T) string {
 
 func newTestSupervisor(t *testing.T, exitImmediately bool) (*Supervisor, string) {
 	t.Helper()
-	dir := t.TempDir()
-	tokenFile := filepath.Join(dir, "token")
-	if err := os.WriteFile(tokenFile, []byte("  secret-token-value\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(dir, "out")
+	out := filepath.Join(t.TempDir(), "out")
 	t.Setenv(helperEnv, "1")
 	t.Setenv(helperOutEnv, out)
 	if exitImmediately {
 		t.Setenv(helperExitEnv, "1")
 	}
-	sup := NewSupervisor(SupervisorConfig{Bin: os.Args[0], TokenFile: tokenFile, MetricsAddr: freeAddr(t)}, nil)
+	sup := NewSupervisor(SupervisorConfig{Bin: os.Args[0], Token: "  secret-token-value\n", MetricsAddr: freeAddr(t)}, nil)
 	return sup, out
 }
 
@@ -139,8 +134,8 @@ func TestSupervisorRestartsWithBackoff(t *testing.T) {
 	<-done
 }
 
-func TestSupervisorMissingTokenFile(t *testing.T) {
-	sup := NewSupervisor(SupervisorConfig{Bin: os.Args[0], TokenFile: filepath.Join(t.TempDir(), "missing"), MetricsAddr: freeAddr(t)}, nil)
+func TestSupervisorEmptyToken(t *testing.T) {
+	sup := NewSupervisor(SupervisorConfig{Bin: os.Args[0], Token: " ", MetricsAddr: freeAddr(t)}, nil)
 	sup.minBackoff = time.Millisecond
 	sup.maxBackoff = 5 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
@@ -150,7 +145,7 @@ func TestSupervisorMissingTokenFile(t *testing.T) {
 		defer close(done)
 		sup.Run(ctx)
 	}()
-	waitFor(t, func() bool { return strings.Contains(sup.Status().LastExit, "token file") })
+	waitFor(t, func() bool { return strings.Contains(sup.Status().LastExit, "token is empty") })
 	if sup.Status().Running {
 		t.Fatal("must not run without a token")
 	}
@@ -158,12 +153,11 @@ func TestSupervisorMissingTokenFile(t *testing.T) {
 	<-done
 }
 
-func TestFrontDoorStatusIncludesSupervisor(t *testing.T) {
+func TestPublisherStatusIncludesSupervisor(t *testing.T) {
 	f := newFakeCF(t)
-	cfg := f.testClientConfig()
-	cfg.Cloudflared = &SupervisorConfig{Bin: "cloudflared", TokenFile: "t", MetricsAddr: "127.0.0.1:1"}
-	fd := New(cfg, &staticSource{}, nil)
-	st := fd.Status()
+	p, _ := newTestPublisher(t, f, f.testClientConfig())
+	p.supervisor = NewSupervisor(SupervisorConfig{Bin: "cloudflared", Token: "t", MetricsAddr: "127.0.0.1:1"}, nil)
+	st := p.Status()
 	if st.Supervisor == nil || st.Supervisor.Running {
 		t.Fatalf("supervisor status = %+v", st.Supervisor)
 	}

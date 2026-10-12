@@ -10,12 +10,12 @@ import (
 )
 
 const (
-	nodeFrontDoor = "frontdoor"
-	nodeHostname  = "hostname"
-	nodeEndpoint  = "endpoint"
-	nodeTarget    = "target"
-	nodeService   = "service"
-	nodeAgent     = "agent"
+	nodeTunnel   = "tunnel"
+	nodeHostname = "hostname"
+	nodeEndpoint = "endpoint"
+	nodeTarget   = "target"
+	nodeService  = "service"
+	nodeAgent    = "agent"
 
 	edgeRoutes  = "routes"
 	edgeServes  = "serves"
@@ -25,11 +25,17 @@ const (
 )
 
 type topologyNode struct {
-	ID     string `json:"id"`
-	Kind   string `json:"kind"`
-	Label  string `json:"label"`
-	State  string `json:"state"`
-	Detail string `json:"detail,omitempty"`
+	ID     string       `json:"id"`
+	Kind   string       `json:"kind"`
+	Label  string       `json:"label"`
+	State  string       `json:"state"`
+	Detail string       `json:"detail,omitempty"`
+	Ref    *topologyRef `json:"ref,omitempty"`
+}
+
+type topologyRef struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id,omitempty"`
 }
 
 type topologyEdge struct {
@@ -64,6 +70,11 @@ func (b *topologyBuilder) node(n topologyNode) {
 	}
 	b.index[n.ID] = len(b.nodes)
 	b.nodes = append(b.nodes, n)
+}
+
+func (b *topologyBuilder) has(id string) bool {
+	_, ok := b.index[id]
+	return ok
 }
 
 func (b *topologyBuilder) edge(from, to, kind string) {
@@ -109,52 +120,70 @@ func (a *API) topologyHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
+	svcs, err := a.data.ListServices(r.Context(), orgID)
+	if a.handleErr(w, err) {
+		return
+	}
 	agentNames := make(map[string]string, len(agents))
 	for _, ag := range agents {
 		agentNames[ag.ID] = ag.Name
 	}
-	b := newTopologyBuilder()
-	fd, err := a.frontDoorStatus(r.Context(), orgID)
-	if a.handleErr(w, err) {
-		return
+	serviceNames := make(map[string]string, len(svcs))
+	for _, svc := range svcs {
+		serviceNames[svc.ID] = svc.Name
 	}
-	hosts := a.addFrontDoor(b, fd)
+	b := newTopologyBuilder()
+	hosts := addTunnel(b, a.cloudflareStatus(orgID))
 	for _, ep := range eps {
-		a.addEndpoint(b, ep, hosts, agentNames)
+		a.addEndpoint(b, ep, hosts, agentNames, serviceNames)
 	}
 	writeJSON(w, http.StatusOK, b.result())
 }
 
-func frontDoorNodeID() string { return nodeFrontDoor + ":" + store.FrontDoorCloudflare }
+const tunnelNodeID = nodeTunnel + ":cloudflare"
 
-func (a *API) addFrontDoor(b *topologyBuilder, fd cloudflare.Status) map[string]cloudflare.HostStatus {
-	hosts := make(map[string]cloudflare.HostStatus, len(fd.Hostnames))
-	if !fd.Enabled {
+func addTunnel(b *topologyBuilder, st cloudflare.Status) map[string]cloudflare.HostStatus {
+	hosts := make(map[string]cloudflare.HostStatus, len(st.Hostnames))
+	if st.Level == cloudflare.LevelNone {
 		return hosts
 	}
-	state, detail := health.StateUnknown, fd.LastError
-	label := "Cloudflare"
-	if fd.Tunnel != nil {
-		label = "Cloudflare tunnel " + fd.Tunnel.Name
-		state = tunnelState(fd.Tunnel.Status)
+	state, detail := health.StateUnknown, st.LastError
+	label := "Cloudflare tunnel"
+	if st.Tunnel != nil {
+		if st.Tunnel.Name != "" {
+			label = "Cloudflare tunnel " + st.Tunnel.Name
+		}
+		state = tunnelState(st.Tunnel.Status)
 	}
-	if fd.LastError != "" {
+	if st.LastError != "" && state == health.StateUp {
 		state = health.StateDegraded
 	}
-	b.node(topologyNode{ID: frontDoorNodeID(), Kind: nodeFrontDoor, Label: label, State: state, Detail: detail})
-	for _, h := range fd.Hostnames {
+	b.node(topologyNode{ID: tunnelNodeID, Kind: nodeTunnel, Label: label, State: state, Detail: detail, Ref: &topologyRef{Kind: "cloudflare"}})
+	for _, h := range st.Hostnames {
 		hosts[h.Host] = h
+		if h.State == cloudflare.StateUnclaimed {
+			id := nodeHostname + ":" + h.Host
+			ref := &topologyRef{Kind: "cloudflare"}
+			if h.EndpointID != "" {
+				ref = &topologyRef{Kind: "endpoint", ID: h.EndpointID}
+			}
+			b.node(topologyNode{ID: id, Kind: nodeHostname, Label: h.Host, State: health.StateUnknown, Detail: h.Detail, Ref: ref})
+			b.edge(tunnelNodeID, id, edgeRoutes)
+			if h.EndpointID != "" {
+				b.edge(id, nodeEndpoint+":"+h.EndpointID, edgeServes)
+			}
+		}
 	}
 	return hosts
 }
 
 func tunnelState(s string) string {
 	switch s {
-	case "healthy":
+	case cloudflare.TunnelHealthy:
 		return health.StateUp
 	case "degraded":
 		return health.StateDegraded
-	case "down", "inactive":
+	case cloudflare.TunnelDown, "inactive":
 		return health.StateDown
 	}
 	return health.StateUnknown
@@ -162,15 +191,15 @@ func tunnelState(s string) string {
 
 func hostState(h cloudflare.HostStatus) string {
 	switch h.State {
-	case "synced":
+	case cloudflare.StatePublished:
 		return health.StateUp
-	case "pending":
+	case cloudflare.StatePending, cloudflare.StateUnclaimed:
 		return health.StateUnknown
 	}
 	return health.StateDegraded
 }
 
-func (a *API) addEndpoint(b *topologyBuilder, ep *store.Endpoint, hosts map[string]cloudflare.HostStatus, agentNames map[string]string) {
+func (a *API) addEndpoint(b *topologyBuilder, ep *store.Endpoint, hosts map[string]cloudflare.HostStatus, agentNames, serviceNames map[string]string) {
 	epID := nodeEndpoint + ":" + ep.ID
 	h := a.healthOf(ep.ID)
 	state, detail := health.StateUnknown, ""
@@ -181,17 +210,19 @@ func (a *API) addEndpoint(b *topologyBuilder, ep *store.Endpoint, hosts map[stri
 	if label == "" {
 		label = ep.ID
 	}
-	b.node(topologyNode{ID: epID, Kind: nodeEndpoint, Label: label, State: state, Detail: detail})
+	b.node(topologyNode{ID: epID, Kind: nodeEndpoint, Label: label, State: state, Detail: detail, Ref: &topologyRef{Kind: "endpoint", ID: ep.ID}})
 
-	if ep.Policy != nil && ep.Policy.FrontDoor == store.FrontDoorCloudflare && ep.Domain != "" {
+	if endpointPublic(ep) {
 		hostID := nodeHostname + ":" + ep.Domain
 		hs, ok := hosts[ep.Domain]
-		hState, hDetail := health.StateUnknown, "not synced yet"
+		hState, hDetail := health.StateUnknown, "not published yet"
 		if ok {
 			hState, hDetail = hostState(hs), hs.Detail
 		}
-		b.node(topologyNode{ID: hostID, Kind: nodeHostname, Label: ep.Domain, State: hState, Detail: hDetail})
-		b.edge(frontDoorNodeID(), hostID, edgeRoutes)
+		b.node(topologyNode{ID: hostID, Kind: nodeHostname, Label: ep.Domain, State: hState, Detail: hDetail, Ref: &topologyRef{Kind: "cloudflare"}})
+		if b.has(tunnelNodeID) {
+			b.edge(tunnelNodeID, hostID, edgeRoutes)
+		}
 		b.edge(hostID, epID, edgeServes)
 	}
 
@@ -209,12 +240,12 @@ func (a *API) addEndpoint(b *topologyBuilder, ep *store.Endpoint, hosts map[stri
 		if name == "" {
 			name = ep.AgentID
 		}
-		b.node(topologyNode{ID: agID, Kind: nodeAgent, Label: name, State: agState})
+		b.node(topologyNode{ID: agID, Kind: nodeAgent, Label: name, State: agState, Ref: &topologyRef{Kind: "agent", ID: ep.AgentID}})
 		b.edge(epID, agID, edgeTunnels)
 	}
 
-	if name := endpointService(ep); name != "" {
-		a.addService(b, name, epID)
+	if id := endpointServiceID(ep); id != "" {
+		a.addService(b, id, serviceNames[id], epID)
 	}
 }
 
@@ -248,16 +279,19 @@ func (a *API) addTargets(b *topologyBuilder, ep *store.Endpoint, epID string, h 
 	}
 }
 
-func (a *API) addService(b *topologyBuilder, name, epID string) {
-	id := nodeService + ":" + name
-	state, detail := health.StateUnknown, "not configured on this server"
+func (a *API) addService(b *topologyBuilder, id, name, epID string) {
+	nodeID := nodeService + ":" + id
+	state, detail := health.StateUnknown, "service is not loaded"
+	if name == "" {
+		name, detail = id, "service no longer exists"
+	}
 	if a.services != nil {
-		if st, ok := a.services.Status(name); ok {
+		if st, ok := a.services.Status(id); ok {
 			state, detail = serviceNodeState(st.State), st.LastError
 		}
 	}
-	b.node(topologyNode{ID: id, Kind: nodeService, Label: name, State: state, Detail: detail})
-	b.edge(epID, id, edgeWakes)
+	b.node(topologyNode{ID: nodeID, Kind: nodeService, Label: name, State: state, Detail: detail, Ref: &topologyRef{Kind: "service", ID: id}})
+	b.edge(epID, nodeID, edgeWakes)
 }
 
 func serviceNodeState(s string) string {

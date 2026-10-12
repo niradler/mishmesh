@@ -2,6 +2,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
   type UseQueryOptions,
 } from "@tanstack/react-query";
 import { api, apiRequest } from "./client";
@@ -9,11 +10,14 @@ import type {
   Agent,
   AuditEvent,
   AuthConfig,
+  Capabilities,
+  Cloudflare,
+  CloudflareDetectRequest,
+  CloudflareDetectResult,
+  CloudflareInput,
   CreateAgentResponse,
   CreateEndpointRequest,
   Endpoint,
-  EndpointPolicy,
-  FrontDoors,
   Me,
   Invite,
   Member,
@@ -25,9 +29,11 @@ import type {
   Role,
   RotateTokenResponse,
   Service,
+  ServiceInput,
   Status,
   Token,
   Topology,
+  UpdateEndpointRequest,
 } from "./types";
 
 export const qk = {
@@ -45,9 +51,20 @@ export const qk = {
   audit: (orgId?: string) => ["audit", orgId] as const,
   policy: (orgId?: string) => ["policy", orgId] as const,
   services: (orgId?: string) => ["services", orgId] as const,
-  frontDoors: (orgId?: string) => ["frontdoors", orgId] as const,
+  service: (id: string) => ["services", "detail", id] as const,
+  capabilities: (orgId?: string) => ["capabilities", orgId] as const,
+  cloudflare: (orgId?: string) => ["cloudflare", orgId] as const,
   topology: (orgId?: string) => ["topology", orgId] as const,
 };
+
+const NETWORK_QUERY_ROOTS = ["endpoints", "services", "topology", "cloudflare", "status"] as const;
+
+function invalidateNetwork(qc: QueryClient) {
+  for (const root of NETWORK_QUERY_ROOTS) {
+    qc.invalidateQueries({ queryKey: [root] });
+  }
+  qc.invalidateQueries({ queryKey: ["agents"] });
+}
 
 const HEALTH_REFETCH_MS = 5000;
 const NETWORK_REFETCH_MS = 10000;
@@ -210,44 +227,33 @@ export function useEndpoint(id: string) {
   });
 }
 
-export function useCreateEndpoint(orgId?: string) {
+export function useCreateEndpoint() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (vars: CreateEndpointRequest) => api.post<Endpoint>("/endpoints", vars),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.endpoints(orgId) });
-      qc.invalidateQueries({ queryKey: qk.status(orgId) });
-      qc.invalidateQueries({ queryKey: qk.topology(orgId) });
-      qc.invalidateQueries({ queryKey: qk.services(orgId) });
-      qc.invalidateQueries({ queryKey: qk.frontDoors(orgId) });
-    },
+    onSuccess: () => invalidateNetwork(qc),
   });
 }
 
-export function useUpdateEndpointPolicy(orgId?: string) {
+export function useUpdateEndpoint() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { id: string; policy: EndpointPolicy }) =>
-      api.patch<Endpoint>(`/endpoints/${vars.id}`, { policy: vars.policy }),
+    mutationFn: ({ id, ...body }: UpdateEndpointRequest & { id: string }) =>
+      api.patch<Endpoint>(`/endpoints/${id}`, body),
     onSuccess: (ep) => {
-      qc.invalidateQueries({ queryKey: qk.endpoint(ep.id) });
-      qc.invalidateQueries({ queryKey: qk.endpoints(orgId) });
-      qc.invalidateQueries({ queryKey: qk.topology(orgId) });
-      qc.invalidateQueries({ queryKey: qk.services(orgId) });
-      qc.invalidateQueries({ queryKey: qk.frontDoors(orgId) });
+      qc.setQueryData(qk.endpoint(ep.id), ep);
+      invalidateNetwork(qc);
     },
   });
 }
 
-export function useDeleteEndpoint(orgId?: string) {
+export function useDeleteEndpoint() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.del<void>(`/endpoints/${id}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.endpoints(orgId) });
-      qc.invalidateQueries({ queryKey: qk.topology(orgId) });
-      qc.invalidateQueries({ queryKey: qk.services(orgId) });
-      qc.invalidateQueries({ queryKey: qk.frontDoors(orgId) });
+    onSuccess: (_data, id) => {
+      qc.removeQueries({ queryKey: qk.endpoint(id) });
+      invalidateNetwork(qc);
     },
   });
 }
@@ -332,43 +338,105 @@ export function useServices(orgId?: string) {
   });
 }
 
-function useServiceAction(action: "start" | "stop", orgId?: string) {
+export function useService(id: string) {
+  return useQuery({
+    queryKey: qk.service(id),
+    queryFn: () => api.get<Service>(`/services/${encodeURIComponent(id)}`),
+    enabled: !!id,
+    refetchInterval: HEALTH_REFETCH_MS,
+  });
+}
+
+export function useCreateService() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) => api.post<Service>(`/services/${encodeURIComponent(name)}/${action}`),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: qk.services(orgId) });
-      qc.invalidateQueries({ queryKey: qk.endpoints(orgId) });
-      qc.invalidateQueries({ queryKey: qk.topology(orgId) });
+    mutationFn: (input: ServiceInput) => api.post<Service>("/services", input),
+    onSuccess: () => invalidateNetwork(qc),
+  });
+}
+
+export function useUpdateService() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: ServiceInput }) =>
+      api.put<Service>(`/services/${encodeURIComponent(id)}`, input),
+    onSuccess: (service) => {
+      qc.setQueryData(qk.service(service.id), service);
+      invalidateNetwork(qc);
     },
   });
 }
 
-export function useStartService(orgId?: string) {
-  return useServiceAction("start", orgId);
+export function useDeleteService() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<void>(`/services/${encodeURIComponent(id)}`),
+    onSuccess: (_data, id) => {
+      qc.removeQueries({ queryKey: qk.service(id) });
+      invalidateNetwork(qc);
+    },
+  });
 }
 
-export function useStopService(orgId?: string) {
-  return useServiceAction("stop", orgId);
+function useServiceAction(action: "start" | "stop") {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<Service>(`/services/${encodeURIComponent(id)}/${action}`),
+    onSettled: () => invalidateNetwork(qc),
+  });
 }
 
-export function useFrontDoors(orgId?: string) {
+export function useStartService() {
+  return useServiceAction("start");
+}
+
+export function useStopService() {
+  return useServiceAction("stop");
+}
+
+export function useCapabilities(orgId?: string) {
   return useQuery({
-    queryKey: qk.frontDoors(orgId),
-    queryFn: () => api.get<FrontDoors>("/frontdoors", { org_id: orgId }),
+    queryKey: qk.capabilities(orgId),
+    queryFn: () => api.get<Capabilities>("/capabilities", { org_id: orgId }),
+    staleTime: 60 * 1000,
+  });
+}
+
+export function useCloudflare(orgId?: string) {
+  return useQuery({
+    queryKey: qk.cloudflare(orgId),
+    queryFn: () => api.get<Cloudflare>("/cloudflare", { org_id: orgId }),
     refetchInterval: NETWORK_REFETCH_MS,
   });
 }
 
-export function useSyncCloudflare(orgId?: string) {
+export function useSaveCloudflare() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post<FrontDoors>("/frontdoors/cloudflare/sync"),
-    onSuccess: (data) => {
-      qc.setQueryData(qk.frontDoors(orgId), data);
-      qc.invalidateQueries({ queryKey: qk.topology(orgId) });
-    },
-    onError: () => qc.invalidateQueries({ queryKey: qk.frontDoors(orgId) }),
+    mutationFn: (input: CloudflareInput) => api.put<Cloudflare>("/cloudflare", input),
+    onSuccess: () => invalidateNetwork(qc),
+  });
+}
+
+export function useDeleteCloudflare() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.del<void>("/cloudflare"),
+    onSuccess: () => invalidateNetwork(qc),
+  });
+}
+
+export function useDetectCloudflare() {
+  return useMutation({
+    mutationFn: (body: CloudflareDetectRequest) => api.post<CloudflareDetectResult>("/cloudflare/detect", body),
+  });
+}
+
+export function useSyncCloudflare() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<Cloudflare>("/cloudflare/sync"),
+    onSettled: () => invalidateNetwork(qc),
   });
 }
 

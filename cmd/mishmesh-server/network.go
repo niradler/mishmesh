@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 
 	"github.com/mishmesh/mishmesh/internal/cloudflare"
@@ -13,87 +12,90 @@ import (
 	"github.com/mishmesh/mishmesh/internal/controlplane"
 	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/ingress"
+	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/services"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
 type networkControl struct {
-	services  *services.Manager
-	prober    *health.Prober
-	frontDoor *cloudflare.FrontDoor
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	log          *slog.Logger
+	services     *services.Manager
+	prober       *health.Prober
+	hub          *cloudflare.Hub
+	box          *secrets.Box
+	hostCommands bool
+	cp           *controlplane.API
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
 }
 
 func newNetworkControl(cfg config.Server, data store.DataStore, conns store.ConnectionStore, guard *proxy.Guard, connector *proxy.Connector, log *slog.Logger) (*networkControl, error) {
-	nc := &networkControl{}
-	if cfg.ServicesFile != "" {
-		svcCfg, err := services.LoadFile(cfg.ServicesFile)
-		if err != nil {
-			return nil, fmt.Errorf("services file: %w", err)
-		}
-		if nc.services, err = services.NewManager(svcCfg, services.Options{Log: log, OnChange: nc.serviceChanged}); err != nil {
-			return nil, fmt.Errorf("services: %w", err)
-		}
-		log.Info("services enabled", "file", cfg.ServicesFile, "count", len(nc.services.Names()))
-	}
-
-	probeOpts := health.Options{Data: data, Conns: conns, Guard: guard, Interval: cfg.HealthInterval, Timeout: cfg.HealthTimeout, Log: log}
-	if nc.services != nil {
-		probeOpts.Services = nc.services
-	}
-	nc.prober = health.NewProber(probeOpts)
-	connector.SetTargetHealth(nc.prober)
-
-	fdCfg, err := cloudflare.ConfigFromEnv(os.Getenv, cfg.IngressAddr)
+	nc := &networkControl{log: log, hostCommands: cfg.HostCommands}
+	keyFile := cfg.EffectiveSecretKeyFile()
+	key, err := secrets.LoadOrCreateKey(keyFile)
 	if err != nil {
-		return nil, fmt.Errorf("cloudflare front door: %w", err)
+		return nil, err
 	}
-	if fdCfg != nil {
-		nc.frontDoor = cloudflare.New(fdCfg, cloudflare.StoreSource{Data: data, Orgs: fdCfg.Orgs}, log)
-		log.Info("cloudflare front door enabled", "orgs", fdCfg.Orgs)
+	if nc.box, err = secrets.New(key); err != nil {
+		return nil, err
 	}
+	nc.services = services.NewManager(services.Options{
+		Log:          log,
+		OnChange:     nc.serviceChanged,
+		DockerHost:   cfg.DockerHost,
+		HostCommands: cfg.HostCommands,
+	})
+	nc.prober = health.NewProber(health.Options{
+		Data: data, Conns: conns, Guard: guard, Services: nc.services,
+		Interval: cfg.HealthInterval, Timeout: cfg.HealthTimeout, Log: log,
+	})
+	connector.SetTargetHealth(nc.prober)
+	nc.hub = cloudflare.NewHub(cloudflare.HubOptions{
+		Data:           data,
+		Box:            nc.box,
+		Log:            log,
+		Origin:         cloudflare.OriginForListenAddr(cfg.IngressAddr),
+		CloudflaredBin: cfg.CloudflaredBin,
+	})
+	log.Info("network control ready", "secret_key_file", keyFile, "host_commands", cfg.HostCommands)
 	return nc, nil
 }
 
 func (nc *networkControl) serviceChanged() {
-	if nc.prober != nil {
-		nc.prober.Trigger()
-	}
+	nc.prober.Trigger()
 }
 
 func (nc *networkControl) attach(cp *controlplane.API) {
+	nc.cp = cp
 	cp.SetHealth(nc.prober)
-	if nc.services != nil {
-		cp.SetServices(nc.services)
-	}
-	if nc.frontDoor != nil {
-		cp.SetFrontDoor(nc.frontDoor)
-	}
+	cp.SetServices(nc.services)
+	cp.SetCloudflare(nc.hub, nc.box)
+	cp.SetHostCommands(nc.hostCommands)
 }
 
 func (nc *networkControl) ingressWaker() ingress.ServiceWaker {
-	if nc.services == nil {
-		return nil
-	}
 	return nc.services
 }
 
-func (nc *networkControl) start() {
+func (nc *networkControl) start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	nc.cancel = cancel
-	if nc.services == nil {
-		nc.spawn(ctx, nc.prober.Run)
-	} else {
-		nc.spawn(ctx, func(ctx context.Context) {
-			nc.services.Refresh(ctx)
-			nc.prober.Run(ctx)
-		})
-		nc.spawn(ctx, nc.services.Run)
+	if nc.cp != nil {
+		if err := nc.cp.LoadServices(ctx); err != nil {
+			cancel()
+			return fmt.Errorf("load services: %w", err)
+		}
 	}
-	if nc.frontDoor != nil {
-		nc.spawn(ctx, nc.frontDoor.Run)
+	if err := nc.hub.Start(ctx); err != nil {
+		cancel()
+		return fmt.Errorf("cloudflare: %w", err)
 	}
+	nc.spawn(ctx, func(ctx context.Context) {
+		nc.services.Refresh(ctx)
+		nc.prober.Run(ctx)
+	})
+	nc.spawn(ctx, nc.services.Run)
+	return nil
 }
 
 func (nc *networkControl) spawn(ctx context.Context, run func(context.Context)) {
@@ -109,6 +111,7 @@ func (nc *networkControl) stop(ctx context.Context, log *slog.Logger) {
 		return
 	}
 	nc.cancel()
+	nc.hub.Close()
 	done := make(chan struct{})
 	go func() {
 		nc.wg.Wait()

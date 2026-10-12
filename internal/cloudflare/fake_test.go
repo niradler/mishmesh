@@ -36,6 +36,7 @@ type fakeCF struct {
 	limit429      int
 	nextID        int
 	server        *httptest.Server
+	local         *fakeLocal
 }
 
 func newFakeCF(t *testing.T) *fakeCF {
@@ -44,6 +45,7 @@ func newFakeCF(t *testing.T) *fakeCF {
 		zones:         []Zone{{ID: "z-example", Name: "example.com"}, {ID: "z-lab", Name: "lab.example.com"}},
 		records:       map[string][]DNSRecord{},
 		failPostHosts: map[string]bool{},
+		local:         newFakeLocal(t),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /accounts/{acct}/cfd_tunnel/{id}", f.handleTunnel)
@@ -237,31 +239,116 @@ func (f *fakeCF) ingressServices() []string {
 
 func (f *fakeCF) testClientConfig() *Config {
 	return &Config{
+		OrgID:        "org_default",
+		Name:         "lab",
 		APIToken:     testToken,
 		AccountID:    testAccount,
 		TunnelID:     testTunnel,
 		Origin:       testOrigin,
+		MetricsAddr:  f.local.addr(),
 		SyncInterval: DefaultSyncInterval,
-		Orgs:         []string{"org_default"},
 		BaseURL:      f.server.URL,
 	}
 }
 
 type staticSource struct {
-	hosts []Hostname
-	err   error
+	hosts   []Hostname
+	private []Hostname
+	err     error
 }
 
-func (s *staticSource) DesiredHostnames(_ context.Context) ([]Hostname, error) {
-	return s.hosts, s.err
+func (s *staticSource) Hostnames(_ context.Context, _ string) ([]Hostname, error) {
+	out := make([]Hostname, 0, len(s.hosts)+len(s.private))
+	for _, h := range s.hosts {
+		h.Public = true
+		out = append(out, h)
+	}
+	return append(out, s.private...), s.err
 }
 
-func newTestFrontDoor(t *testing.T, f *fakeCF, cfg *Config, hosts ...Hostname) (*FrontDoor, *staticSource) {
+func newTestPublisher(t *testing.T, f *fakeCF, cfg *Config, hosts ...Hostname) (*Publisher, *staticSource) {
 	t.Helper()
 	src := &staticSource{hosts: hosts}
-	fd := New(cfg, src, nil)
-	fd.client.backoff = 0
-	return fd, src
+	p, err := NewPublisher(cfg, src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.client != nil {
+		p.client.backoff = 0
+	}
+	return p, src
+}
+
+type fakeLocal struct {
+	mu      sync.Mutex
+	ingress string
+	ready   int
+	down    bool
+	server  *httptest.Server
+}
+
+const testMetrics = `# HELP build_info Build and version information
+build_info{goversion="go1.26",revision="x",type="",version="2026.10.0"} 1
+cloudflared_tunnel_ha_connections 2
+cloudflared_tunnel_server_locations{connection_id="0",edge_location="tlv01"} 1
+cloudflared_tunnel_server_locations{connection_id="1",edge_location="fra07"} 0
+cloudflared_tunnel_server_locations{connection_id="1",edge_location="fra19"} 1
+`
+
+func newFakeLocal(t *testing.T) *fakeLocal {
+	t.Helper()
+	l := &fakeLocal{ready: 2, ingress: `[{"service":"http_status:404"}]`}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, _ *http.Request) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		code := http.StatusOK
+		if l.ready == 0 {
+			code = http.StatusServiceUnavailable
+		}
+		w.WriteHeader(code)
+		fmt.Fprintf(w, `{"status":%d,"readyConnections":%d,"connectorId":"conn-1"}`, code, l.ready)
+	})
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, testMetrics)
+	})
+	mux.HandleFunc("GET /config", func(w http.ResponseWriter, _ *http.Request) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		fmt.Fprintf(w, `{"version":3,"config":{"ingress":%s,"warp-routing":{"enabled":false}}}`, l.ingress)
+	})
+	l.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
+		down := l.down
+		l.mu.Unlock()
+		if down {
+			hj, ok := w.(http.Hijacker)
+			if ok {
+				c, _, _ := hj.Hijack()
+				c.Close()
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	}))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	l.server.Listener = ln
+	l.server.Start()
+	t.Cleanup(l.server.Close)
+	return l
+}
+
+func (l *fakeLocal) addr() string {
+	return strings.TrimPrefix(l.server.URL, "http://")
+}
+
+func (l *fakeLocal) setIngress(raw string) {
+	l.mu.Lock()
+	l.ingress = raw
+	l.mu.Unlock()
 }
 
 func hostEntryFor(t *testing.T, st Status, host string) HostStatus {

@@ -36,10 +36,10 @@ func (f *fakeWaker) VisibleTo(orgID, _ string) bool {
 	return orgID == "org_1" && !f.hiddenOrg
 }
 
-func (f *fakeWaker) ServiceState(string) (string, bool) {
+func (f *fakeWaker) ServiceState(id string) (string, string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.state, f.known
+	return id, f.state, f.known
 }
 
 func (f *fakeWaker) EnsureRunning(_ context.Context, name, ready string) error {
@@ -93,7 +93,7 @@ func newWakeIngress(t *testing.T, pol *store.EndpointPolicy, waker ServiceWaker)
 }
 
 func TestWakeServiceIngress(t *testing.T) {
-	pol := &store.EndpointPolicy{Service: "svc", ProxyTargets: []string{"127.0.0.1:9000"}}
+	pol := &store.EndpointPolicy{ServiceID: "svc", ProxyTargets: []string{"127.0.0.1:9000"}}
 	tests := []struct {
 		name         string
 		state        string
@@ -151,7 +151,7 @@ func TestWakeServiceIngress(t *testing.T) {
 
 func TestWakingPageHeaders(t *testing.T) {
 	waker := &fakeWaker{state: services.StateSleeping, known: true}
-	ing := newWakeIngress(t, &store.EndpointPolicy{Service: "svc"}, waker)
+	ing := newWakeIngress(t, &store.EndpointPolicy{ServiceID: "svc"}, waker)
 	r := httptest.NewRequest(http.MethodGet, "http://app.example.com/", nil)
 	r.Header.Set("Accept", "text/html")
 	w := httptest.NewRecorder()
@@ -167,7 +167,7 @@ func TestWakingPageHeaders(t *testing.T) {
 func TestUnauthenticatedRequestNeverWakes(t *testing.T) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
 	waker := &fakeWaker{state: services.StateSleeping, known: true}
-	ing := newWakeIngress(t, &store.EndpointPolicy{Service: "svc", BasicAuthUser: "u", BasicAuthHash: string(hash)}, waker)
+	ing := newWakeIngress(t, &store.EndpointPolicy{ServiceID: "svc", BasicAuthUser: "u", BasicAuthHash: string(hash)}, waker)
 	r := httptest.NewRequest(http.MethodGet, "http://app.example.com/", nil)
 	r.Header.Set("Accept", "text/html")
 	w := httptest.NewRecorder()

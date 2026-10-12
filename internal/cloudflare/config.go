@@ -1,123 +1,127 @@
 package cloudflare
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	DefaultBaseURL      = "https://api.cloudflare.com/client/v4"
-	DefaultSyncInterval = 5 * time.Minute
-	DefaultOrg          = "org_default"
-	DefaultMetricsAddr  = "127.0.0.1:20241"
-	DefaultCloudflared  = "cloudflared"
+	DefaultBaseURL         = "https://api.cloudflare.com/client/v4"
+	DefaultSyncInterval    = 5 * time.Minute
+	DefaultImportedRefresh = time.Minute
+	DefaultMetricsAddr     = "127.0.0.1:20241"
+	DefaultCloudflared     = "cloudflared"
+
+	LevelNone     = "none"
+	LevelImported = "imported"
+	LevelManaged  = "managed"
+
+	ConnectorExternal = "external"
+	ConnectorManaged  = "managed"
+
+	TokenKindTunnel = "tunnel_token"
+	TokenKindAPI    = "api_token"
 )
 
 type Config struct {
-	APIToken     string
-	AccountID    string
-	TunnelID     string
-	Origin       string
-	AccessAppID  string
-	Prune        bool
-	SyncInterval time.Duration
-	Orgs         []string
-	BaseURL      string
-	Cloudflared  *SupervisorConfig
+	OrgID          string
+	Name           string
+	AccountID      string
+	TunnelID       string
+	TunnelToken    string
+	APIToken       string
+	AccessAppID    string
+	Origin         string
+	Connector      string
+	MetricsAddr    string
+	Prune          bool
+	SyncInterval   time.Duration
+	BaseURL        string
+	CloudflaredBin string
+}
+
+func (c *Config) Level() string {
+	if c == nil {
+		return LevelNone
+	}
+	if c.APIToken != "" {
+		return LevelManaged
+	}
+	return LevelImported
+}
+
+func (c *Config) refreshInterval() time.Duration {
+	if c.SyncInterval > 0 {
+		return c.SyncInterval
+	}
+	if c.Level() == LevelManaged {
+		return DefaultSyncInterval
+	}
+	return DefaultImportedRefresh
 }
 
 type SupervisorConfig struct {
 	Bin         string
-	TokenFile   string
+	Token       string
 	MetricsAddr string
 }
 
-func ConfigFromEnv(getenv func(string) string, ingressAddr string) (*Config, error) {
-	token := strings.TrimSpace(getenv("MISHMESH_CLOUDFLARE_API_TOKEN"))
-	if token == "" {
-		return nil, nil
-	}
-	cfg := &Config{
-		APIToken:     token,
-		AccountID:    strings.TrimSpace(getenv("MISHMESH_CLOUDFLARE_ACCOUNT_ID")),
-		TunnelID:     strings.TrimSpace(getenv("MISHMESH_CLOUDFLARE_TUNNEL_ID")),
-		Origin:       strings.TrimSpace(getenv("MISHMESH_CLOUDFLARE_ORIGIN")),
-		AccessAppID:  strings.TrimSpace(getenv("MISHMESH_CLOUDFLARE_ACCESS_APP_ID")),
-		BaseURL:      strings.TrimSpace(getenv("MISHMESH_CLOUDFLARE_BASE_URL")),
-		SyncInterval: DefaultSyncInterval,
-	}
-	if cfg.AccountID == "" {
-		return nil, errors.New("MISHMESH_CLOUDFLARE_ACCOUNT_ID is required when MISHMESH_CLOUDFLARE_API_TOKEN is set")
-	}
-	if cfg.TunnelID == "" {
-		return nil, errors.New("MISHMESH_CLOUDFLARE_TUNNEL_ID is required when MISHMESH_CLOUDFLARE_API_TOKEN is set")
-	}
-	if cfg.Origin == "" {
-		addr := strings.TrimSpace(ingressAddr)
-		if addr == "" {
-			return nil, errors.New("MISHMESH_CLOUDFLARE_ORIGIN is required when the ingress address is empty")
-		}
-		cfg.Origin = "http://" + addr
-	}
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = DefaultBaseURL
-	}
-	if v := strings.TrimSpace(getenv("MISHMESH_CLOUDFLARE_PRUNE")); v != "" {
-		prune, err := strconv.ParseBool(v)
-		if err != nil {
-			return nil, fmt.Errorf("MISHMESH_CLOUDFLARE_PRUNE: %w", err)
-		}
-		cfg.Prune = prune
-	}
-	if v := strings.TrimSpace(getenv("MISHMESH_CLOUDFLARE_SYNC_INTERVAL")); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return nil, fmt.Errorf("MISHMESH_CLOUDFLARE_SYNC_INTERVAL: %w", err)
-		}
-		if d <= 0 {
-			return nil, errors.New("MISHMESH_CLOUDFLARE_SYNC_INTERVAL must be positive")
-		}
-		cfg.SyncInterval = d
-	}
-	cfg.Orgs = splitList(getenv("MISHMESH_CLOUDFLARE_ORGS"))
-	if len(cfg.Orgs) == 0 {
-		cfg.Orgs = []string{DefaultOrg}
-	}
-	if v := strings.TrimSpace(getenv("MISHMESH_CLOUDFLARED_RUN")); v != "" {
-		run, err := strconv.ParseBool(v)
-		if err != nil {
-			return nil, fmt.Errorf("MISHMESH_CLOUDFLARED_RUN: %w", err)
-		}
-		if run {
-			sup := &SupervisorConfig{
-				Bin:         strings.TrimSpace(getenv("MISHMESH_CLOUDFLARED_BIN")),
-				TokenFile:   strings.TrimSpace(getenv("MISHMESH_CLOUDFLARED_TOKEN_FILE")),
-				MetricsAddr: strings.TrimSpace(getenv("MISHMESH_CLOUDFLARED_METRICS_ADDR")),
-			}
-			if sup.Bin == "" {
-				sup.Bin = DefaultCloudflared
-			}
-			if sup.MetricsAddr == "" {
-				sup.MetricsAddr = DefaultMetricsAddr
-			}
-			if sup.TokenFile == "" {
-				return nil, errors.New("MISHMESH_CLOUDFLARED_TOKEN_FILE is required when MISHMESH_CLOUDFLARED_RUN is true")
-			}
-			cfg.Cloudflared = sup
-		}
-	}
-	return cfg, nil
+type TunnelToken struct {
+	AccountID string `json:"a"`
+	TunnelID  string `json:"t"`
+	Secret    string `json:"s"`
 }
 
-func splitList(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
+func DecodeTunnelToken(raw string) (TunnelToken, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return TunnelToken{}, errors.New("tunnel token is empty")
+	}
+	var decoded []byte
+	var err error
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if decoded, err = enc.DecodeString(raw); err == nil {
+			break
 		}
 	}
-	return out
+	if err != nil {
+		return TunnelToken{}, errors.New("tunnel token is not valid base64")
+	}
+	var tok TunnelToken
+	if err := json.Unmarshal(decoded, &tok); err != nil {
+		return TunnelToken{}, errors.New("tunnel token does not contain tunnel credentials")
+	}
+	if tok.AccountID == "" || tok.TunnelID == "" || tok.Secret == "" {
+		return TunnelToken{}, errors.New("tunnel token is missing the account, tunnel or secret")
+	}
+	return tok, nil
+}
+
+func CheckLoopback(addr string) error {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return fmt.Errorf("metrics address must be host:port: %w", err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("metrics address port %q is invalid", port)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("metrics address %s must be a loopback address such as %s", addr, DefaultMetricsAddr)
+	}
+	return nil
+}
+
+func TokenContext(orgID, kind string) string {
+	return "cloudflare:" + orgID + ":" + kind
 }

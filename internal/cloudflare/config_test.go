@@ -2,123 +2,96 @@ package cloudflare
 
 import (
 	"context"
+	"encoding/base64"
 	"reflect"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-func envFrom(m map[string]string) func(string) string {
-	return func(k string) string { return m[k] }
+func encodeToken(t *testing.T, raw string) string {
+	t.Helper()
+	return base64.StdEncoding.EncodeToString([]byte(raw))
 }
 
-func TestConfigFromEnv(t *testing.T) {
-	base := map[string]string{
-		"MISHMESH_CLOUDFLARE_API_TOKEN":  "tok",
-		"MISHMESH_CLOUDFLARE_ACCOUNT_ID": "acct",
-		"MISHMESH_CLOUDFLARE_TUNNEL_ID":  "tun",
-	}
-	with := func(extra map[string]string) map[string]string {
-		out := map[string]string{}
-		for k, v := range base {
-			out[k] = v
-		}
-		for k, v := range extra {
-			out[k] = v
-		}
-		return out
-	}
+func TestDecodeTunnelToken(t *testing.T) {
+	good := `{"a":"acct1","t":"tun1","s":"c2VjcmV0"}`
 	tests := []struct {
 		name    string
-		env     map[string]string
-		ingress string
-		wantNil bool
-		wantErr bool
-		check   func(t *testing.T, c *Config)
+		raw     string
+		want    TunnelToken
+		wantErr string
 	}{
-		{name: "disabled without token", env: map[string]string{}, ingress: "127.0.0.1:8080", wantNil: true},
-		{name: "missing account", env: map[string]string{"MISHMESH_CLOUDFLARE_API_TOKEN": "tok", "MISHMESH_CLOUDFLARE_TUNNEL_ID": "t"}, ingress: "127.0.0.1:8080", wantErr: true},
-		{name: "missing tunnel", env: map[string]string{"MISHMESH_CLOUDFLARE_API_TOKEN": "tok", "MISHMESH_CLOUDFLARE_ACCOUNT_ID": "a"}, ingress: "127.0.0.1:8080", wantErr: true},
-		{
-			name: "defaults", env: base, ingress: "127.0.0.1:8080",
-			check: func(t *testing.T, c *Config) {
-				if c.Origin != "http://127.0.0.1:8080" || c.Prune || c.SyncInterval != 5*time.Minute ||
-					!reflect.DeepEqual(c.Orgs, []string{"org_default"}) || c.BaseURL != DefaultBaseURL || c.Cloudflared != nil || c.AccessAppID != "" {
-					t.Fatalf("unexpected defaults: %+v", c)
-				}
-			},
-		},
-		{
-			name: "explicit values", ingress: "127.0.0.1:8080",
-			env: with(map[string]string{
-				"MISHMESH_CLOUDFLARE_ORIGIN": "https://ingress.internal", "MISHMESH_CLOUDFLARE_ACCESS_APP_ID": "app",
-				"MISHMESH_CLOUDFLARE_PRUNE": "true", "MISHMESH_CLOUDFLARE_SYNC_INTERVAL": "30s", "MISHMESH_CLOUDFLARE_ORGS": "org_a, org_b,",
-			}),
-			check: func(t *testing.T, c *Config) {
-				if c.Origin != "https://ingress.internal" || c.AccessAppID != "app" || !c.Prune || c.SyncInterval != 30*time.Second ||
-					!reflect.DeepEqual(c.Orgs, []string{"org_a", "org_b"}) {
-					t.Fatalf("unexpected config: %+v", c)
-				}
-			},
-		},
-		{name: "bad prune", env: with(map[string]string{"MISHMESH_CLOUDFLARE_PRUNE": "maybe"}), ingress: "127.0.0.1:8080", wantErr: true},
-		{name: "bad interval", env: with(map[string]string{"MISHMESH_CLOUDFLARE_SYNC_INTERVAL": "soon"}), ingress: "127.0.0.1:8080", wantErr: true},
-		{name: "non-positive interval", env: with(map[string]string{"MISHMESH_CLOUDFLARE_SYNC_INTERVAL": "0s"}), ingress: "127.0.0.1:8080", wantErr: true},
-		{name: "no origin and no ingress", env: base, ingress: "", wantErr: true},
-		{name: "explicit origin without ingress", env: with(map[string]string{"MISHMESH_CLOUDFLARE_ORIGIN": "http://x:1"}), ingress: "", check: func(t *testing.T, c *Config) {
-			if c.Origin != "http://x:1" {
-				t.Fatalf("origin = %s", c.Origin)
-			}
-		}},
-		{
-			name: "supervised", ingress: "127.0.0.1:8080",
-			env: with(map[string]string{"MISHMESH_CLOUDFLARED_RUN": "true", "MISHMESH_CLOUDFLARED_TOKEN_FILE": "/run/secrets/cf"}),
-			check: func(t *testing.T, c *Config) {
-				want := &SupervisorConfig{Bin: "cloudflared", TokenFile: "/run/secrets/cf", MetricsAddr: "127.0.0.1:20241"}
-				if !reflect.DeepEqual(c.Cloudflared, want) {
-					t.Fatalf("supervisor = %+v", c.Cloudflared)
-				}
-			},
-		},
-		{
-			name: "supervised custom", ingress: "127.0.0.1:8080",
-			env: with(map[string]string{"MISHMESH_CLOUDFLARED_RUN": "1", "MISHMESH_CLOUDFLARED_BIN": "/opt/cf", "MISHMESH_CLOUDFLARED_TOKEN_FILE": "tok", "MISHMESH_CLOUDFLARED_METRICS_ADDR": "127.0.0.1:9999"}),
-			check: func(t *testing.T, c *Config) {
-				want := &SupervisorConfig{Bin: "/opt/cf", TokenFile: "tok", MetricsAddr: "127.0.0.1:9999"}
-				if !reflect.DeepEqual(c.Cloudflared, want) {
-					t.Fatalf("supervisor = %+v", c.Cloudflared)
-				}
-			},
-		},
-		{name: "supervised without token file", env: with(map[string]string{"MISHMESH_CLOUDFLARED_RUN": "true"}), ingress: "127.0.0.1:8080", wantErr: true},
-		{name: "supervised false ignores token file", env: with(map[string]string{"MISHMESH_CLOUDFLARED_RUN": "false"}), ingress: "127.0.0.1:8080", check: func(t *testing.T, c *Config) {
-			if c.Cloudflared != nil {
-				t.Fatalf("supervisor configured")
-			}
-		}},
-		{name: "bad run flag", env: with(map[string]string{"MISHMESH_CLOUDFLARED_RUN": "x"}), ingress: "127.0.0.1:8080", wantErr: true},
+		{"standard", encodeToken(t, good), TunnelToken{AccountID: "acct1", TunnelID: "tun1", Secret: "c2VjcmV0"}, ""},
+		{"surrounding whitespace", "  " + encodeToken(t, good) + "\n", TunnelToken{AccountID: "acct1", TunnelID: "tun1", Secret: "c2VjcmV0"}, ""},
+		{"unpadded", strings.TrimRight(encodeToken(t, good), "="), TunnelToken{AccountID: "acct1", TunnelID: "tun1", Secret: "c2VjcmV0"}, ""},
+		{"empty", "", TunnelToken{}, "empty"},
+		{"not base64", "%%%", TunnelToken{}, "base64"},
+		{"not json", encodeToken(t, "hello"), TunnelToken{}, "credentials"},
+		{"missing secret", encodeToken(t, `{"a":"acct1","t":"tun1"}`), TunnelToken{}, "missing"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := ConfigFromEnv(envFrom(tt.env), tt.ingress)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got %+v", cfg)
+			got, err := DecodeTunnelToken(tt.raw)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			if err != nil || got != tt.want {
+				t.Fatalf("got %+v, %v", got, err)
 			}
-			if tt.wantNil {
-				if cfg != nil {
-					t.Fatalf("expected nil config, got %+v", cfg)
-				}
-				return
-			}
-			tt.check(t, cfg)
 		})
+	}
+}
+
+func TestCheckLoopback(t *testing.T) {
+	tests := []struct {
+		addr string
+		ok   bool
+	}{
+		{"127.0.0.1:20241", true},
+		{"localhost:20241", true},
+		{"[::1]:20241", true},
+		{"127.0.0.2:9", true},
+		{"10.0.0.1:20241", false},
+		{"0.0.0.0:20241", false},
+		{"example.com:20241", false},
+		{"169.254.169.254:80", false},
+		{"127.0.0.1", false},
+		{"127.0.0.1:0", false},
+		{"127.0.0.1:99999", false},
+		{"127.0.0.1:http", false},
+	}
+	for _, tt := range tests {
+		if err := CheckLoopback(tt.addr); (err == nil) != tt.ok {
+			t.Errorf("CheckLoopback(%q) = %v, want ok=%v", tt.addr, err, tt.ok)
+		}
+	}
+}
+
+func TestParseMetrics(t *testing.T) {
+	locations, version := parseMetrics(testMetrics)
+	if !reflect.DeepEqual(locations, []string{"fra19", "tlv01"}) || version != "2026.10.0" {
+		t.Fatalf("locations=%v version=%q", locations, version)
+	}
+	if locations, version := parseMetrics("garbage\n{}\n"); len(locations) != 0 || version != "" {
+		t.Fatalf("garbage parsed as %v %q", locations, version)
+	}
+}
+
+func TestConfigLevel(t *testing.T) {
+	var none *Config
+	if none.Level() != LevelNone {
+		t.Fatal("nil config must be level none")
+	}
+	if (&Config{}).Level() != LevelImported || (&Config{APIToken: "x"}).Level() != LevelManaged {
+		t.Fatal("level derived from API token")
+	}
+	if (&Config{}).refreshInterval() != DefaultImportedRefresh || (&Config{APIToken: "x"}).refreshInterval() != DefaultSyncInterval {
+		t.Fatal("refresh interval defaults")
 	}
 }
 
@@ -133,7 +106,7 @@ func (s stubStore) ListEndpointsByOrg(_ context.Context, org string) ([]*store.E
 }
 
 func TestStoreSource(t *testing.T) {
-	cf := &store.EndpointPolicy{FrontDoor: store.FrontDoorCloudflare}
+	cf := &store.EndpointPolicy{PublicAccess: store.PublicAccessCloudflare}
 	data := stubStore{byOrg: map[string][]*store.Endpoint{
 		"org_default": {
 			{ID: "e1", OrgID: "org_default", Domain: "B.Example.com.", Policy: cf},
@@ -143,17 +116,16 @@ func TestStoreSource(t *testing.T) {
 			{ID: "e5", OrgID: "org_default", Domain: "a.example.com", Policy: cf},
 		},
 		"org_other": {{ID: "e6", OrgID: "org_other", Domain: "z.example.com", Policy: cf}},
-		"org_skip":  {{ID: "e7", OrgID: "org_skip", Domain: "skip.example.com", Policy: cf}},
 	}}
-	src := StoreSource{Data: data, Orgs: []string{"org_default", "org_other"}}
-	got, err := src.DesiredHostnames(context.Background())
+	got, err := StoreSource{Data: data}.Hostnames(context.Background(), "org_default")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []Hostname{
-		{Host: "a.example.com", EndpointID: "e5", OrgID: "org_default"},
-		{Host: "b.example.com", EndpointID: "e1", OrgID: "org_default"},
-		{Host: "z.example.com", EndpointID: "e6", OrgID: "org_other"},
+		{Host: "a.example.com", EndpointID: "e5", OrgID: "org_default", Public: true},
+		{Host: "b.example.com", EndpointID: "e1", OrgID: "org_default", Public: true},
+		{Host: "c.example.com", EndpointID: "e3", OrgID: "org_default"},
+		{Host: "d.example.com", EndpointID: "e4", OrgID: "org_default"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
@@ -161,8 +133,8 @@ func TestStoreSource(t *testing.T) {
 }
 
 func TestStoreSourceError(t *testing.T) {
-	src := StoreSource{Data: stubStore{err: context.DeadlineExceeded}, Orgs: []string{"org_default"}}
-	if _, err := src.DesiredHostnames(context.Background()); err == nil {
+	src := StoreSource{Data: stubStore{err: context.DeadlineExceeded}}
+	if _, err := src.Hostnames(context.Background(), "org_default"); err == nil {
 		t.Fatal("expected error")
 	}
 }

@@ -13,34 +13,37 @@ type Hostname struct {
 	Host       string
 	EndpointID string
 	OrgID      string
+	Public     bool
 }
 
 type Source interface {
-	DesiredHostnames(ctx context.Context) ([]Hostname, error)
+	Hostnames(ctx context.Context, orgID string) ([]Hostname, error)
+}
+
+type EndpointLister interface {
+	ListEndpointsByOrg(ctx context.Context, orgID string) ([]*store.Endpoint, error)
 }
 
 type StoreSource struct {
-	Data store.DataStore
-	Orgs []string
+	Data EndpointLister
 }
 
-func (s StoreSource) DesiredHostnames(ctx context.Context) ([]Hostname, error) {
+func (s StoreSource) Hostnames(ctx context.Context, orgID string) ([]Hostname, error) {
+	endpoints, err := s.Data.ListEndpointsByOrg(ctx, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("list endpoints for org %s: %w", orgID, err)
+	}
 	var out []Hostname
-	for _, org := range s.Orgs {
-		endpoints, err := s.Data.ListEndpointsByOrg(ctx, org)
-		if err != nil {
-			return nil, fmt.Errorf("list endpoints for org %s: %w", org, err)
+	for _, ep := range endpoints {
+		if ep == nil {
+			continue
 		}
-		for _, ep := range endpoints {
-			if ep == nil || ep.Policy == nil || ep.Policy.FrontDoor != store.FrontDoorCloudflare {
-				continue
-			}
-			host := normalizeHost(ep.Domain)
-			if host == "" {
-				continue
-			}
-			out = append(out, Hostname{Host: host, EndpointID: ep.ID, OrgID: ep.OrgID})
+		host := normalizeHost(ep.Domain)
+		if host == "" {
+			continue
 		}
+		public := ep.Policy != nil && ep.Policy.PublicAccess == store.PublicAccessCloudflare
+		out = append(out, Hostname{Host: host, EndpointID: ep.ID, OrgID: ep.OrgID, Public: public})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Host < out[j].Host })
 	return out, nil

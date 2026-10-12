@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"slices"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -38,13 +38,17 @@ const (
 var ErrUnknownService = errors.New("unknown service")
 
 type Options struct {
-	Log      *slog.Logger
-	Now      func() time.Time
-	Dial     func(ctx context.Context, network, addr string) (net.Conn, error)
-	OnChange func()
+	Log          *slog.Logger
+	Now          func() time.Time
+	Dial         func(ctx context.Context, network, addr string) (net.Conn, error)
+	OnChange     func()
+	DockerHost   string
+	HostCommands bool
 }
 
 type Status struct {
+	ID           string        `json:"id"`
+	OrgID        string        `json:"org_id"`
 	Name         string        `json:"name"`
 	Driver       string        `json:"driver"`
 	State        string        `json:"state"`
@@ -76,8 +80,7 @@ type ensureCall struct {
 }
 
 type service struct {
-	name   string
-	cfg    ServiceConfig
+	def    Definition
 	driver Driver
 
 	state        string
@@ -90,13 +93,15 @@ type service struct {
 	inflight     *ensureCall
 }
 
+type driverFactory func(Definition) (Driver, error)
+
 type Manager struct {
-	cfg      *Config
-	log      *slog.Logger
-	now      func() time.Time
-	dial     func(ctx context.Context, network, addr string) (net.Conn, error)
-	onChange func()
-	started  time.Time
+	log       *slog.Logger
+	now       func() time.Time
+	dial      func(ctx context.Context, network, addr string) (net.Conn, error)
+	onChange  func()
+	started   time.Time
+	newDriver driverFactory
 
 	pollInterval time.Duration
 	readyHold    time.Duration
@@ -105,34 +110,66 @@ type Manager struct {
 	services map[string]*service
 }
 
-func NewManager(cfg *Config, opts Options) (*Manager, error) {
-	drivers := make(map[string]Driver, len(cfg.Services))
-	var client *dockerClient
-	for name, svc := range cfg.Services {
-		switch svc.Driver {
-		case DriverDocker, DriverCompose:
-			if client == nil {
-				var err error
-				client, err = newDockerClient(cfg.Docker.Host)
-				if err != nil {
-					return nil, fmt.Errorf("service %q: %w", name, err)
-				}
-			}
-			if svc.Driver == DriverDocker {
-				drivers[name] = newDockerDriver(client, *svc.Docker)
-			} else {
-				drivers[name] = newComposeDriver(client, *svc.Compose)
-			}
-		case DriverExec:
-			drivers[name] = newExecDriver(*svc.Exec)
-		default:
-			return nil, fmt.Errorf("service %q: unknown driver %q", name, svc.Driver)
-		}
+func NewManager(opts Options) *Manager {
+	host := opts.DockerHost
+	if host == "" {
+		host = DefaultDockerHost
 	}
-	return newManager(cfg, opts, drivers), nil
+	drivers := &hostDrivers{dockerHost: host, hostCommands: opts.HostCommands}
+	return newManager(opts, drivers.build)
 }
 
-func newManager(cfg *Config, opts Options, drivers map[string]Driver) *Manager {
+type hostDrivers struct {
+	dockerHost   string
+	hostCommands bool
+
+	mu     sync.Mutex
+	client *dockerClient
+}
+
+func (h *hostDrivers) docker() (*dockerClient, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.client == nil {
+		client, err := newDockerClient(h.dockerHost)
+		if err != nil {
+			return nil, err
+		}
+		h.client = client
+	}
+	return h.client, nil
+}
+
+func (h *hostDrivers) build(def Definition) (Driver, error) {
+	if UsesHostCommands(def.Driver, def.Spec) && !h.hostCommands {
+		return nil, ErrHostCommandsOff
+	}
+	switch def.Driver {
+	case DriverDocker:
+		client, err := h.docker()
+		if err != nil {
+			return nil, err
+		}
+		return newDockerDriver(client, *def.Spec.Docker), nil
+	case DriverCompose:
+		client, err := h.docker()
+		if err != nil {
+			return nil, err
+		}
+		return newComposeDriver(client, *def.Spec.Compose), nil
+	case DriverExec:
+		return newExecDriver(*def.Spec.Exec), nil
+	}
+	return nil, fmt.Errorf("unknown driver %q", def.Driver)
+}
+
+type brokenDriver struct{ err error }
+
+func (d brokenDriver) Start(context.Context) error          { return d.err }
+func (d brokenDriver) Stop(context.Context) error           { return d.err }
+func (d brokenDriver) State(context.Context) (State, error) { return Unknown, d.err }
+
+func newManager(opts Options, factory driverFactory) *Manager {
 	log := opts.Log
 	if log == nil {
 		log = slog.Default()
@@ -146,87 +183,132 @@ func newManager(cfg *Config, opts Options, drivers map[string]Driver) *Manager {
 		dialer := &net.Dialer{}
 		dial = dialer.DialContext
 	}
-	m := &Manager{
-		cfg:          cfg,
+	return &Manager{
 		log:          log.With("component", "services"),
 		now:          now,
 		dial:         dial,
 		onChange:     opts.OnChange,
 		started:      now(),
+		newDriver:    factory,
 		pollInterval: readyPollInterval,
 		readyHold:    readyHoldWindow,
-		services:     make(map[string]*service, len(cfg.Services)),
+		services:     make(map[string]*service),
 	}
-	for name, svcCfg := range cfg.Services {
-		m.services[name] = &service{
-			name:      name,
-			cfg:       svcCfg,
-			driver:    drivers[name],
-			state:     StateUnknown,
-			updatedAt: m.started,
+}
+
+func (m *Manager) Apply(defs []Definition) {
+	next := make(map[string]*service, len(defs))
+	m.mu.Lock()
+	changed := len(defs) != len(m.services)
+	for _, def := range defs {
+		existing := m.services[def.ID]
+		if existing != nil && reflect.DeepEqual(existing.def, def) {
+			next[def.ID] = existing
+			continue
 		}
+		changed = true
+		driver, err := m.newDriver(def)
+		if existing == nil {
+			existing = &service{state: StateUnknown, updatedAt: m.now()}
+		}
+		existing.def = def
+		existing.driver = driver
+		if err != nil {
+			err = fmt.Errorf("service %q: %w", def.Name, err)
+			existing.driver = brokenDriver{err: err}
+			existing.state = StateError
+			existing.lastError = err.Error()
+			existing.updatedAt = m.now()
+		} else if existing.state == StateError {
+			existing.state = StateUnknown
+			existing.lastError = ""
+		}
+		next[def.ID] = existing
 	}
-	return m
+	m.services = next
+	m.mu.Unlock()
+	if changed && m.onChange != nil {
+		m.onChange()
+	}
 }
 
-func (m *Manager) Names() []string {
-	names := make([]string, 0, len(m.services))
-	for name := range m.services {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+func (m *Manager) lookup(id string) (*service, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.services[id]
+	return s, ok
 }
 
-func (m *Manager) Has(name string) bool {
-	_, ok := m.services[name]
+func (m *Manager) Has(id string) bool {
+	_, ok := m.lookup(id)
 	return ok
 }
 
-func (m *Manager) VisibleTo(orgID, name string) bool {
-	return m.Has(name) && slices.Contains(m.cfg.Orgs, orgID)
+func (m *Manager) VisibleTo(orgID, id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.services[id]
+	return ok && s.def.OrgID == orgID
 }
 
-func (m *Manager) Status(name string) (Status, bool) {
-	s, ok := m.services[name]
+func (m *Manager) Status(id string) (Status, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.services[id]
 	if !ok {
 		return Status{}, false
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	return s.snapshot(), true
 }
 
 func (m *Manager) List() []Status {
-	names := m.Names()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]Status, 0, len(names))
-	for _, name := range names {
-		out = append(out, m.services[name].snapshot())
+	out := make([]Status, 0, len(m.services))
+	for _, s := range m.ordered() {
+		out = append(out, s.snapshot())
 	}
 	return out
 }
 
-func (m *Manager) ServiceState(name string) (string, bool) {
-	s, ok := m.services[name]
-	if !ok {
-		return "", false
-	}
+func (m *Manager) ServiceState(id string) (name, state string, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return s.state, true
+	s, ok := m.services[id]
+	if !ok {
+		return "", "", false
+	}
+	return s.def.Name, s.state, true
+}
+
+func (m *Manager) ordered() []*service {
+	out := make([]*service, 0, len(m.services))
+	for _, s := range m.services {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].def.OrgID != out[j].def.OrgID {
+			return out[i].def.OrgID < out[j].def.OrgID
+		}
+		if out[i].def.Name != out[j].def.Name {
+			return out[i].def.Name < out[j].def.Name
+		}
+		return out[i].def.ID < out[j].def.ID
+	})
+	return out
 }
 
 func (s *service) snapshot() Status {
 	return Status{
-		Name:         s.name,
-		Driver:       s.cfg.Driver,
+		ID:           s.def.ID,
+		OrgID:        s.def.OrgID,
+		Name:         s.def.Name,
+		Driver:       s.def.Driver,
 		State:        s.state,
 		Active:       s.active,
 		LastActivity: s.lastActivity,
-		IdleTimeout:  s.cfg.IdleTimeout,
-		StartTimeout: s.cfg.StartTimeout,
+		IdleTimeout:  s.def.IdleTimeout,
+		StartTimeout: s.def.StartTimeout,
 		LastError:    s.lastError,
 		StartedBy:    s.startedBy,
 		UpdatedAt:    s.updatedAt,
@@ -242,12 +324,13 @@ func (m *Manager) setState(s *service, state string) {
 	}
 }
 
-func (m *Manager) Acquire(name string) func() {
-	s, ok := m.services[name]
+func (m *Manager) Acquire(id string) func() {
+	m.mu.Lock()
+	s, ok := m.services[id]
 	if !ok {
+		m.mu.Unlock()
 		return func() {}
 	}
-	m.mu.Lock()
 	s.active++
 	s.lastActivity = m.now()
 	m.mu.Unlock()
@@ -262,8 +345,8 @@ func (m *Manager) Acquire(name string) func() {
 	}
 }
 
-func (m *Manager) EnsureRunning(ctx context.Context, name, readyAddr string) error {
-	call, err := m.beginEnsure(name, readyAddr)
+func (m *Manager) EnsureRunning(ctx context.Context, id, readyAddr string) error {
+	call, err := m.beginEnsure(id, readyAddr)
 	if err != nil {
 		return err
 	}
@@ -271,32 +354,33 @@ func (m *Manager) EnsureRunning(ctx context.Context, name, readyAddr string) err
 	case <-call.done:
 		return call.err
 	case <-ctx.Done():
-		return fmt.Errorf("waiting for service %q: %w", name, ctx.Err())
+		return fmt.Errorf("waiting for service %s: %w", id, ctx.Err())
 	}
 }
 
-func (m *Manager) StartAsync(name, readyAddr string) {
-	if _, err := m.beginEnsure(name, readyAddr); err != nil {
-		m.log.Warn("async start rejected", "service", name, "error", err)
+func (m *Manager) StartAsync(id, readyAddr string) {
+	if _, err := m.beginEnsure(id, readyAddr); err != nil {
+		m.log.Warn("async start rejected", "id", id, "error", err)
 	}
 }
 
-func (m *Manager) beginEnsure(name, readyAddr string) (*ensureCall, error) {
-	s, ok := m.services[name]
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrUnknownService, name)
-	}
+func (m *Manager) beginEnsure(id, readyAddr string) (*ensureCall, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	s, ok := m.services[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrUnknownService, id)
+	}
 	if s.inflight != nil {
 		return s.inflight, nil
 	}
 	call := &ensureCall{done: make(chan struct{})}
 	s.inflight = call
+	def, driver := s.def, s.driver
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.StartTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), def.StartTimeout)
 		defer cancel()
-		err := m.ensure(ctx, s, readyAddr)
+		err := m.ensure(ctx, s, def, driver, readyAddr)
 		m.mu.Lock()
 		call.err = err
 		s.inflight = nil
@@ -306,9 +390,9 @@ func (m *Manager) beginEnsure(name, readyAddr string) (*ensureCall, error) {
 	return call, nil
 }
 
-func (m *Manager) readyTarget(s *service, readyAddr string) string {
-	if s.cfg.Ready != nil && s.cfg.Ready.TCP != "" {
-		return s.cfg.Ready.TCP
+func readyTarget(def Definition, readyAddr string) string {
+	if def.Spec.ReadyTCP != "" {
+		return def.Spec.ReadyTCP
 	}
 	return hostPortOf(readyAddr)
 }
@@ -347,10 +431,10 @@ func (m *Manager) probe(ctx context.Context, addr string) error {
 	return fmt.Errorf("%s accepted the connection but closed it, the service is not listening yet: %w", addr, err)
 }
 
-func (m *Manager) ensure(ctx context.Context, s *service, readyAddr string) error {
-	addr := m.readyTarget(s, readyAddr)
+func (m *Manager) ensure(ctx context.Context, s *service, def Definition, driver Driver, readyAddr string) error {
+	addr := readyTarget(def, readyAddr)
 
-	driverState, stateErr := s.driver.State(ctx)
+	driverState, stateErr := driver.State(ctx)
 	if stateErr == nil && addr != "" && (driverState == Running || driverState == Unknown) {
 		if m.probe(ctx, addr) == nil {
 			m.markRunning(s, false)
@@ -366,8 +450,8 @@ func (m *Manager) ensure(ctx context.Context, s *service, readyAddr string) erro
 	m.setState(s, StateStarting)
 	m.mu.Unlock()
 
-	if err := s.driver.Start(ctx); err != nil {
-		return m.failStart(s, fmt.Errorf("start service %q: %w", s.name, err))
+	if err := driver.Start(ctx); err != nil {
+		return m.failStart(s, fmt.Errorf("start service %q: %w", def.Name, err))
 	}
 
 	var lastProbeErr error
@@ -377,7 +461,7 @@ func (m *Manager) ensure(ctx context.Context, s *service, readyAddr string) erro
 		if addr != "" {
 			lastProbeErr = m.probe(ctx, addr)
 		} else {
-			st, err := s.driver.State(ctx)
+			st, err := driver.State(ctx)
 			if err != nil {
 				lastProbeErr = err
 			} else if st == Running {
@@ -392,7 +476,7 @@ func (m *Manager) ensure(ctx context.Context, s *service, readyAddr string) erro
 		}
 		select {
 		case <-ctx.Done():
-			return m.failStart(s, fmt.Errorf("service %q not ready within %s: %w", s.name, s.cfg.StartTimeout, lastProbeErr))
+			return m.failStart(s, fmt.Errorf("service %q not ready within %s: %w", def.Name, def.StartTimeout, lastProbeErr))
 		case <-ticker.C:
 		}
 	}
@@ -416,22 +500,26 @@ func (m *Manager) failStart(s *service, err error) error {
 	m.mu.Lock()
 	m.setState(s, StateError)
 	s.lastError = err.Error()
+	name, id := s.def.Name, s.def.ID
 	m.mu.Unlock()
-	m.log.Warn("service start failed", "service", s.name, "error", err)
+	m.log.Warn("service start failed", "service", name, "id", id, "error", err)
 	return err
 }
 
-func (m *Manager) Stop(ctx context.Context, name string) error {
-	s, ok := m.services[name]
+func (m *Manager) Stop(ctx context.Context, id string) error {
+	s, ok := m.lookup(id)
 	if !ok {
-		return fmt.Errorf("%w: %s", ErrUnknownService, name)
+		return fmt.Errorf("%w: %s", ErrUnknownService, id)
 	}
 	return m.stopService(ctx, s)
 }
 
 func (m *Manager) stopService(ctx context.Context, s *service) error {
-	if err := s.driver.Stop(ctx); err != nil {
-		err = fmt.Errorf("stop service %q: %w", s.name, err)
+	m.mu.Lock()
+	def, driver := s.def, s.driver
+	m.mu.Unlock()
+	if err := driver.Stop(ctx); err != nil {
+		err = fmt.Errorf("stop service %q: %w", def.Name, err)
 		m.mu.Lock()
 		s.lastError = err.Error()
 		s.updatedAt = m.now()
@@ -466,10 +554,16 @@ func (m *Manager) Run(ctx context.Context) {
 }
 
 func (m *Manager) Refresh(ctx context.Context) {
-	for _, name := range m.Names() {
-		s := m.services[name]
+	m.mu.Lock()
+	all := m.ordered()
+	drivers := make([]Driver, len(all))
+	for i, s := range all {
+		drivers[i] = s.driver
+	}
+	m.mu.Unlock()
+	for i, s := range all {
 		callCtx, cancel := context.WithTimeout(ctx, driverCallTimeout)
-		state, err := s.driver.State(callCtx)
+		state, err := drivers[i].State(callCtx)
 		cancel()
 		if ctx.Err() != nil {
 			return
@@ -489,7 +583,9 @@ func (m *Manager) applyDriverState(s *service, driverState State, err error) {
 			s.lastError = err.Error()
 			s.updatedAt = m.now()
 		}
-		m.log.Warn("service state refresh failed", "service", s.name, "error", err)
+		if s.state != StateError {
+			m.log.Warn("service state refresh failed", "service", s.def.Name, "id", s.def.ID, "error", err)
+		}
 		return
 	}
 	switch driverState {
@@ -524,11 +620,14 @@ func (m *Manager) applyDriverState(s *service, driverState State, err error) {
 
 func (m *Manager) stopIdle(ctx context.Context) {
 	now := m.now()
-	var candidates []*service
+	type candidate struct {
+		svc *service
+		def Definition
+	}
+	var candidates []candidate
 	m.mu.Lock()
-	for _, name := range m.Names() {
-		s := m.services[name]
-		if s.cfg.IdleTimeout <= 0 || s.active > 0 || s.inflight != nil {
+	for _, s := range m.ordered() {
+		if s.def.IdleTimeout <= 0 || s.active > 0 || s.inflight != nil {
 			continue
 		}
 		if s.state != StateRunning && s.state != StatePartial {
@@ -538,20 +637,20 @@ func (m *Manager) stopIdle(ctx context.Context) {
 		if reference.IsZero() {
 			reference = m.started
 		}
-		if now.Sub(reference) > s.cfg.IdleTimeout {
-			candidates = append(candidates, s)
+		if now.Sub(reference) > s.def.IdleTimeout {
+			candidates = append(candidates, candidate{svc: s, def: s.def})
 		}
 	}
 	m.mu.Unlock()
 
-	for _, s := range candidates {
+	for _, c := range candidates {
 		callCtx, cancel := context.WithTimeout(ctx, stopTimeout)
-		err := m.stopService(callCtx, s)
+		err := m.stopService(callCtx, c.svc)
 		cancel()
 		if err != nil {
-			m.log.Warn("idle stop failed", "service", s.name, "error", err)
+			m.log.Warn("idle stop failed", "service", c.def.Name, "id", c.def.ID, "error", err)
 			continue
 		}
-		m.log.Info("service stopped after idle timeout", "service", s.name, "idle_timeout", s.cfg.IdleTimeout)
+		m.log.Info("service stopped after idle timeout", "service", c.def.Name, "id", c.def.ID, "idle_timeout", c.def.IdleTimeout)
 	}
 }

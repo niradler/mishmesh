@@ -5,8 +5,8 @@ import "testing"
 func TestDefaultPolicyRoleMatrix(t *testing.T) {
 	az := Default()
 
-	writes := []Action{ActionAgentWrite, ActionEndpointWrite, ActionQuotaWrite, ActionMemberManage, ActionPolicyWrite}
-	reads := []Action{ActionAgentRead, ActionEndpointRead, ActionQuotaRead, ActionMemberRead, ActionAuditRead, ActionStatusRead, ActionPolicyRead}
+	writes := []Action{ActionAgentWrite, ActionEndpointWrite, ActionQuotaWrite, ActionMemberManage, ActionPolicyWrite, ActionServiceWrite, ActionCloudflare}
+	reads := []Action{ActionAgentRead, ActionEndpointRead, ActionQuotaRead, ActionMemberRead, ActionAuditRead, ActionStatusRead, ActionPolicyRead, ActionServiceRead}
 
 	for _, role := range []string{RoleOwner, RoleAdmin} {
 		p := Principal{ID: "u@example.com", Role: role, Org: "org_1"}
@@ -27,6 +27,26 @@ func TestDefaultPolicyRoleMatrix(t *testing.T) {
 		if az.Authorize(member, act) {
 			t.Errorf("member should be denied write %s", act)
 		}
+	}
+}
+
+func TestHostExecIsOwnerOnlyByDefault(t *testing.T) {
+	az := Default()
+	tests := []struct {
+		role string
+		want bool
+	}{
+		{RoleOwner, true},
+		{RoleAdmin, false},
+		{RoleMember, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.role, func(t *testing.T) {
+			got := az.Authorize(Principal{ID: "u", Role: tt.role, Org: "org_1"}, ActionHostExec)
+			if got != tt.want {
+				t.Errorf("host:exec for %s = %v, want %v", tt.role, got, tt.want)
+			}
+		})
 	}
 }
 

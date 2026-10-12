@@ -55,7 +55,7 @@ type EndpointHealth struct {
 }
 
 type ServiceStates interface {
-	ServiceState(name string) (state string, ok bool)
+	ServiceState(id string) (name, state string, ok bool)
 }
 
 type Options struct {
@@ -213,7 +213,7 @@ func (p *Prober) TargetHealthy(endpointID, target string) (bool, bool) {
 func (p *Prober) probe(ctx context.Context, ep *store.Endpoint) EndpointHealth {
 	var service string
 	if ep.Policy != nil {
-		service = ep.Policy.Service
+		service = ep.Policy.ServiceID
 	}
 	var h EndpointHealth
 	if ep.Method == store.MethodProxy {
@@ -252,17 +252,17 @@ func (p *Prober) probeProxy(ctx context.Context, ep *store.Endpoint) EndpointHea
 	}
 	wg.Wait()
 	h := summarize(statuses)
-	if p.services != nil && ep.Policy.Service != "" {
-		applyServiceState(&h, ep.Policy.Service, p.services)
+	if p.services != nil && ep.Policy.ServiceID != "" {
+		applyServiceState(&h, ep.Policy.ServiceID, p.services)
 	}
 	return h
 }
 
-func applyServiceState(h *EndpointHealth, name string, services ServiceStates) {
-	state, ok := services.ServiceState(name)
+func applyServiceState(h *EndpointHealth, id string, services ServiceStates) {
+	name, state, ok := services.ServiceState(id)
 	if !ok {
 		h.State = StateDown
-		h.Detail = fmt.Sprintf("service %s is not configured on this server", name)
+		h.Detail = fmt.Sprintf("service %s is not loaded on this server", id)
 		return
 	}
 	switch state {

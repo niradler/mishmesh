@@ -15,6 +15,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
+	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -39,8 +40,12 @@ type API struct {
 	proxyGuard         *proxy.Guard
 	maxOrgsPerUser     int
 	services           ServiceControl
+	servicesMu         sync.Mutex
 	endpointHealth     HealthSource
-	frontDoor          FrontDoorControl
+	cloudflare         CloudflareControl
+	secretBox          *secrets.Box
+	detectCloudflare   cloudflareDetector
+	hostCommands       bool
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
@@ -201,11 +206,21 @@ func (a *API) routes() []route {
 		{"PATCH /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.patchEndpointHandler)},
 		{"DELETE /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.deleteEndpointHandler)},
 
-		{"GET /api/v1/services", a.require(authz.ActionEndpointRead, a.listServicesHandler)},
-		{"POST /api/v1/services/{name}/start", a.require(authz.ActionEndpointWrite, a.startServiceHandler)},
-		{"POST /api/v1/services/{name}/stop", a.require(authz.ActionEndpointWrite, a.stopServiceHandler)},
-		{"GET /api/v1/frontdoors", a.require(authz.ActionEndpointRead, a.listFrontDoorsHandler)},
-		{"POST /api/v1/frontdoors/cloudflare/sync", a.require(authz.ActionEndpointWrite, a.syncCloudflareHandler)},
+		{"GET /api/v1/capabilities", a.guard(a.capabilitiesHandler)},
+
+		{"GET /api/v1/services", a.require(authz.ActionServiceRead, a.listServicesHandler)},
+		{"POST /api/v1/services", a.require(authz.ActionServiceWrite, a.createServiceHandler)},
+		{"GET /api/v1/services/{id}", a.require(authz.ActionServiceRead, a.getServiceHandler)},
+		{"PUT /api/v1/services/{id}", a.require(authz.ActionServiceWrite, a.updateServiceHandler)},
+		{"DELETE /api/v1/services/{id}", a.require(authz.ActionServiceWrite, a.deleteServiceHandler)},
+		{"POST /api/v1/services/{id}/start", a.require(authz.ActionServiceWrite, a.startServiceHandler)},
+		{"POST /api/v1/services/{id}/stop", a.require(authz.ActionServiceWrite, a.stopServiceHandler)},
+
+		{"GET /api/v1/cloudflare", a.require(authz.ActionEndpointRead, a.getCloudflareHandler)},
+		{"PUT /api/v1/cloudflare", a.require(authz.ActionCloudflare, a.putCloudflareHandler)},
+		{"DELETE /api/v1/cloudflare", a.require(authz.ActionCloudflare, a.deleteCloudflareHandler)},
+		{"POST /api/v1/cloudflare/detect", a.require(authz.ActionCloudflare, a.detectCloudflareHandler)},
+		{"POST /api/v1/cloudflare/sync", a.require(authz.ActionCloudflare, a.syncCloudflareHandler)},
 		{"GET /api/v1/topology", a.require(authz.ActionEndpointRead, a.topologyHandler)},
 
 		{"GET /api/v1/quota", a.require(authz.ActionQuotaRead, a.getQuotaHandler)},

@@ -184,7 +184,7 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := a.validateNetworkPolicy(orgID, domain, pol); err != nil {
+	if err := a.validateNetworkPolicy(r.Context(), orgID, domain, pol, false); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -267,6 +267,7 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Port != nil {
 		ep.Port = *req.Port
 	}
+	wasPublic := endpointPublic(ep)
 	if req.Policy != nil {
 		pol, err := buildPolicy(req.Policy, ep.Policy)
 		if err != nil {
@@ -279,7 +280,7 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		ep.Policy = pol
 	}
-	if err := a.validateNetworkPolicy(ep.OrgID, ep.Domain, ep.Policy); err != nil {
+	if err := a.validateNetworkPolicy(r.Context(), ep.OrgID, ep.Domain, ep.Policy, wasPublic); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

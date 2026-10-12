@@ -6,7 +6,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ListEditor } from "@/components/common/KeyValueEditor";
 import { FormSection } from "@/components/common/FormSection";
-import type { EndpointPolicy, FrontDoorKind, LoadBalanceMode, Service } from "@/api/types";
+import { HelpTip, LabelWithHelp } from "@/components/common/HelpTip";
+import { HELP } from "@/lib/glossary";
+import type { EndpointPolicy, LoadBalanceMode } from "@/api/types";
 
 export interface UpstreamForm {
   targets: string[];
@@ -15,16 +17,7 @@ export interface UpstreamForm {
   originPins: string[];
   originCaPem: string;
   originInsecure: boolean;
-  service: string;
-  frontDoor: FrontDoorKind;
 }
-
-export interface UpstreamError {
-  field: "targets" | "frontDoor";
-  message: string;
-}
-
-const NONE_VALUE = "__none__";
 
 export function emptyUpstreamForm(): UpstreamForm {
   return {
@@ -34,8 +27,6 @@ export function emptyUpstreamForm(): UpstreamForm {
     originPins: [],
     originCaPem: "",
     originInsecure: false,
-    service: "",
-    frontDoor: "",
   };
 }
 
@@ -48,8 +39,6 @@ export function upstreamFormFromPolicy(policy?: EndpointPolicy | null): Upstream
     originPins: policy?.origin_tls?.pin_sha256 ?? [],
     originCaPem: policy?.origin_tls?.ca_pem ?? "",
     originInsecure: policy?.origin_tls?.insecure_skip_verify ?? false,
-    service: policy?.service ?? "",
-    frontDoor: policy?.front_door ?? "",
   };
 }
 
@@ -61,52 +50,34 @@ export function hasHttpsTarget(form: UpstreamForm): boolean {
   return cleanTargets(form).some((t) => t.toLowerCase().startsWith("https://"));
 }
 
-export function upstreamPolicyFields(form: UpstreamForm, isProxy: boolean): Partial<EndpointPolicy> {
-  const fields: Partial<EndpointPolicy> = {
-    service: form.service || undefined,
-    front_door: form.frontDoor || undefined,
-  };
-  if (!isProxy) return fields;
+export function upstreamPolicyFields(form: UpstreamForm): Partial<EndpointPolicy> {
   const targets = cleanTargets(form);
-  fields.proxy_targets = targets;
-  fields.load_balance = targets.length > 1 && form.loadBalance ? form.loadBalance : undefined;
   const pins = form.originPins.map((p) => p.trim()).filter(Boolean);
   const hasOriginTls =
     form.originServerName.trim() || pins.length > 0 || form.originCaPem.trim() || form.originInsecure;
-  fields.origin_tls =
-    hasHttpsTarget(form) && hasOriginTls
-      ? {
-          server_name: form.originServerName.trim() || undefined,
-          pin_sha256: pins.length > 0 ? pins : undefined,
-          ca_pem: form.originCaPem.trim() || undefined,
-          insecure_skip_verify: form.originInsecure || undefined,
-        }
-      : undefined;
-  return fields;
+  return {
+    proxy_targets: targets,
+    load_balance: targets.length > 1 && form.loadBalance ? form.loadBalance : undefined,
+    origin_tls:
+      hasHttpsTarget(form) && hasOriginTls
+        ? {
+            server_name: form.originServerName.trim() || undefined,
+            pin_sha256: pins.length > 0 ? pins : undefined,
+            ca_pem: form.originCaPem.trim() || undefined,
+            insecure_skip_verify: form.originInsecure || undefined,
+          }
+        : undefined,
+  };
 }
 
-export function validateUpstream(form: UpstreamForm, isProxy: boolean, domain: string): UpstreamError | null {
-  if (isProxy && cleanTargets(form).length === 0) {
-    return { field: "targets", message: "Add at least one proxy target." };
-  }
-  if (form.frontDoor && !domain.trim()) {
-    return { field: "frontDoor", message: "A front door requires a custom domain on the endpoint." };
-  }
-  return null;
+export function validateTargets(form: UpstreamForm): string | null {
+  return cleanTargets(form).length === 0 ? "Add at least one proxy target." : null;
 }
 
-function SectionError({ message }: { message: string }) {
-  return (
-    <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert">
-      {message}
-    </p>
-  );
-}
-
-function advancedSummary(form: UpstreamForm, multipleTargets: boolean, httpsTarget: boolean): string {
+export function upstreamAdvancedSummary(form: UpstreamForm): string {
   const parts: string[] = [];
-  if (multipleTargets) parts.push(form.loadBalance === "failover" ? "failover" : "round robin");
-  if (httpsTarget) {
+  if (cleanTargets(form).length > 1) parts.push(form.loadBalance === "failover" ? "failover" : "round robin");
+  if (hasHttpsTarget(form)) {
     if (form.originInsecure) parts.push("verification skipped");
     else if (form.originPins.some((pin) => pin.trim())) parts.push("pinned TLS");
     else if (form.originCaPem.trim()) parts.push("custom CA");
@@ -115,190 +86,129 @@ function advancedSummary(form: UpstreamForm, multipleTargets: boolean, httpsTarg
   return parts.length > 0 ? parts.join(" · ") : "Defaults";
 }
 
-export function UpstreamFields({
+export function TargetsField({
   form,
   onChange,
-  isProxy,
-  services,
-  frontDoorEnabled,
-  disabled,
   error,
 }: {
   form: UpstreamForm;
   onChange: (form: UpstreamForm) => void;
-  isProxy: boolean;
-  services: Service[];
-  frontDoorEnabled: boolean;
-  disabled?: boolean;
-  error?: UpstreamError | null;
+  error?: string | null;
 }) {
-  const set = <K extends keyof UpstreamForm>(key: K, value: UpstreamForm[K]) =>
-    onChange({ ...form, [key]: value });
+  return (
+    <div className="space-y-1.5">
+      <LabelWithHelp entry={HELP.proxyTargets}>Targets</LabelWithHelp>
+      <ListEditor
+        values={form.targets}
+        onChange={(targets) => onChange({ ...form, targets })}
+        placeholder="127.0.0.1:8080 or https://127.0.0.1:9443"
+      />
+      {error && (
+        <p className="text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function UpstreamAdvancedFields({
+  form,
+  onChange,
+  disabled,
+}: {
+  form: UpstreamForm;
+  onChange: (form: UpstreamForm) => void;
+  disabled?: boolean;
+}) {
+  const set = <K extends keyof UpstreamForm>(key: K, value: UpstreamForm[K]) => onChange({ ...form, [key]: value });
   const multipleTargets = cleanTargets(form).length > 1;
   const httpsTarget = hasHttpsTarget(form);
-  const showServiceSelect = services.length > 0 || form.service !== "";
-  const showFrontDoorSelect = frontDoorEnabled || form.frontDoor !== "";
-  const showAdvanced = isProxy && (multipleTargets || httpsTarget);
-  const serviceNames = services.map((s) => s.name);
-  const unlistedService = form.service !== "" && !serviceNames.includes(form.service);
 
-  if (!isProxy && !showServiceSelect && !showFrontDoorSelect) {
+  if (!multipleTargets && !httpsTarget) {
     return (
       <p className="text-sm text-muted-foreground">
-        No services or front doors are configured for this organization.
+        Load balancing appears with two or more targets; origin TLS appears with an https:// target.
       </p>
     );
   }
 
   return (
     <div className="space-y-4">
-      {isProxy && (
-        <FormSection
-          title="Proxy targets"
-          description="Backends mishmesh reverse-proxies to directly, without an agent."
-          collapsible={false}
-        >
-          <ListEditor
-            values={form.targets}
-            onChange={(v) => set("targets", v)}
-            placeholder="127.0.0.1:8080 or https://127.0.0.1:9443"
-          />
-          {error?.field === "targets" && <SectionError message={error.message} />}
-        </FormSection>
-      )}
-
-      {showServiceSelect && (
-        <FormSection
-          title="Scale to zero"
-          description="Wake a service on demand and scale it to zero when idle."
-          summary={form.service || "Off"}
-          defaultOpen={form.service !== ""}
-        >
+      {multipleTargets && (
+        <div className="space-y-1.5">
+          <LabelWithHelp entry={HELP.loadBalancing}>Load balancing</LabelWithHelp>
           <Select
-            value={form.service || NONE_VALUE}
-            onValueChange={(v) => set("service", v === NONE_VALUE ? "" : v)}
+            value={form.loadBalance || "round_robin"}
+            onValueChange={(v) => set("loadBalance", v as LoadBalanceMode)}
             disabled={disabled}
           >
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={NONE_VALUE}>None</SelectItem>
-              {unlistedService && <SelectItem value={form.service}>{form.service}</SelectItem>}
-              {serviceNames.map((name) => (
-                <SelectItem key={name} value={name}>
-                  {name}
-                </SelectItem>
-              ))}
+              <SelectItem value="round_robin">Round robin</SelectItem>
+              <SelectItem value="failover">Failover (first healthy target)</SelectItem>
             </SelectContent>
           </Select>
-        </FormSection>
+        </div>
       )}
 
-      {showFrontDoorSelect && (
-        <FormSection
-          title="Exposure"
-          description="Publish this domain through a managed front door. Requires a custom domain."
-          summary={form.frontDoor === "cloudflare" ? "Cloudflare" : "Off"}
-          defaultOpen={form.frontDoor !== ""}
-          hasError={error?.field === "frontDoor"}
-        >
-          <Select
-            value={form.frontDoor || NONE_VALUE}
-            onValueChange={(v) => set("frontDoor", v === NONE_VALUE ? "" : (v as FrontDoorKind))}
-            disabled={disabled}
+      {httpsTarget && (
+        <div className="space-y-3">
+          <div>
+            <div className="flex items-center gap-1.5">
+              <h4 className="text-sm font-medium tracking-heading">Origin TLS</h4>
+              <HelpTip entry={HELP.originTls} />
+            </div>
+            <p className="text-xs text-muted-foreground">How mishmesh verifies the certificate of https:// targets.</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Server name</Label>
+            <Input
+              value={form.originServerName}
+              onChange={(e) => set("originServerName", e.target.value)}
+              placeholder="defaults to the target host"
+              disabled={disabled}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <LabelWithHelp entry={HELP.pinned}>Pinned certificate SHA-256 (base64 SPKI)</LabelWithHelp>
+            <ListEditor values={form.originPins} onChange={(v) => set("originPins", v)} placeholder="base64 of the 32-byte hash" />
+          </div>
+          <FormSection
+            title="More TLS options"
+            summary={form.originInsecure ? "verification skipped" : form.originCaPem.trim() ? "custom CA" : "Defaults"}
+            defaultOpen={form.originInsecure || form.originCaPem.trim() !== ""}
+            nested
           >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NONE_VALUE}>None</SelectItem>
-              <SelectItem value="cloudflare">Cloudflare</SelectItem>
-            </SelectContent>
-          </Select>
-          {error?.field === "frontDoor" && <SectionError message={error.message} />}
-        </FormSection>
-      )}
-
-      {showAdvanced && (
-        <FormSection title="Advanced" summary={advancedSummary(form, multipleTargets, httpsTarget)}>
-          {multipleTargets && (
             <div className="space-y-1.5">
-              <Label>Load balancing</Label>
-              <Select
-                value={form.loadBalance || "round_robin"}
-                onValueChange={(v) => set("loadBalance", v as LoadBalanceMode)}
+              <Label>CA certificate (PEM)</Label>
+              <Textarea
+                value={form.originCaPem}
+                onChange={(e) => set("originCaPem", e.target.value)}
+                placeholder="-----BEGIN CERTIFICATE-----"
+                className="font-mono text-xs"
                 disabled={disabled}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="round_robin">Round robin</SelectItem>
-                  <SelectItem value="failover">Failover (first healthy target)</SelectItem>
-                </SelectContent>
-              </Select>
+              />
             </div>
-          )}
-
-          {httpsTarget && (
-            <div className="space-y-3">
-              <div>
-                <h4 className="text-sm font-medium tracking-heading">Origin TLS</h4>
-                <p className="text-xs text-muted-foreground">How mishmesh verifies the certificate of https:// targets.</p>
-              </div>
-              <div className="space-y-1.5">
-                <Label>Server name</Label>
-                <Input
-                  value={form.originServerName}
-                  onChange={(e) => set("originServerName", e.target.value)}
-                  placeholder="defaults to the target host"
-                  disabled={disabled}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Pinned certificate SHA-256 (base64 SPKI)</Label>
-                <ListEditor values={form.originPins} onChange={(v) => set("originPins", v)} placeholder="base64 of the 32-byte hash" />
-              </div>
-              <FormSection
-                title="More TLS options"
-                summary={form.originInsecure ? "verification skipped" : form.originCaPem.trim() ? "custom CA" : "Defaults"}
-                defaultOpen={form.originInsecure || form.originCaPem.trim() !== ""}
-                nested
-              >
-                <div className="space-y-1.5">
-                  <Label>CA certificate (PEM)</Label>
-                  <Textarea
-                    value={form.originCaPem}
-                    onChange={(e) => set("originCaPem", e.target.value)}
-                    placeholder="-----BEGIN CERTIFICATE-----"
-                    className="font-mono text-xs"
-                    disabled={disabled}
-                  />
+            <div className="space-y-2 rounded-md border border-border p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">Skip certificate verification</p>
+                  <p className="text-xs text-muted-foreground">Accept any certificate presented by the origin.</p>
                 </div>
-                <div className="space-y-2 rounded-md border border-border p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium">Skip certificate verification</p>
-                      <p className="text-xs text-muted-foreground">Accept any certificate presented by the origin.</p>
-                    </div>
-                    <Switch
-                      checked={form.originInsecure}
-                      onCheckedChange={(v) => set("originInsecure", v)}
-                      disabled={disabled}
-                    />
-                  </div>
-                  {form.originInsecure && (
-                    <p className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
-                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      Traffic to the origin can be intercepted. Use a pin or CA certificate instead whenever possible.
-                    </p>
-                  )}
-                </div>
-              </FormSection>
+                <Switch checked={form.originInsecure} onCheckedChange={(v) => set("originInsecure", v)} disabled={disabled} />
+              </div>
+              {form.originInsecure && (
+                <p className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  Traffic to the origin can be intercepted. Use a pin or CA certificate instead whenever possible.
+                </p>
+              )}
             </div>
-          )}
-        </FormSection>
+          </FormSection>
+        </div>
       )}
     </div>
   );

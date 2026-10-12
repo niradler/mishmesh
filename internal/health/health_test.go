@@ -17,9 +17,9 @@ import (
 
 type fakeServices map[string]string
 
-func (f fakeServices) ServiceState(name string) (string, bool) {
-	s, ok := f[name]
-	return s, ok
+func (f fakeServices) ServiceState(id string) (string, string, bool) {
+	s, ok := f[id]
+	return id, s, ok
 }
 
 func closedAddr(t *testing.T) string {
@@ -120,7 +120,7 @@ func TestProbeProxyStates(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
-			ep := f.addEndpoint(t, store.MethodProxy, &store.EndpointPolicy{ProxyTargets: tc.targets, Service: tc.service})
+			ep := f.addEndpoint(t, store.MethodProxy, &store.EndpointPolicy{ProxyTargets: tc.targets, ServiceID: tc.service})
 			p := f.prober(tc.services)
 			h, err := p.ProbeNow(context.Background(), ep.ID)
 			if err != nil {

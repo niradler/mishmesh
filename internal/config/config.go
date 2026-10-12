@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -89,9 +90,13 @@ type Server struct {
 
 	AllowedOrigins []string
 
-	ServicesFile   string
 	HealthInterval time.Duration
 	HealthTimeout  time.Duration
+
+	SecretKeyFile  string
+	DockerHost     string
+	HostCommands   bool
+	CloudflaredBin string
 }
 
 type Agent struct {
@@ -186,9 +191,13 @@ func LoadServer() Server {
 
 		AllowedOrigins: envList("ALLOWED_ORIGINS"),
 
-		ServicesFile:   env("SERVICES_FILE", ""),
 		HealthInterval: strictDuration("HEALTH_INTERVAL", "15s"),
 		HealthTimeout:  strictDuration("HEALTH_TIMEOUT", "3s"),
+
+		SecretKeyFile:  env("SECRET_KEY_FILE", ""),
+		DockerHost:     env("DOCKER_HOST", ""),
+		HostCommands:   envBool("HOST_COMMANDS", signupMode == "invite"),
+		CloudflaredBin: env("CLOUDFLARED_BIN", ""),
 	}
 }
 
@@ -220,6 +229,25 @@ func (s Server) EffectiveDataBackend() string {
 		return "postgres"
 	}
 	return "sqlite"
+}
+
+const secretKeyFileName = "mishmesh-secret.key"
+
+func (s Server) EffectiveSecretKeyFile() string {
+	if s.SecretKeyFile != "" {
+		return s.SecretKeyFile
+	}
+	if s.EffectiveDataBackend() != "sqlite" {
+		return secretKeyFileName
+	}
+	path := strings.TrimPrefix(s.DataDSN, "file:")
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	if path == "" || path == ":memory:" {
+		return secretKeyFileName
+	}
+	return filepath.Join(filepath.Dir(path), secretKeyFileName)
 }
 
 func (s Server) validateCluster() error {

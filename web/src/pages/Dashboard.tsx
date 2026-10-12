@@ -1,31 +1,35 @@
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Globe, Network, Radio, Server } from "lucide-react";
+import { Cloud, Globe, Moon, Network, Server } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { StateDot, StatusDot } from "@/components/common/StatusDot";
-import { StateBadge } from "@/components/common/StateBadge";
+import { StatusDot } from "@/components/common/StatusDot";
+import { HealthStrip } from "@/components/dashboard/HealthStrip";
+import { NeedsAttention } from "@/components/dashboard/NeedsAttention";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/States";
-import { useAgents, useEndpoints, useFrontDoors, useServices, useStatus } from "@/api/hooks";
+import { useAgents, useCloudflare, useEndpoints, useServices, useStatus } from "@/api/hooks";
 import { useSession } from "@/context/SessionContext";
-import { endpointHealthState } from "@/lib/health";
+import { isCloudflareConnected } from "@/lib/cloudflare";
 import { formatBytes, formatRelativeTime } from "@/lib/utils";
-import type { HealthState, Status } from "@/api/types";
+import type { Status } from "@/api/types";
 
 function StatCard({
   label,
   value,
   hint,
   icon,
+  to,
 }: {
   label: string;
   value: string;
   hint?: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
+  to?: string;
 }) {
-  return (
-    <Card>
+  const body = (
+    <Card className={to ? "h-full transition-colors hover:bg-accent/40" : "h-full"}>
       <CardContent className="flex items-start justify-between gap-4 p-4">
         <div className="space-y-1">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
@@ -38,79 +42,12 @@ function StatCard({
       </CardContent>
     </Card>
   );
-}
-
-const HEALTH_ORDER: HealthState[] = ["up", "down", "degraded", "sleeping", "waking", "offline"];
-
-function StripLink({ to, children }: { to: string; children: React.ReactNode }) {
-  return (
-    <Link to={to} className="inline-flex items-center rounded-md px-2 py-1 text-sm hover:bg-accent">
-      {children}
+  return to ? (
+    <Link to={to} className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {body}
     </Link>
-  );
-}
-
-function StripGroup({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-center gap-1">
-      <span className="pr-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
-      {children}
-    </div>
-  );
-}
-
-function HealthStrip({ orgId }: { orgId?: string }) {
-  const endpoints = useEndpoints(orgId);
-  const services = useServices(orgId);
-  const frontDoors = useFrontDoors(orgId);
-
-  const endpointCounts = new Map<HealthState, number>();
-  (endpoints.data ?? []).forEach((ep) => {
-    const state = endpointHealthState(ep);
-    endpointCounts.set(state, (endpointCounts.get(state) ?? 0) + 1);
-  });
-  const endpointStates = HEALTH_ORDER.filter((state) => (endpointCounts.get(state) ?? 0) > 0);
-  const serviceList = services.data ?? [];
-  const running = serviceList.filter((service) => service.state === "running").length;
-  const sleeping = serviceList.filter((service) => service.state === "sleeping").length;
-  const cloudflare = frontDoors.data?.cloudflare;
-
-  if (endpointStates.length === 0 && serviceList.length === 0 && !cloudflare?.enabled) return null;
-
-  return (
-    <Card className="mb-4">
-      <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-2 p-3">
-        {endpointStates.length > 0 && (
-          <StripGroup label="Endpoints">
-            {endpointStates.map((state) => (
-              <StripLink key={state} to="/endpoints">
-                <StateDot state={state} label={`${endpointCounts.get(state)} ${state}`} />
-              </StripLink>
-            ))}
-          </StripGroup>
-        )}
-        {serviceList.length > 0 && (
-          <StripGroup label="Services">
-            <StripLink to="/endpoints?tab=services">
-              <StateDot state="running" label={`${running} running`} />
-            </StripLink>
-            <StripLink to="/endpoints?tab=services">
-              <StateDot state="sleeping" label={`${sleeping} sleeping`} />
-            </StripLink>
-          </StripGroup>
-        )}
-        {cloudflare?.enabled && (
-          <StripGroup label="Cloudflare">
-            <StripLink to="/network?tab=frontdoors">
-              <StateBadge
-                state={cloudflare.tunnel?.status ?? "unknown"}
-                label={cloudflare.tunnel?.status ?? "no tunnel"}
-              />
-            </StripLink>
-          </StripGroup>
-        )}
-      </CardContent>
-    </Card>
+  ) : (
+    body
   );
 }
 
@@ -120,7 +57,7 @@ function BandwidthCard({ status }: { status: Status }) {
   const pct = limit_bytes > 0 ? Math.min(100, Math.round((used_bytes / limit_bytes) * 100)) : 0;
   const over = pct >= 90;
   return (
-    <Card className="sm:col-span-2 lg:col-span-1">
+    <Card className="col-span-2 lg:col-span-1">
       <CardContent className="space-y-3 p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
@@ -151,40 +88,61 @@ export function Dashboard() {
   const { currentOrgId } = useSession();
   const status = useStatus(currentOrgId);
   const agents = useAgents(currentOrgId, { refetchInterval: 5000 });
+  const endpoints = useEndpoints(currentOrgId);
+  const services = useServices(currentOrgId);
+  const cloudflare = useCloudflare(currentOrgId);
+  const endpointList = endpoints.data ?? [];
+  const serviceList = services.data ?? [];
+  const runningServices = serviceList.filter((service) => service.status.state === "running").length;
+  const connected = isCloudflareConnected(cloudflare.data);
+  const hostnames = cloudflare.data?.status?.hostnames ?? [];
+  const publishedHosts = hostnames.filter((host) => host.state === "published").length;
 
   return (
     <div>
-      <PageHeader title="Dashboard" description="Live overview of your tunnels and agents." />
+      <PageHeader title="Dashboard" description="Live overview of your endpoints, services, tunnel and agents." />
 
-      <HealthStrip orgId={currentOrgId} />
+      <HealthStrip endpoints={endpointList} services={serviceList} cloudflare={cloudflare.data} />
 
       {status.isLoading ? (
         <LoadingState label="Loading status" />
       ) : status.isError ? (
         <ErrorState error={status.error} />
       ) : status.data ? (
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
           <StatCard
             label="Agents"
             value={`${status.data.agents.connected}/${status.data.agents.total}`}
             hint="connected / total"
             icon={<Server className="h-4 w-4" />}
+            to="/agents"
           />
           <StatCard
             label="Endpoints"
             value={String(status.data.endpoints.total)}
             hint={`${status.data.endpoints.by_kind.http} http · ${status.data.endpoints.by_kind.tcp} tcp · ${status.data.endpoints.by_kind.tls} tls`}
             icon={<Globe className="h-4 w-4" />}
+            to="/endpoints"
           />
           <StatCard
-            label="HTTP"
-            value={String(status.data.endpoints.by_kind.http)}
-            hint="active routes"
-            icon={<Radio className="h-4 w-4" />}
+            label="Services"
+            value={`${runningServices}/${serviceList.length}`}
+            hint="running / total"
+            icon={<Moon className="h-4 w-4" />}
+            to="/services"
+          />
+          <StatCard
+            label="Cloudflare"
+            value={connected ? `${publishedHosts}/${hostnames.length}` : "off"}
+            hint={connected ? "hostnames published" : "not connected"}
+            icon={<Cloud className="h-4 w-4" />}
+            to="/cloudflare"
           />
           <BandwidthCard status={status.data} />
         </div>
       ) : null}
+
+      <NeedsAttention endpoints={endpointList} services={serviceList} cloudflare={cloudflare.data} />
 
       <Card className="mt-6">
         <CardHeader className="flex-row items-center justify-between">

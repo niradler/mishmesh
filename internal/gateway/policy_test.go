@@ -17,3 +17,14 @@ func TestDecodePolicyDropsInvalidRateLimitKeepsRest(t *testing.T) {
 		t.Fatalf("valid rate limit lost: %+v", p)
 	}
 }
+
+func TestDecodePolicyDropsControlPlaneFields(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	p := decodePolicy([]byte(`{"ip_allow":["10.0.0.0/8"],"proxy_targets":["169.254.169.254:80"],"load_balance":"failover","origin_tls":{"insecure_skip_verify":true},"service_id":"svc_other","public_access":"cloudflare"}`), log)
+	if p == nil || len(p.IPAllow) != 1 {
+		t.Fatalf("agent-owned fields lost: %+v", p)
+	}
+	if len(p.ProxyTargets) != 0 || p.LoadBalance != "" || p.OriginTLS != nil || p.ServiceID != "" || p.PublicAccess != "" {
+		t.Fatalf("control-plane fields kept: %+v", p)
+	}
+}

@@ -8,7 +8,8 @@ permit (
   principal in Role::"admin",
   action,
   resource
-);
+)
+unless { action == Action::"host:exec" };
 
 permit (
   principal in Role::"member",
@@ -19,7 +20,8 @@ permit (
     Action::"member:read",
     Action::"audit:read",
     Action::"status:read",
-    Action::"policy:read"
+    Action::"policy:read",
+    Action::"service:read"
   ],
   resource
 );

@@ -228,7 +228,35 @@ func decodePolicy(raw json.RawMessage, log *slog.Logger) *store.EndpointPolicy {
 			p.RateLimit = nil
 		}
 	}
+	if dropped := dropControlPlaneFields(&p); len(dropped) > 0 {
+		log.Warn("ignoring endpoint policy fields only the control API may set", "fields", dropped)
+	}
 	return &p
+}
+
+func dropControlPlaneFields(p *store.EndpointPolicy) []string {
+	var dropped []string
+	if len(p.ProxyTargets) > 0 {
+		dropped = append(dropped, "proxy_targets")
+		p.ProxyTargets = nil
+	}
+	if p.LoadBalance != "" {
+		dropped = append(dropped, "load_balance")
+		p.LoadBalance = ""
+	}
+	if p.OriginTLS != nil {
+		dropped = append(dropped, "origin_tls")
+		p.OriginTLS = nil
+	}
+	if p.ServiceID != "" {
+		dropped = append(dropped, "service_id")
+		p.ServiceID = ""
+	}
+	if p.PublicAccess != "" {
+		dropped = append(dropped, "public_access")
+		p.PublicAccess = ""
+	}
+	return dropped
 }
 
 func bearerToken(r *http.Request) string {

@@ -318,7 +318,9 @@ func serve() error {
 			clusterRT.drain(ctx)
 		},
 	}
-	network.start()
+	if err := network.start(); err != nil {
+		return err
+	}
 	return runServers(log, servers, hooks)
 }
 
