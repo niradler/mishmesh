@@ -377,6 +377,22 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 		}
 	}
 
+	h.mu.Lock()
+	h.results[ep.ID] = health.EndpointHealth{State: health.StateSleeping, Detail: "service syncthing is scaled to zero", Targets: []health.TargetStatus{
+		{Target: "93.184.216.34:8384", Error: "connection refused"},
+	}}
+	h.mu.Unlock()
+	_, body = statusAndBody(t, srv, http.MethodGet, "/api/v1/topology", "")
+	topo = topologyDTO{}
+	if err := json.Unmarshal([]byte(body), &topo); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range topo.Nodes {
+		if n.ID == "target:http://93.184.216.34:8384" && n.State != health.StateSleeping {
+			t.Fatalf("target behind a sleeping service is %q, want sleeping", n.State)
+		}
+	}
+
 	if code, _ := statusAndBody(t, srv, http.MethodDelete, "/api/v1/endpoints/"+ep.ID, ""); code != http.StatusNoContent {
 		t.Fatalf("delete: %d", code)
 	}

@@ -236,8 +236,11 @@ func (a *API) addTargets(b *topologyBuilder, ep *store.Endpoint, epID string, h 
 		state, detail := health.StateUnknown, ""
 		if t, ok := byTarget[target]; ok {
 			state, detail = health.StateDown, t.Error
-			if t.Healthy {
+			switch {
+			case t.Healthy:
 				state = health.StateUp
+			case h.State == health.StateSleeping || h.State == health.StateWaking:
+				state, detail = h.State, h.Detail
 			}
 		}
 		b.node(topologyNode{ID: id, Kind: nodeTarget, Label: target, State: state, Detail: detail})
