@@ -4,7 +4,7 @@
 
 - Spec approved by Nir 2026-10-13: `docs/superpowers/specs/2026-10-13-pluggable-types-design.md` (commit `1a913c3`).
 - Implementation plan: `docs/superpowers/plans/2026-10-13-pluggable-types.md`; subagent-driven execution authorized (Nir delegated method choice).
-- Tasks 1, 2, 4, 5, 6 and 7 complete with independent review. Task 5 TCP diagnostic leak fixed (`a7c6a41`), regression-tested and scoped review approved. Task 6 isolation fix (`c7a8c6c`) reproduced live red/green and scoped review approved. Task 7 lifecycle fix (`62ab79c`) regression-tested and scoped review approved. Task 8 is next.
+- Tasks 1, 2, 4, 5, 6, 7 and 8 complete with independent review. Task 5 TCP diagnostic leak fixed (`a7c6a41`), regression-tested and scoped review approved. Task 6 isolation fix (`c7a8c6c`) reproduced live red/green and scoped review approved. Task 7 lifecycle fix (`62ab79c`) regression-tested and scoped review approved. Task 8 deletion fix (`d78d997`) regression-tested and scoped review approved. Task 9 is next.
 - Active worktree: `C:/Projects/products/mishmesh/.claude/worktrees/pluggable-types` on `feat/pluggable-types`. Original checkout on `work/network-layout` preserves its uncommitted prior map fix.
 - Lab still runs `v0.1.0-beta.4`; no rollout, host flag, sudoers, Tailscale install or kind-cluster changes made.
 
@@ -22,7 +22,7 @@
 
 ## Next
 
-1. Execute Task 8 generic connection registry/hub. Resume from `.superpowers/sdd/2026-10-13-pluggable-types/progress.md` in the active worktree; do not re-dispatch completed tasks.
+1. Execute Task 9 Cloudflare connection provider. Resume from `.superpowers/sdd/2026-10-13-pluggable-types/progress.md` in the active worktree; do not re-dispatch completed tasks.
 2. Execution order: **1,2,4,5,6,7,8,9,10,11,12,13,14,3,15,16,17,18,19,20**. Physical Task 3 cutover follows Go consumers to avoid temporary encrypted legacy-table emulation. No intermediate checkpoint is deployed.
 3. Continue to complete validation, PR/merge, beta.5 release and lab E2E, respecting the approval/action gates below.
 
@@ -36,6 +36,8 @@
 - Task 6 (`9aa668a` + `c7a8c6c`, review approved): same-org prospective DFS validation in locked store transactions, deterministic dependents lookup, ownership/error guards. Affected race suites, separate-handle SQLite and live Postgres opposing updates, consumer compile/vet/format passed. Explicit PostgreSQL ReadCommitted fixes the reproduced RepeatableRead stale-snapshot cycle; synchronized regression passes.
 
 - Task 7 (`e3d3a5c` + `62ab79c`, review approved): parallel ordered dependency wakes, idempotent keep-awake holds, stop/idle admission, external and reload reconciliation, -1 mode and tenant-scoped linked readiness. Affected services/ingress/health/controlplane race, consumer compile/vet/format passed. Finite reload admission fixes starvation; reconciliation preserves idle timers and owns failed additions correctly. All three findings reproduced red/green and scoped review approved.
+
+- Task 8 (`74b2141` + `d78d997`, review approved): generic connection registry, AAD-bound sealed secrets, instance actors, serial/coalesced sync, replacement/retirement and bounded close. Twenty-one connection tests, hub/Cloudflare/server race suites, consumer compile/vet/format passed. Synchronous callbacks are cooperative; stalled retired instances block further replacement, while deletion retires the active instance correctly. Deletion regression and scoped fix review passed.
 
 ## Decisions and open validation
 

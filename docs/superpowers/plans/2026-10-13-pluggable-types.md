@@ -276,7 +276,7 @@ func TestShouldNotStartDependentAfterRequirementFailure(t *testing.T) {
 
 **Interfaces:** Produce the spec's `Provider` and `Instance` interfaces, `Descriptor{Type, Label, Role, Scope, Help string; Levels []string; Fields []typedfields.Field; Detect bool}`, `Config{Record store.Connection; Secrets map[string]string; HostCommands bool}`, `HostStatus{Host, State, EndpointID, Detail, Fix string}`, `Status{Level, Health, LastError string; LastSync time.Time; Hostnames []HostStatus; Details map[string]any}` with snake-case JSON tags. `Deps` carries `Data store.DataStore`, `Origin string`, `Log *slog.Logger`, and the secret box/permission policy needed for persisted ownership and guarded runtime use. Produce registry `Register`, `Lookup`, `Descriptors` equivalents and `Hub.Start(ctx) error`, `Reload(ctx, connectionID) error`, `Sync(ctx, connectionID) (Status, error)`, `Status(connectionID) Status`, `Trigger(connectionID)`, `Close()`.
 
-- [ ] Add duplicate/unknown type, AAD mismatch, redacted-status, independent same-org instances, failed open, sync serialization, reload during sync, bounded close, and trigger coalescing tests. Anchor:
+- [x] Add duplicate/unknown type, AAD mismatch, redacted-status, independent same-org instances, failed open, sync serialization, reload during sync, bounded close, and trigger coalescing tests. Anchor:
 
 ```go
 func TestShouldBindSecretsToConnectionAndOrg(t *testing.T) {
@@ -288,9 +288,9 @@ func TestShouldBindSecretsToConnectionAndOrg(t *testing.T) {
 }
 ```
 
-- [ ] Run `./internal/connections`; expect missing contracts.
-- [ ] Implement `SecretContext(orgID, connectionID string) string` as `connection:<org>:<id>`, bounded cancellation/draining of instances, and per-instance sync mutexes. Hub owns lifecycle/identity; provider owns remote behavior. Return a down/error status for a single bad connection without logging opened secrets; store-list failure prevents startup.
-- [ ] Use the injected registry in startup but keep old Cloudflare wiring until its adapter and API replacement are ready. Run hub tests and command package compilation. Commit `feat: add typed connection instance hub`.
+- [x] Run `./internal/connections`; expect missing contracts.
+- [x] Implement `SecretContext(orgID, connectionID string) string` as `connection:<org>:<id>`, bounded cancellation/draining of instances, and per-instance sync mutexes. Hub owns lifecycle/identity; provider owns remote behavior. Return a down/error status for a single bad connection without logging opened secrets; store-list failure prevents startup. Track retired generations and block additional replacement while an older one is unfinished, but process persisted deletion before that admission guard. Runtime host flag matches Command; request host:exec checks remain Task12.
+- [x] Use the injected registry in startup but keep old Cloudflare wiring until its adapter and API replacement are ready. Run hub tests and command package compilation. Commit `feat: add typed connection instance hub`.
 
 ### Task 9: Move Cloudflare behind the connection provider interface
 
@@ -310,7 +310,7 @@ func TestShouldSelectPublicHostsPerConnection(t *testing.T) {
 
 - [ ] Define `AccessHosts(connectionID string, endpoints []*store.Endpoint) []Hostname` in `source.go`; this gives selected public hosts only. Retain a separate full-org observer list for unclaimed reporting so endpoints with access off still report their current external routes.
 - [ ] Run `./internal/cloudflare`; expected old source ignores per-connection access.
-- [ ] Adapt existing publisher/supervisor instances without duplicating their reconciliation logic. Replace old hub responsibilities with the generic hub; do not change provider ownership interpretation or enable managed level during migration. Keep unclaimed orphans unpruned. Type panel details expose only existing nonsecret facts.
+- [ ] Adapt existing publisher/supervisor instances without duplicating their reconciliation logic. Register new connection records with generic hub; legacy API/hub callers may stay unchanged until Task12 (no legacy API ships beta5). Do not change provider ownership interpretation or enable managed level during migration. Keep unclaimed orphans unpruned. Type panel details expose only existing nonsecret facts.
 - [ ] Run all Cloudflare tests, generic hub tests, and server compilation. Commit `refactor: register cloudflare as a connection type`.
 
 ### Task 10: Kubernetes runtime connection and scale driver
