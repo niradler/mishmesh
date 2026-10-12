@@ -1,11 +1,21 @@
 import { NavLink } from "react-router-dom";
-import { Activity, KeyRound, LayoutGrid, ListTree, ScrollText, Settings, Users } from "lucide-react";
+import {
+  Activity,
+  Cloud,
+  KeyRound,
+  LayoutGrid,
+  ListTree,
+  ScrollText,
+  Settings,
+  Users,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutGrid, end: true },
   { to: "/agents", label: "Agents", icon: KeyRound },
   { to: "/endpoints", label: "Endpoints", icon: ListTree },
+  { to: "/network", label: "Network", icon: Cloud },
   { to: "/members", label: "Members", icon: Users },
   { to: "/audit", label: "Audit", icon: ScrollText },
   { to: "/settings", label: "Settings", icon: Settings },

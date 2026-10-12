@@ -13,6 +13,7 @@ import type {
   CreateEndpointRequest,
   Endpoint,
   EndpointPolicy,
+  FrontDoors,
   Me,
   Invite,
   Member,
@@ -23,8 +24,10 @@ import type {
   QuotaUpdate,
   Role,
   RotateTokenResponse,
+  Service,
   Status,
   Token,
+  Topology,
 } from "./types";
 
 export const qk = {
@@ -41,7 +44,13 @@ export const qk = {
   quota: (orgId?: string) => ["quota", orgId] as const,
   audit: (orgId?: string) => ["audit", orgId] as const,
   policy: (orgId?: string) => ["policy", orgId] as const,
+  services: (orgId?: string) => ["services", orgId] as const,
+  frontDoors: (orgId?: string) => ["frontdoors", orgId] as const,
+  topology: (orgId?: string) => ["topology", orgId] as const,
 };
+
+const HEALTH_REFETCH_MS = 5000;
+const NETWORK_REFETCH_MS = 10000;
 
 export function useAuthConfig() {
   return useQuery({
@@ -188,6 +197,7 @@ export function useEndpoints(orgId?: string) {
   return useQuery({
     queryKey: qk.endpoints(orgId),
     queryFn: () => api.get<Endpoint[]>("/endpoints", { org_id: orgId }),
+    refetchInterval: HEALTH_REFETCH_MS,
   });
 }
 
@@ -196,6 +206,7 @@ export function useEndpoint(id: string) {
     queryKey: qk.endpoint(id),
     queryFn: () => api.get<Endpoint>(`/endpoints/${id}`),
     enabled: !!id,
+    refetchInterval: HEALTH_REFETCH_MS,
   });
 }
 
@@ -206,6 +217,9 @@ export function useCreateEndpoint(orgId?: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.endpoints(orgId) });
       qc.invalidateQueries({ queryKey: qk.status(orgId) });
+      qc.invalidateQueries({ queryKey: qk.topology(orgId) });
+      qc.invalidateQueries({ queryKey: qk.services(orgId) });
+      qc.invalidateQueries({ queryKey: qk.frontDoors(orgId) });
     },
   });
 }
@@ -218,6 +232,9 @@ export function useUpdateEndpointPolicy(orgId?: string) {
     onSuccess: (ep) => {
       qc.invalidateQueries({ queryKey: qk.endpoint(ep.id) });
       qc.invalidateQueries({ queryKey: qk.endpoints(orgId) });
+      qc.invalidateQueries({ queryKey: qk.topology(orgId) });
+      qc.invalidateQueries({ queryKey: qk.services(orgId) });
+      qc.invalidateQueries({ queryKey: qk.frontDoors(orgId) });
     },
   });
 }
@@ -226,7 +243,12 @@ export function useDeleteEndpoint(orgId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.del<void>(`/endpoints/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.endpoints(orgId) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.endpoints(orgId) });
+      qc.invalidateQueries({ queryKey: qk.topology(orgId) });
+      qc.invalidateQueries({ queryKey: qk.services(orgId) });
+      qc.invalidateQueries({ queryKey: qk.frontDoors(orgId) });
+    },
   });
 }
 
@@ -299,6 +321,62 @@ export function useAudit(orgId?: string) {
     queryKey: qk.audit(orgId),
     queryFn: () => api.get<AuditEvent[]>("/audit", { org_id: orgId }),
     refetchInterval: 10000,
+  });
+}
+
+export function useServices(orgId?: string) {
+  return useQuery({
+    queryKey: qk.services(orgId),
+    queryFn: () => api.get<Service[]>("/services", { org_id: orgId }),
+    refetchInterval: HEALTH_REFETCH_MS,
+  });
+}
+
+function useServiceAction(action: "start" | "stop", orgId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.post<Service>(`/services/${encodeURIComponent(name)}/${action}`),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: qk.services(orgId) });
+      qc.invalidateQueries({ queryKey: qk.endpoints(orgId) });
+      qc.invalidateQueries({ queryKey: qk.topology(orgId) });
+    },
+  });
+}
+
+export function useStartService(orgId?: string) {
+  return useServiceAction("start", orgId);
+}
+
+export function useStopService(orgId?: string) {
+  return useServiceAction("stop", orgId);
+}
+
+export function useFrontDoors(orgId?: string) {
+  return useQuery({
+    queryKey: qk.frontDoors(orgId),
+    queryFn: () => api.get<FrontDoors>("/frontdoors", { org_id: orgId }),
+    refetchInterval: NETWORK_REFETCH_MS,
+  });
+}
+
+export function useSyncCloudflare(orgId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<FrontDoors>("/frontdoors/cloudflare/sync"),
+    onSuccess: (data) => {
+      qc.setQueryData(qk.frontDoors(orgId), data);
+      qc.invalidateQueries({ queryKey: qk.topology(orgId) });
+    },
+    onError: () => qc.invalidateQueries({ queryKey: qk.frontDoors(orgId) }),
+  });
+}
+
+export function useTopology(orgId?: string) {
+  return useQuery({
+    queryKey: qk.topology(orgId),
+    queryFn: () => api.get<Topology>("/topology", { org_id: orgId }),
+    refetchInterval: NETWORK_REFETCH_MS,
   });
 }
 

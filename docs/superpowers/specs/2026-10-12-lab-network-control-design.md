@@ -62,7 +62,7 @@ Stored in the existing JSON `policy` column, so no migration on SQLite or Postgr
 - A prober loop runs every `MISHMESH_HEALTH_INTERVAL` (default 15s) with a per-probe timeout (default 3s).
 - Proxy endpoints: TCP connect to every target, through the proxy guard. `https://` targets add a TLS handshake under the endpoint's origin TLS rules, so a certificate problem shows up as `down` with a reason.
 - Native and SSH endpoints: `offline` when no agent is bound, else `up`. Deep probing through agents is a follow-up.
-- An endpoint with a `service` whose manager state is `stopped` because of idle shutdown reports `sleeping`. While a start is in flight it reports `waking`.
+- An endpoint with a `service` that is stopped reports `sleeping`, whether the idle shutdown or something outside mishmesh stopped it; the service itself reports `sleeping` or `stopped` so the cause stays visible. A service in `error` reports `down`. While a start is in flight it reports `waking`.
 - The state lives in memory, keyed by endpoint ID, with a per-target breakdown, latency, last check time and last error. The API reads it. Load balancing reads per-target health.
 
 ## 5. Load balancing (B)

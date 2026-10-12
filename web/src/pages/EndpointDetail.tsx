@@ -10,8 +10,18 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CopyButton } from "@/components/common/CopyButton";
-import { StatusDot } from "@/components/common/StatusDot";
+import { StateDot } from "@/components/common/StatusDot";
+import { StateBadge } from "@/components/common/StateBadge";
 import { ErrorState, LoadingState } from "@/components/common/States";
+import {
+  UpstreamFields,
+  upstreamFormFromPolicy,
+  upstreamPolicyFields,
+  validateUpstream,
+  type UpstreamError,
+  type UpstreamForm,
+} from "@/components/common/UpstreamFields";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   KeyValueEditor,
   ListEditor,
@@ -19,11 +29,13 @@ import {
   recordToPairs,
   type KVPair,
 } from "@/components/common/KeyValueEditor";
-import { useEndpoint, useUpdateEndpointPolicy } from "@/api/hooks";
+import { useEndpoint, useFrontDoors, useServices, useUpdateEndpointPolicy } from "@/api/hooks";
 import { useSession } from "@/context/SessionContext";
 import { toast } from "@/hooks/use-toast";
 import { ApiError } from "@/api/client";
-import type { EndpointPolicy } from "@/api/types";
+import { endpointHealthState, formatLatency } from "@/lib/health";
+import { formatRelativeTime } from "@/lib/utils";
+import type { Endpoint, EndpointPolicy } from "@/api/types";
 
 interface PolicyForm {
   reqAdd: KVPair[];
@@ -46,6 +58,7 @@ interface PolicyForm {
   oidcClientSecret: string;
   oidcAllowedEmails: string[];
   oidcAllowedDomains: string[];
+  upstream: UpstreamForm;
 }
 
 function fromPolicy(p?: EndpointPolicy | null): PolicyForm {
@@ -70,12 +83,14 @@ function fromPolicy(p?: EndpointPolicy | null): PolicyForm {
     oidcClientSecret: p?.oidc?.client_secret ?? "",
     oidcAllowedEmails: p?.oidc?.allowed_emails ?? [],
     oidcAllowedDomains: p?.oidc?.allowed_domains ?? [],
+    upstream: upstreamFormFromPolicy(p),
   };
 }
 
-function toPolicy(f: PolicyForm, base?: EndpointPolicy | null): EndpointPolicy {
+function toPolicy(f: PolicyForm, isProxy: boolean, base?: EndpointPolicy | null): EndpointPolicy {
   const policy: EndpointPolicy = {
     ...base,
+    ...upstreamPolicyFields(f.upstream, isProxy),
     request_headers_add: pairsToRecord(f.reqAdd),
     request_headers_remove: f.reqRemove.filter(Boolean),
     response_headers_add: pairsToRecord(f.resAdd),
@@ -117,12 +132,79 @@ function Section({ title, description, children }: { title: string; description?
   );
 }
 
+function HealthCard({ endpoint }: { endpoint: Endpoint }) {
+  const state = endpointHealthState(endpoint);
+  const health = endpoint.health;
+  const targets = health?.targets ?? [];
+  const serviceName = health?.service || endpoint.policy?.service;
+  const frontDoor = endpoint.policy?.front_door;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Health</CardTitle>
+        <CardDescription>
+          {health ? `Checked ${formatRelativeTime(health.checked_at)}` : "No health data reported yet."}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+          <StateBadge state={state} />
+          {health?.latency_ms !== undefined && (
+            <span className="text-sm text-muted-foreground">Latency {formatLatency(health.latency_ms)}</span>
+          )}
+          {serviceName && (
+            <span className="text-sm text-muted-foreground">
+              Service <span className="font-mono text-foreground">{serviceName}</span>
+            </span>
+          )}
+          {frontDoor && (
+            <span className="text-sm text-muted-foreground">
+              Front door <span className="font-mono text-foreground">{frontDoor}</span>
+            </span>
+          )}
+        </div>
+        {health?.detail && <p className="text-sm text-muted-foreground">{health.detail}</p>}
+        {targets.length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Target</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Latency</TableHead>
+                <TableHead>Error</TableHead>
+                <TableHead>Checked</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {targets.map((target) => (
+                <TableRow key={target.target}>
+                  <TableCell className="font-mono text-xs">{target.target}</TableCell>
+                  <TableCell>
+                    <StateDot state={target.healthy ? "up" : "down"} label={target.healthy ? "healthy" : "unhealthy"} />
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">{formatLatency(target.latency_ms)}</TableCell>
+                  <TableCell className="max-w-xs break-words text-xs text-destructive">{target.error ?? ""}</TableCell>
+                  <TableCell className="text-muted-foreground">{formatRelativeTime(target.checked_at)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function EndpointDetail() {
   const { id = "" } = useParams();
   const { currentOrgId, canWrite } = useSession();
   const endpoint = useEndpoint(id);
+  const services = useServices(currentOrgId);
+  const frontDoors = useFrontDoors(currentOrgId);
   const update = useUpdateEndpointPolicy(currentOrgId);
   const [form, setForm] = useState<PolicyForm>(() => fromPolicy(null));
+  const [upstreamError, setUpstreamError] = useState<UpstreamError | null>(null);
 
   const initial = useMemo(() => fromPolicy(endpoint.data?.policy), [endpoint.data?.policy]);
   useEffect(() => setForm(initial), [initial]);
@@ -134,11 +216,19 @@ export function EndpointDetail() {
   if (endpoint.isError) return <ErrorState error={endpoint.error} />;
   if (!endpoint.data) return null;
   const ep = endpoint.data;
+  const isProxy = ep.method === "proxy";
+  const state = endpointHealthState(ep);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
+    const problem = validateUpstream(form.upstream, isProxy, ep.domain ?? "");
+    if (problem) {
+      setUpstreamError(problem);
+      toast({ variant: "destructive", title: "Save failed", description: problem.message });
+      return;
+    }
     update.mutate(
-      { id, policy: toPolicy(form, ep.policy) },
+      { id, policy: toPolicy(form, isProxy, ep.policy) },
       {
         onSuccess: () => toast({ title: "Policy saved" }),
         onError: (err) =>
@@ -163,10 +253,13 @@ export function EndpointDetail() {
         actions={
           <div className="flex items-center gap-2">
             <Badge variant="muted">{ep.kind}</Badge>
-            <StatusDot online={ep.online} label={ep.online ? "online" : "offline"} />
+            <Badge variant="muted">{ep.method ?? "native"}</Badge>
+            <StateDot state={state} label={state} />
           </div>
         }
       />
+
+      <HealthCard endpoint={ep} />
 
       {ep.public_url && (
         <Card>
@@ -183,13 +276,41 @@ export function EndpointDetail() {
       )}
 
       <form onSubmit={onSubmit}>
-        <Tabs defaultValue="routing">
+        <Tabs defaultValue={isProxy ? "upstream" : "routing"}>
           <TabsList>
+            <TabsTrigger value="upstream">Upstream</TabsTrigger>
             <TabsTrigger value="routing">Routing</TabsTrigger>
             <TabsTrigger value="headers">Headers</TabsTrigger>
             <TabsTrigger value="security">Security</TabsTrigger>
             <TabsTrigger value="oidc">OIDC</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="upstream">
+            <Card>
+              <CardHeader>
+                <CardTitle>Upstream</CardTitle>
+                <CardDescription>
+                  {isProxy
+                    ? "Proxy targets, load balancing, origin TLS, scale-to-zero service and front door."
+                    : "Scale-to-zero service and front door."}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <UpstreamFields
+                  form={form.upstream}
+                  onChange={(v) => {
+                    set("upstream", v);
+                    setUpstreamError(null);
+                  }}
+                  isProxy={isProxy}
+                  services={services.data ?? []}
+                  frontDoorEnabled={frontDoors.data?.cloudflare.enabled ?? false}
+                  disabled={!canWrite}
+                  error={upstreamError}
+                />
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           <TabsContent value="routing">
             <Card>

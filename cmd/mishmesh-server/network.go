@@ -32,7 +32,7 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 		if err != nil {
 			return nil, fmt.Errorf("services file: %w", err)
 		}
-		if nc.services, err = services.NewManager(svcCfg, services.Options{Log: log}); err != nil {
+		if nc.services, err = services.NewManager(svcCfg, services.Options{Log: log, OnChange: nc.serviceChanged}); err != nil {
 			return nil, fmt.Errorf("services: %w", err)
 		}
 		log.Info("services enabled", "file", cfg.ServicesFile, "count", len(nc.services.Names()))
@@ -56,6 +56,12 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 	return nc, nil
 }
 
+func (nc *networkControl) serviceChanged() {
+	if nc.prober != nil {
+		nc.prober.Trigger()
+	}
+}
+
 func (nc *networkControl) attach(cp *controlplane.API) {
 	cp.SetHealth(nc.prober)
 	if nc.services != nil {
@@ -76,8 +82,13 @@ func (nc *networkControl) ingressWaker() ingress.ServiceWaker {
 func (nc *networkControl) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	nc.cancel = cancel
-	nc.spawn(ctx, nc.prober.Run)
-	if nc.services != nil {
+	if nc.services == nil {
+		nc.spawn(ctx, nc.prober.Run)
+	} else {
+		nc.spawn(ctx, func(ctx context.Context) {
+			nc.services.Refresh(ctx)
+			nc.prober.Run(ctx)
+		})
 		nc.spawn(ctx, nc.services.Run)
 	}
 	if nc.frontDoor != nil {

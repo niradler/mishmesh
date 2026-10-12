@@ -261,13 +261,13 @@ func serviceNodeState(s string) string {
 	switch s {
 	case health.ServiceRunning:
 		return health.StateUp
-	case health.ServiceSleeping:
+	case health.ServiceSleeping, health.ServiceStopped:
 		return health.StateSleeping
 	case health.ServiceStarting:
 		return health.StateWaking
 	case health.ServicePartial:
 		return health.StateDegraded
-	case health.ServiceStopped, health.ServiceError:
+	case health.ServiceError:
 		return health.StateDown
 	}
 	return health.StateUnknown

@@ -110,7 +110,7 @@ func TestProbeProxyStates(t *testing.T) {
 		{"degraded", []string{live, dead}, "", nil, StateDegraded},
 		{"sleeping service", []string{dead}, "svc", fakeServices{"svc": ServiceSleeping}, StateSleeping},
 		{"sleeping service answering is up", []string{live}, "svc", fakeServices{"svc": ServiceSleeping}, StateUp},
-		{"externally stopped service is down", []string{dead}, "svc", fakeServices{"svc": ServiceStopped}, StateDown},
+		{"externally stopped service sleeps", []string{dead}, "svc", fakeServices{"svc": ServiceStopped}, StateSleeping},
 		{"failed service is down", []string{dead}, "svc", fakeServices{"svc": ServiceError}, StateDown},
 		{"starting service", []string{dead}, "svc", fakeServices{"svc": ServiceStarting}, StateWaking},
 		{"running service with dead target", []string{dead}, "svc", fakeServices{"svc": ServiceRunning}, StateDown},
@@ -276,5 +276,32 @@ func TestRunSweepsAndPrunes(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not stop on cancel")
+	}
+}
+
+func TestTriggerSweepsWithoutWaitingForTheInterval(t *testing.T) {
+	f := newFixture(t)
+	first := f.addEndpoint(t, store.MethodProxy, &store.EndpointPolicy{ProxyTargets: []string{liveAddr(t)}})
+	p := NewProber(Options{Data: f.data, Conns: f.conns, Guard: f.guard, Interval: time.Hour, Timeout: time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+	waitFor := func(id string) bool {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, ok := p.Get(id); ok {
+				return true
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		return false
+	}
+	if !waitFor(first.ID) {
+		t.Fatal("initial sweep did not run")
+	}
+	second := f.addEndpoint(t, store.MethodProxy, &store.EndpointPolicy{ProxyTargets: []string{liveAddr(t)}})
+	p.Trigger()
+	if !waitFor(second.ID) {
+		t.Fatal("Trigger did not sweep before the interval")
 	}
 }

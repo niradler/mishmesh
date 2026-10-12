@@ -7,6 +7,7 @@ import { Agents } from "@/pages/Agents";
 import { AgentDetail } from "@/pages/AgentDetail";
 import { Endpoints } from "@/pages/Endpoints";
 import { EndpointDetail } from "@/pages/EndpointDetail";
+import { Network } from "@/pages/Network";
 import { Members } from "@/pages/Members";
 import { Settings } from "@/pages/Settings";
 import { Audit } from "@/pages/Audit";
@@ -25,6 +26,9 @@ function AppRoutes() {
           <Route path="agents/:id" element={<AgentDetail />} />
           <Route path="endpoints" element={<Endpoints />} />
           <Route path="endpoints/:id" element={<EndpointDetail />} />
+          <Route path="services" element={<Navigate to="/endpoints?tab=services" replace />} />
+          <Route path="network" element={<Network />} />
+          <Route path="topology" element={<Navigate to="/network" replace />} />
           <Route path="members" element={<Members />} />
           <Route path="settings" element={<Settings />} />
           <Route path="audit" element={<Audit />} />

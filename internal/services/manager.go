@@ -38,9 +38,10 @@ const (
 var ErrUnknownService = errors.New("unknown service")
 
 type Options struct {
-	Log  *slog.Logger
-	Now  func() time.Time
-	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
+	Log      *slog.Logger
+	Now      func() time.Time
+	Dial     func(ctx context.Context, network, addr string) (net.Conn, error)
+	OnChange func()
 }
 
 type Status struct {
@@ -90,11 +91,12 @@ type service struct {
 }
 
 type Manager struct {
-	cfg     *Config
-	log     *slog.Logger
-	now     func() time.Time
-	dial    func(ctx context.Context, network, addr string) (net.Conn, error)
-	started time.Time
+	cfg      *Config
+	log      *slog.Logger
+	now      func() time.Time
+	dial     func(ctx context.Context, network, addr string) (net.Conn, error)
+	onChange func()
+	started  time.Time
 
 	pollInterval time.Duration
 	readyHold    time.Duration
@@ -149,6 +151,7 @@ func newManager(cfg *Config, opts Options, drivers map[string]Driver) *Manager {
 		log:          log.With("component", "services"),
 		now:          now,
 		dial:         dial,
+		onChange:     opts.OnChange,
 		started:      now(),
 		pollInterval: readyPollInterval,
 		readyHold:    readyHoldWindow,
@@ -231,8 +234,12 @@ func (s *service) snapshot() Status {
 }
 
 func (m *Manager) setState(s *service, state string) {
+	changed := s.state != state
 	s.state = state
 	s.updatedAt = m.now()
+	if changed && m.onChange != nil {
+		m.onChange()
+	}
 }
 
 func (m *Manager) Acquire(name string) func() {
@@ -441,7 +448,7 @@ func (m *Manager) stopService(ctx context.Context, s *service) error {
 }
 
 func (m *Manager) Run(ctx context.Context) {
-	m.refresh(ctx)
+	m.Refresh(ctx)
 	refresh := time.NewTicker(refreshInterval)
 	idle := time.NewTicker(idleCheckInterval)
 	defer refresh.Stop()
@@ -451,14 +458,14 @@ func (m *Manager) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-refresh.C:
-			m.refresh(ctx)
+			m.Refresh(ctx)
 		case <-idle.C:
 			m.stopIdle(ctx)
 		}
 	}
 }
 
-func (m *Manager) refresh(ctx context.Context) {
+func (m *Manager) Refresh(ctx context.Context) {
 	for _, name := range m.Names() {
 		s := m.services[name]
 		callCtx, cancel := context.WithTimeout(ctx, driverCallTimeout)

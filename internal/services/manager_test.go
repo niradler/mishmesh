@@ -322,7 +322,7 @@ func TestManualStopSleeps(t *testing.T) {
 	if state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
 		t.Errorf("state = %s, want sleeping", state)
 	}
-	f.manager.refresh(ctx)
+	f.manager.Refresh(ctx)
 	if state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
 		t.Errorf("state after refresh = %s, want sleeping", state)
 	}
@@ -335,7 +335,7 @@ func TestManualStopSleeps(t *testing.T) {
 func TestManualStopFailure(t *testing.T) {
 	driver := &fakeDriver{state: Running, stopErr: errors.New("busy")}
 	f := newFixture(t, ServiceConfig{}, driver)
-	f.manager.refresh(context.Background())
+	f.manager.Refresh(context.Background())
 	if err := f.manager.Stop(context.Background(), "svc"); err == nil {
 		t.Fatal("expected error")
 	}
@@ -378,7 +378,7 @@ func TestIdleStop(t *testing.T) {
 func TestIdleDisabledNeverStops(t *testing.T) {
 	driver := &fakeDriver{state: Running}
 	f := newFixture(t, ServiceConfig{IdleTimeout: 0}, driver)
-	f.manager.refresh(context.Background())
+	f.manager.Refresh(context.Background())
 	f.clock.Advance(1000 * time.Hour)
 	f.manager.stopIdle(context.Background())
 	if _, stops := driver.counts(); stops != 0 {
@@ -390,7 +390,7 @@ func TestActiveConnectionPreventsStop(t *testing.T) {
 	driver := &fakeDriver{state: Running}
 	f := newFixture(t, ServiceConfig{IdleTimeout: 10 * time.Minute}, driver)
 	ctx := context.Background()
-	f.manager.refresh(ctx)
+	f.manager.Refresh(ctx)
 
 	release := f.manager.Acquire("svc")
 	f.clock.Advance(time.Hour)
@@ -446,14 +446,14 @@ func TestExternallyStartedServiceGetsFullGrace(t *testing.T) {
 	driver := &fakeDriver{state: Stopped}
 	f := newFixture(t, ServiceConfig{IdleTimeout: 10 * time.Minute}, driver)
 	ctx := context.Background()
-	f.manager.refresh(ctx)
+	f.manager.Refresh(ctx)
 	if state, _ := f.manager.ServiceState("svc"); state != StateStopped {
 		t.Fatalf("state = %s, want stopped", state)
 	}
 
 	f.clock.Advance(time.Hour)
 	driver.setState(Running)
-	f.manager.refresh(ctx)
+	f.manager.Refresh(ctx)
 	status, _ := f.manager.Status("svc")
 	if status.State != StateRunning || status.StartedBy != StartedByExternal {
 		t.Fatalf("status = %+v", status)
@@ -497,7 +497,7 @@ func TestRefreshStateMapping(t *testing.T) {
 			svc.state = tt.initial
 			svc.stoppedByUs = tt.stoppedByUs
 			f.manager.mu.Unlock()
-			f.manager.refresh(context.Background())
+			f.manager.Refresh(context.Background())
 			if got, _ := f.manager.ServiceState("svc"); got != tt.want {
 				t.Errorf("state = %s, want %s", got, tt.want)
 			}
@@ -724,5 +724,23 @@ func TestProbeRequiresListeningService(t *testing.T) {
 				t.Fatalf("probe err = %v, want ready=%v", err, tc.wantReady)
 			}
 		})
+	}
+}
+
+func TestOnChangeFiresOnStateTransitionsOnly(t *testing.T) {
+	driver := &fakeDriver{state: Running}
+	f := newFixture(t, ServiceConfig{}, driver)
+	var changes atomic.Int32
+	f.manager.onChange = func() { changes.Add(1) }
+	ctx := context.Background()
+	f.manager.Refresh(ctx)
+	f.manager.Refresh(ctx)
+	if got := changes.Load(); got != 1 {
+		t.Fatalf("unknown to running then running again: %d changes, want 1", got)
+	}
+	driver.setState(Stopped)
+	f.manager.Refresh(ctx)
+	if got := changes.Load(); got != 2 {
+		t.Fatalf("running to stopped: %d changes, want 2", got)
 	}
 }

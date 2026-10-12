@@ -77,6 +77,7 @@ type Prober struct {
 	timeout  time.Duration
 	log      *slog.Logger
 
+	kick    chan struct{}
 	mu      sync.RWMutex
 	results map[string]EndpointHealth
 }
@@ -88,6 +89,7 @@ func NewProber(o Options) *Prober {
 		data: o.Data, conns: o.Conns, guard: o.Guard, services: o.Services,
 		interval: o.Interval, timeout: o.Timeout, log: o.Log,
 		results: make(map[string]EndpointHealth),
+		kick:    make(chan struct{}, 1),
 	}
 	if p.guard == nil {
 		p.guard = proxy.DefaultGuard()
@@ -114,7 +116,16 @@ func (p *Prober) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			p.sweep(ctx)
+		case <-p.kick:
+			p.sweep(ctx)
 		}
+	}
+}
+
+func (p *Prober) Trigger() {
+	select {
+	case p.kick <- struct{}{}:
+	default:
 	}
 }
 
@@ -263,10 +274,15 @@ func applyServiceState(h *EndpointHealth, name string, services ServiceStates) {
 			h.State = StateSleeping
 			h.Detail = fmt.Sprintf("service %s is scaled to zero and wakes on request", name)
 		}
-	case ServiceStopped, ServiceError:
+	case ServiceStopped:
+		if h.State != StateUp {
+			h.State = StateSleeping
+			h.Detail = fmt.Sprintf("service %s was stopped outside mishmesh and wakes on request", name)
+		}
+	case ServiceError:
 		if h.State != StateUp {
 			h.State = StateDown
-			h.Detail = fmt.Sprintf("service %s is %s; a request will try to start it", name, state)
+			h.Detail = fmt.Sprintf("service %s failed; a request will try to start it again", name)
 		}
 	}
 }

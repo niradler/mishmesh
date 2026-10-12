@@ -4,12 +4,14 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { StatusDot } from "@/components/common/StatusDot";
+import { StateDot, StatusDot } from "@/components/common/StatusDot";
+import { StateBadge } from "@/components/common/StateBadge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/States";
-import { useAgents, useStatus } from "@/api/hooks";
+import { useAgents, useEndpoints, useFrontDoors, useServices, useStatus } from "@/api/hooks";
 import { useSession } from "@/context/SessionContext";
+import { endpointHealthState } from "@/lib/health";
 import { formatBytes, formatRelativeTime } from "@/lib/utils";
-import type { Status } from "@/api/types";
+import type { HealthState, Status } from "@/api/types";
 
 function StatCard({
   label,
@@ -33,6 +35,80 @@ function StatCard({
         <div className="flex h-9 w-9 items-center justify-center rounded-md bg-secondary text-foreground">
           {icon}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const HEALTH_ORDER: HealthState[] = ["up", "down", "degraded", "sleeping", "waking", "offline"];
+
+function StripLink({ to, children }: { to: string; children: React.ReactNode }) {
+  return (
+    <Link to={to} className="inline-flex items-center rounded-md px-2 py-1 text-sm hover:bg-accent">
+      {children}
+    </Link>
+  );
+}
+
+function StripGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="pr-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function HealthStrip({ orgId }: { orgId?: string }) {
+  const endpoints = useEndpoints(orgId);
+  const services = useServices(orgId);
+  const frontDoors = useFrontDoors(orgId);
+
+  const endpointCounts = new Map<HealthState, number>();
+  (endpoints.data ?? []).forEach((ep) => {
+    const state = endpointHealthState(ep);
+    endpointCounts.set(state, (endpointCounts.get(state) ?? 0) + 1);
+  });
+  const endpointStates = HEALTH_ORDER.filter((state) => (endpointCounts.get(state) ?? 0) > 0);
+  const serviceList = services.data ?? [];
+  const running = serviceList.filter((service) => service.state === "running").length;
+  const sleeping = serviceList.filter((service) => service.state === "sleeping").length;
+  const cloudflare = frontDoors.data?.cloudflare;
+
+  if (endpointStates.length === 0 && serviceList.length === 0 && !cloudflare?.enabled) return null;
+
+  return (
+    <Card className="mb-4">
+      <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-2 p-3">
+        {endpointStates.length > 0 && (
+          <StripGroup label="Endpoints">
+            {endpointStates.map((state) => (
+              <StripLink key={state} to="/endpoints">
+                <StateDot state={state} label={`${endpointCounts.get(state)} ${state}`} />
+              </StripLink>
+            ))}
+          </StripGroup>
+        )}
+        {serviceList.length > 0 && (
+          <StripGroup label="Services">
+            <StripLink to="/endpoints?tab=services">
+              <StateDot state="running" label={`${running} running`} />
+            </StripLink>
+            <StripLink to="/endpoints?tab=services">
+              <StateDot state="sleeping" label={`${sleeping} sleeping`} />
+            </StripLink>
+          </StripGroup>
+        )}
+        {cloudflare?.enabled && (
+          <StripGroup label="Cloudflare">
+            <StripLink to="/network?tab=frontdoors">
+              <StateBadge
+                state={cloudflare.tunnel?.status ?? "unknown"}
+                label={cloudflare.tunnel?.status ?? "no tunnel"}
+              />
+            </StripLink>
+          </StripGroup>
+        )}
       </CardContent>
     </Card>
   );
@@ -79,6 +155,8 @@ export function Dashboard() {
   return (
     <div>
       <PageHeader title="Dashboard" description="Live overview of your tunnels and agents." />
+
+      <HealthStrip orgId={currentOrgId} />
 
       {status.isLoading ? (
         <LoadingState label="Loading status" />
