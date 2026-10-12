@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"reflect"
 	"sort"
 	"strings"
@@ -41,6 +42,7 @@ type Options struct {
 	Log              *slog.Logger
 	Now              func() time.Time
 	Dial             func(ctx context.Context, network, addr string) (net.Conn, error)
+	HTTPClient       *http.Client
 	OnChange         func()
 	DockerHost       string
 	HostCommands     bool
@@ -98,12 +100,13 @@ type service struct {
 type driverFactory func(Definition) (Driver, error)
 
 type Manager struct {
-	log       *slog.Logger
-	now       func() time.Time
-	dial      func(ctx context.Context, network, addr string) (net.Conn, error)
-	onChange  func()
-	started   time.Time
-	newDriver driverFactory
+	log        *slog.Logger
+	now        func() time.Time
+	dial       func(ctx context.Context, network, addr string) (net.Conn, error)
+	httpClient *http.Client
+	onChange   func()
+	started    time.Time
+	newDriver  driverFactory
 
 	pollInterval time.Duration
 	readyHold    time.Duration
@@ -190,10 +193,17 @@ func newManager(opts Options, factory driverFactory) *Manager {
 		dialer := &net.Dialer{}
 		dial = dialer.DialContext
 	}
+	client := http.DefaultClient
+	if opts.HTTPClient != nil {
+		client = opts.HTTPClient
+	}
+	probeClient := *client
+	probeClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Manager{
 		log:          log.With("component", "services"),
 		now:          now,
 		dial:         dial,
+		httpClient:   &probeClient,
 		onChange:     opts.OnChange,
 		started:      now(),
 		newDriver:    factory,
@@ -407,6 +417,13 @@ func readyTarget(def Definition, readyAddr string) string {
 	return hostPortOf(readyAddr)
 }
 
+func readinessTarget(def Definition, readyAddr string) Readiness {
+	if def.Ready.HTTP != nil {
+		return def.Ready
+	}
+	return Readiness{TCP: readyTarget(def, readyAddr)}
+}
+
 func hostPortOf(target string) string {
 	target = strings.TrimSpace(target)
 	if i := strings.Index(target, "://"); i >= 0 {
@@ -429,11 +446,16 @@ func (m *Manager) probe(ctx context.Context, addr string) error {
 		return err
 	}
 	defer conn.Close()
+	stopCancellation := context.AfterFunc(dialCtx, func() { _ = conn.Close() })
+	defer stopCancellation()
 	if err := conn.SetReadDeadline(time.Now().Add(m.readyHold)); err != nil {
 		return err
 	}
 	var first [1]byte
 	_, err = conn.Read(first[:])
+	if dialCtx.Err() != nil {
+		return dialCtx.Err()
+	}
 	var netErr net.Error
 	if err == nil || (errors.As(err, &netErr) && netErr.Timeout()) {
 		return nil
@@ -442,16 +464,17 @@ func (m *Manager) probe(ctx context.Context, addr string) error {
 }
 
 func (m *Manager) ensure(ctx context.Context, s *service, def Definition, driver Driver, readyAddr string) error {
-	addr := readyTarget(def, readyAddr)
+	ready := readinessTarget(def, readyAddr)
+	hasTarget := ready.TCP != "" || ready.HTTP != nil
 
 	driverState, stateErr := driver.State(ctx)
-	if stateErr == nil && addr != "" && (driverState == Running || driverState == Unknown) {
-		if m.probe(ctx, addr) == nil {
+	if stateErr == nil && hasTarget && (driverState == Running || driverState == Unknown) {
+		if m.probeReadiness(ctx, ready) == nil {
 			m.markRunning(s, false)
 			return nil
 		}
 	}
-	if stateErr == nil && addr == "" && driverState == Running {
+	if stateErr == nil && !hasTarget && driverState == Running {
 		m.markRunning(s, false)
 		return nil
 	}
@@ -468,8 +491,8 @@ func (m *Manager) ensure(ctx context.Context, s *service, def Definition, driver
 	ticker := time.NewTicker(m.pollInterval)
 	defer ticker.Stop()
 	for {
-		if addr != "" {
-			lastProbeErr = m.probe(ctx, addr)
+		if hasTarget {
+			lastProbeErr = m.probeReadiness(ctx, ready)
 		} else {
 			st, err := driver.State(ctx)
 			if err != nil {

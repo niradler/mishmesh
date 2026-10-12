@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -155,8 +154,8 @@ func Validate(name, driver string, spec Spec, idleSeconds, startSeconds int) err
 		return fmt.Errorf("start_timeout_seconds must be between 0 and %d", maxTimeoutSeconds)
 	}
 	if spec.ReadyTCP != "" {
-		if _, port, err := net.SplitHostPort(spec.ReadyTCP); err != nil || port == "" {
-			return fmt.Errorf("ready_tcp must be host:port")
+		if err := ValidateReadiness(Readiness{TCP: spec.ReadyTCP}); err != nil {
+			return fmt.Errorf("ready_tcp: %w", err)
 		}
 	}
 	blocks := 0
@@ -239,11 +238,9 @@ func FromRecordWithRegistry(rec *store.Service, registry *Registry) (Definition,
 	if err := driverType.Validate(config); err != nil {
 		return Definition{}, fmt.Errorf("service %s: %w", rec.ID, err)
 	}
-	var readiness Readiness
-	if len(bytes.TrimSpace(ready)) > 0 {
-		if err := json.Unmarshal(ready, &readiness); err != nil {
-			return Definition{}, fmt.Errorf("service %s readiness: %w", rec.ID, err)
-		}
+	readiness, err := DecodeReadiness(ready)
+	if err != nil {
+		return Definition{}, fmt.Errorf("service %s: %w", rec.ID, err)
 	}
 	start := time.Duration(rec.StartTimeoutSeconds) * time.Second
 	if start <= 0 {

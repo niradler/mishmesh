@@ -378,6 +378,22 @@ func TestShouldGateExplicitComposeHostFieldsBeforeNormalization(t *testing.T) {
 	}
 }
 
+func TestShouldRejectInvalidTCPReadinessBeforePersistence(t *testing.T) {
+	f := newNetworkFixture(t)
+	for _, target := range []string{"localhost:http", "localhost:0", "localhost:65536", ":80"} {
+		body := `{"name":"invalid-ready","driver":"docker","spec":{"docker":{"containers":["web"]},"ready_tcp":"` + target + `"}}`
+		if code, response := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services", body); code != http.StatusBadRequest || !strings.Contains(response, "ready_tcp") {
+			t.Fatalf("invalid readiness: %d %s", code, response)
+		}
+	}
+	if body := statusBody(t, f, http.MethodGet, "/api/v1/services"); strings.TrimSpace(body) != "[]" {
+		t.Fatalf("invalid records persisted: %s", body)
+	}
+	if names := f.svc.appliedNames(); len(names) != 0 {
+		t.Fatalf("invalid definitions loaded: %v", names)
+	}
+}
+
 func statusBody(t *testing.T, f *networkFixture, method, path string) string {
 	t.Helper()
 	code, body := statusAndBody(t, f.srv, method, path, "")
