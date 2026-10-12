@@ -24,7 +24,7 @@
 - Readiness is TCP or HTTP and belongs to the service. An empty setting uses the linked endpoint's first target as today.
 - Confirm with Nir before changing lab sudoers or `MISHMESH_HOST_COMMANDS`. Nir installs and joins Tailscale himself. Kubernetes is proven on a throwaway kind cluster.
 - Follow `CLAUDE.md`: no new code comments, bind dev listeners to `127.0.0.1`, explicit shell deadlines, no AI attribution.
-- Preserve the existing uncommitted Network layout fix and its browser artifacts. Do not stage it as part of this feature without Nir's direction.
+- Preserve the original checkout's uncommitted Network layout fix and browser artifacts. Task17 carries the requested bounded full-screen layout into the feature worktree as reviewed topology work, without staging the original checkout.
 - For destructive commands, print the exact command and effect and ask Nir to run it, unless he explicitly authorizes the agent to run it. This includes kind deletion, regression fixture deletion, and rollback/restoration. Prepare scripts with opt-in cleanup; do not silently execute their cleanup on the lab.
 - Nir delegated the execution method and authorized implementation; subagent-driven execution is active. Explicit lab gates above remain required.
 
@@ -225,7 +225,7 @@ func TestShouldRejectTwoReadinessModes(t *testing.T) {
 
 **Interfaces:** Produce `ValidateRequirements(orgID, serviceID string, requires []string, services []*store.Service) error`; service stores enforce the same graph invariant within the transaction that replaces the set. Produce `ListServiceDependents(ctx context.Context, orgID, serviceID string) ([]*Service, error)` on `DataStore` for delete/stop guards and detail DTOs.
 
-- [ ] Add empty/set deduplication, missing ID, cross-org, self-cycle, long-cycle, diamond-valid, update-removes-old-edge, and concurrent opposing updates tests. Anchor:
+- [x] Add empty/set deduplication, missing ID, cross-org, self-cycle, long-cycle, diamond-valid, update-removes-old-edge, and concurrent opposing updates tests. Anchor:
 
 ```go
 func TestShouldRejectCycleOnUpdate(t *testing.T) {
@@ -234,9 +234,9 @@ func TestShouldRejectCycleOnUpdate(t *testing.T) {
 }
 ```
 
-- [ ] Run `./internal/services ./internal/store/sqlite ./internal/store/postgres`; expect missing graph validator/dependents lookup.
-- [ ] Implement DFS using the prospective replacement set and same-org service snapshot, deterministic names in failures, DB FK/transaction enforcement, and the existing cross-process network-write transaction lock in each backend; reuse it for graph snapshot and replacement without a second lock order. Concurrent A→B/B→A must yield at most one success, even through two server/store instances. Delete required services returns `store.ErrConflict`, without first deleting inbound edges.
-- [ ] Run focused suites with the race detector; verify no cross-org service name/ID appears in client errors. Commit `feat: validate service requirement graphs`.
+- [x] Run `./internal/services ./internal/store/sqlite ./internal/store/postgres`; expect missing graph validator/dependents lookup.
+- [x] Implement DFS using the prospective replacement set and same-org service snapshot, deterministic names in failures, DB FK/transaction enforcement, and the existing cross-process network-write transaction lock in each backend; reuse it for graph snapshot and replacement without a second lock order. Pin PostgreSQL network writes to ReadCommitted so a configured RepeatableRead default cannot retain a pre-lock snapshot. Verify a database-observed waiter and longer-cycle schedule with those defaults. Concurrent A→B/B→A must yield at most one success, even through two server/store instances. Delete required services returns `store.ErrConflict`, without first deleting inbound edges.
+- [x] Run focused suites with the race detector; verify no cross-org service name/ID appears in client errors. Commit `feat: validate service requirement graphs`.
 
 ### Task 7: Wake requirements and hold them through the dependent lifecycle
 
@@ -468,7 +468,7 @@ await page.getByLabel("Level", { exact: true }).selectOption("imported");
 
 ### Task 17: Connection topology nodes and Requires edges
 
-**Files:** Modify `internal/controlplane/topology.go`, `network_test.go`, `web/src/api/types.ts`, `components/network/TopologyMap.tsx`; extend `.claude/scripts/pluggable-types/check-forms.cjs` and reuse `.claude/scripts/check-network-layout.cjs` only after Nir chooses how to integrate that separate fix.
+**Files:** Modify `internal/controlplane/topology.go`, `network_test.go`, `web/src/api/types.ts`, `components/network/TopologyMap.tsx`, network page and AppShell/Topbar layout; extend `.claude/scripts/pluggable-types/check-forms.cjs` and copy/adapt the prior `.claude/scripts/check-network-layout.cjs` in this feature worktree. Preserve original checkout and artifacts.
 
 **Interfaces:** Connection node IDs `connection:<connectionID>` with `ref:{kind:"connection",id:<connectionID>}`; hostname IDs include connection ID to avoid collisions. Add edge kind `requires`, directed dependent service → required service. Retain endpoint/service/agent IDs and route/serves/proxies/tunnels/wakes behavior.
 
@@ -485,7 +485,8 @@ func TestShouldKeepConnectionHostnameNodesDistinct(t *testing.T) {
 
 - [ ] Run API/browser checks; expect missing connection/requires wire types before implementation.
 - [ ] Render generic connection icons/labels and link paths from reference kind. Add distinguishable Requires legend/dash style and side-routed same-column curves; keep SVG paths and tooltip bounds inside the map viewport. Derive service requirements from stored graph without revealing other-org IDs.
-- [ ] Run focused topology tests, web lint/build, and browser selection/link/resize checks. Commit `feat: show typed connections and service requirements in network map`.
+- [ ] Carry the requested full-screen Network layout into this feature worktree: bounded flex page/map fills available screen; main hides overflow; map scrolls internally, legend remains visible; other routes retain existing layout. Use original checkout diff/script as reference, preserving it.
+- [ ] Run focused topology tests, web lint/build, and browser selection/link/resize checks at desktop/tablet/phone sizes with overflow assertions and dense map fixture. Commit `feat: show typed connections and service requirements in network map`.
 
 ### Task 18: Update operational scripts and deterministic regression fixtures
 

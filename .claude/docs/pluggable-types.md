@@ -4,7 +4,7 @@
 
 - Spec approved by Nir 2026-10-13: `docs/superpowers/specs/2026-10-13-pluggable-types-design.md` (commit `1a913c3`).
 - Implementation plan: `docs/superpowers/plans/2026-10-13-pluggable-types.md`; subagent-driven execution authorized (Nir delegated method choice).
-- Tasks 1, 2, 4 and 5 complete with independent review. Task 5 TCP diagnostic leak fixed (`a7c6a41`), regression-tested and scoped review approved. Task 6 is next.
+- Tasks 1, 2, 4, 5 and 6 complete with independent review. Task 5 TCP diagnostic leak fixed (`a7c6a41`), regression-tested and scoped review approved. Task 6 isolation fix (`c7a8c6c`) reproduced live red/green and scoped review approved. Task 7 is next.
 - Active worktree: `C:/Projects/products/mishmesh/.claude/worktrees/pluggable-types` on `feat/pluggable-types`. Original checkout on `work/network-layout` preserves its uncommitted prior map fix.
 - Lab still runs `v0.1.0-beta.4`; no rollout, host flag, sudoers, Tailscale install or kind-cluster changes made.
 
@@ -22,7 +22,7 @@
 
 ## Next
 
-1. Execute Task 6. Resume from `.superpowers/sdd/2026-10-13-pluggable-types/progress.md` in the active worktree; do not re-dispatch completed tasks.
+1. Execute Task 7 dependency lifecycle. Resume from `.superpowers/sdd/2026-10-13-pluggable-types/progress.md` in the active worktree; do not re-dispatch completed tasks.
 2. Execution order: **1,2,4,5,6,7,8,9,10,11,12,13,14,3,15,16,17,18,19,20**. Physical Task 3 cutover follows Go consumers to avoid temporary encrypted legacy-table emulation. No intermediate checkpoint is deployed.
 3. Continue to complete validation, PR/merge, beta.5 release and lab E2E, respecting the approval/action gates below.
 
@@ -32,6 +32,8 @@
 - Task 2 (`9ff522a`): additive typed connection/service stores, derived runtime references, requirements/aliases and transactional ownership/delete guards. SQLite/store/legacy-consumer race suites, Windows/Linux compile/vet and six live isolated Postgres race cases passed; independent review approved.
 - Task 4 (`ce31f02`): injected driver registry, generic config definitions, pure legacy converter, pinned matching Kubernetes modules v0.35.4. Compatibility race/compile/vet and services govulncheck passed; independent review approved. Command captured output no longer leaks into errors/status/logs; host markers captured before legacy API normalization, both regression-tested red/green.
 - Task 5 (`26b4f7f` + `a7c6a41`, review approved): strict TCP/HTTP readiness and bounded probes, no redirects/client mutation/body leaks, TCP hold cancellation correction, shared legacy TCP validation. TCP errors use stable diagnostics and preserve only context causes. Services/health/ingress race suites, focused API, consumer compile/vet/format passed. Health/ingress fixtures now have valid durable service links while preserving fake runtime states.
+
+- Task 6 (`9aa668a` + `c7a8c6c`, review approved): same-org prospective DFS validation in locked store transactions, deterministic dependents lookup, ownership/error guards. Affected race suites, separate-handle SQLite and live Postgres opposing updates, consumer compile/vet/format passed. Explicit PostgreSQL ReadCommitted fixes the reproduced RepeatableRead stale-snapshot cycle; synchronized regression passes.
 
 ## Decisions and open validation
 
@@ -43,7 +45,8 @@
 - Task 2 minor review finding deferred to Task 14: canonical-collision fixture names use underscores and can mask the intended collision validation; replace with valid hyphenated hosts and assert the proper error path in both stores.
 - Task 5 minor deferred to Task 19/final review: TCP cancellation regression needs peer EOF and explicit test-owned cleanup completion assertions.
 - Full real Postgres legacy migrations, provider APIs/live tailnet, kind wake traffic, generic API tenancy and browser save/reopen validation remain future gates; compilation/skipped cases are not runtime evidence.
-- Test Postgres container `mishmesh-types-pg-1791842027` is stopped and retained (no published ports). Temporary Go test containers are retained; no destructive cleanup run.
+- Task 17 will carry the originally requested full-screen map/overflow fix into this feature worktree with dense viewport checks; the original checkout remains preserved.
+- Test Postgres container `mishmesh-types-pg-1791842027` is stopped and retained (no published ports). Its unique isolation RED-test org contains an intentional cycle; use a fresh isolated fixture for whole-DB validation. Temporary Go test containers are retained; no destructive cleanup run.
 
 ## Explicit human gates
 
