@@ -443,24 +443,40 @@ func (m *Manager) probe(ctx context.Context, addr string) error {
 	defer cancel()
 	conn, err := m.dial(dialCtx, "tcp", addr)
 	if err != nil {
-		return err
+		return tcpProbeError(dialCtx, "TCP readiness connection failed", err)
 	}
 	defer conn.Close()
 	stopCancellation := context.AfterFunc(dialCtx, func() { _ = conn.Close() })
 	defer stopCancellation()
 	if err := conn.SetReadDeadline(time.Now().Add(m.readyHold)); err != nil {
-		return err
+		return tcpProbeError(dialCtx, "TCP readiness read deadline failed", err)
 	}
 	var first [1]byte
 	_, err = conn.Read(first[:])
-	if dialCtx.Err() != nil {
-		return dialCtx.Err()
+	if dialCtx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return tcpProbeError(dialCtx, "TCP readiness read failed", err)
 	}
 	var netErr net.Error
 	if err == nil || (errors.As(err, &netErr) && netErr.Timeout()) {
 		return nil
 	}
-	return fmt.Errorf("%s accepted the connection but closed it, the service is not listening yet: %w", addr, err)
+	return tcpProbeError(dialCtx, "TCP readiness connection closed before the service was listening", err)
+}
+
+func tcpProbeError(ctx context.Context, diagnostic string, transportError error) error {
+	cause := ctx.Err()
+	if cause == nil {
+		switch {
+		case errors.Is(transportError, context.Canceled):
+			cause = context.Canceled
+		case errors.Is(transportError, context.DeadlineExceeded):
+			cause = context.DeadlineExceeded
+		}
+	}
+	if cause != nil {
+		return fmt.Errorf("%s: %w", diagnostic, cause)
+	}
+	return errors.New(diagnostic)
 }
 
 func (m *Manager) ensure(ctx context.Context, s *service, def Definition, driver Driver, readyAddr string) error {

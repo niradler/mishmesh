@@ -1,10 +1,13 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -316,5 +319,73 @@ func TestShouldSelectGenericTCPAndEmptyReadinessFallbacks(t *testing.T) {
 				t.Fatalf("target=%+v want=%s", got, test.want)
 			}
 		})
+	}
+}
+
+type readinessErrorConnection struct {
+	net.Conn
+	deadlineError error
+	readError     error
+}
+
+func (c readinessErrorConnection) SetReadDeadline(deadline time.Time) error {
+	if c.deadlineError != nil {
+		return c.deadlineError
+	}
+	return c.Conn.SetReadDeadline(deadline)
+}
+
+func (c readinessErrorConnection) Read(buffer []byte) (int, error) {
+	return 0, c.readError
+}
+
+func TestShouldSanitizeTCPReadinessTransportErrors(t *testing.T) {
+	const privateValue = "private-tcp-transport-value"
+	for _, stage := range []string{"dial", "deadline", "read"} {
+		for _, cause := range []error{nil, context.Canceled, context.DeadlineExceeded} {
+			name := stage
+			if cause != nil {
+				name += "/" + cause.Error()
+			}
+			t.Run(name, func(t *testing.T) {
+				transportError := errors.New(privateValue)
+				if cause != nil {
+					transportError = fmt.Errorf("%s: %w", privateValue, cause)
+				}
+				f := newFixture(t, Definition{StartTimeout: 35 * time.Millisecond, Ready: Readiness{TCP: "localhost:8080"}}, &fakeDriver{state: Stopped})
+				var logs bytes.Buffer
+				f.manager.log = slog.New(slog.NewTextHandler(&logs, nil))
+				f.manager.dial = func(context.Context, string, string) (net.Conn, error) {
+					if stage == "dial" {
+						return nil, transportError
+					}
+					client, server := net.Pipe()
+					t.Cleanup(func() { client.Close(); server.Close() })
+					connection := readinessErrorConnection{Conn: client, readError: transportError}
+					if stage == "deadline" {
+						connection.deadlineError = transportError
+					}
+					return connection, nil
+				}
+				probeError := f.manager.probe(context.Background(), "localhost:8080")
+				if probeError == nil || strings.Contains(probeError.Error(), privateValue) || errors.Is(probeError, transportError) {
+					t.Errorf("probe exposes raw transport error: %v", probeError)
+				}
+				if cause != nil && !errors.Is(probeError, cause) {
+					t.Errorf("probe lost context cause: %v", probeError)
+				}
+				ensureError := f.manager.EnsureRunning(context.Background(), "svc", "")
+				if ensureError == nil || strings.Contains(ensureError.Error(), privateValue) || errors.Is(ensureError, transportError) {
+					t.Errorf("EnsureRunning exposes raw transport error: %v", ensureError)
+				}
+				status, _ := f.manager.Status("svc")
+				if status.State != StateError || status.LastError == "" || strings.Contains(status.LastError, privateValue) {
+					t.Errorf("LastError exposes transport detail: %+v", status)
+				}
+				if logs.Len() == 0 || strings.Contains(logs.String(), privateValue) {
+					t.Errorf("log exposes transport detail: %s", logs.String())
+				}
+			})
+		}
 	}
 }
