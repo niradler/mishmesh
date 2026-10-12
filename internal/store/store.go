@@ -94,7 +94,6 @@ type EndpointPolicy struct {
 	OIDC                  *OIDCEndpointAuth `json:"oidc,omitempty"`
 	MTLS                  *MTLSConfig       `json:"mtls,omitempty"`
 	RateLimit             *RateLimit        `json:"rate_limit,omitempty"`
-	ProxyTarget           string            `json:"proxy_target,omitempty"`
 	ProxyTargets          []string          `json:"proxy_targets,omitempty"`
 	LoadBalance           string            `json:"load_balance,omitempty"`
 	OriginTLS             *OriginTLS        `json:"origin_tls,omitempty"`
@@ -114,22 +113,6 @@ type OriginTLS struct {
 	CAPEM              string   `json:"ca_pem,omitempty"`
 	PinSHA256          []string `json:"pin_sha256,omitempty"`
 	InsecureSkipVerify bool     `json:"insecure_skip_verify,omitempty"`
-}
-
-func (p *EndpointPolicy) Targets() []string {
-	if p == nil {
-		return nil
-	}
-	out := make([]string, 0, 1+len(p.ProxyTargets))
-	seen := make(map[string]bool, 1+len(p.ProxyTargets))
-	for _, t := range append([]string{p.ProxyTarget}, p.ProxyTargets...) {
-		if t == "" || seen[t] {
-			continue
-		}
-		seen[t] = true
-		out = append(out, t)
-	}
-	return out
 }
 
 type RateLimit struct {

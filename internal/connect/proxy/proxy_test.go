@@ -49,7 +49,7 @@ func TestProxyRoundTrip(t *testing.T) {
 	ep := &store.Endpoint{
 		ID: store.NewID("ep"), AgentID: AgentID, OrgID: "org_default", Kind: store.KindHTTP,
 		Method: store.MethodProxy, Lifecycle: store.LifecycleReserved,
-		Policy: &store.EndpointPolicy{ProxyTarget: backend.Addr().String()}, CreatedAt: now,
+		Policy: &store.EndpointPolicy{ProxyTargets: []string{backend.Addr().String()}}, CreatedAt: now,
 	}
 	if err := data.CreateEndpoint(ctx, ep); err != nil {
 		t.Fatalf("create endpoint: %v", err)
