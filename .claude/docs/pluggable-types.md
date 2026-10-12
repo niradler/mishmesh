@@ -3,7 +3,7 @@
 ## State
 
 - Spec approved by Nir 2026-10-13: `docs/superpowers/specs/2026-10-13-pluggable-types-design.md` (commit 1a913c3).
-- Implementation plan written and self-reviewed: `docs/superpowers/plans/2026-10-13-pluggable-types.md` (20 testable tasks, including release/lab gates). Execution authorized: subagent-driven (Nir delegated the choice). Isolated worktree on feat/pluggable-types; baseline verification and Task 1 setup in progress.
+- Implementation plan written and self-reviewed: `docs/superpowers/plans/2026-10-13-pluggable-types.md` (20 testable tasks, including release/lab gates). Execution authorized: subagent-driven (Nir delegated the choice). Isolated worktree on feat/pluggable-types; baseline full Go race suite passed; Task 1 descriptors committed (`af1a3ad`), race tests/vet/all-package compilation passed; independent task review approved without findings. Task 2 store contracts are next.
 - Lab runs v0.1.0-beta.4 (see `lab-network-control.md`); `lab-e2e.py` is the regression check.
 
 ## Scope
@@ -30,3 +30,7 @@
 - Plan makes idle `-1` = With dependents, argv-list Command fields, generic descriptor defaults/sensitivity, persistent Tailscale ownership, and derived ingress aliases explicit implementation choices.
 - Existing uncommitted network-map layout changes and browser artifacts belong to the previous task and must be preserved/separately scoped.
 - No lab, sudoers, host-command flag, Tailscale installation, Kubernetes cluster, release or external publication changes made during planning.
+
+## Completed execution tasks
+
+- Task 1: shared typed fields, strict validation, host markers, and redaction; commit `af1a3ad`; focused race tests (97.2% coverage), vet, all-package compilation, and independent spec/quality review passed.

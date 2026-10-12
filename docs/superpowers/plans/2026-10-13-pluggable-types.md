@@ -94,7 +94,7 @@ Use explicit path lists for `git add`, then `git commit -m '<task message>'`. No
 
 **Interfaces:** Produce the shared wire type and `Validate(fields []Field, raw json.RawMessage) error`, `UsesHostCommands(fields []Field, raw json.RawMessage) (bool, error)`, `Redact(fields []Field, raw json.RawMessage) (json.RawMessage, error)`.
 
-- [ ] Add failing tests for all nine kinds, missing required values, wrong types, trailing JSON, unknown keys, empty host-command fields, numeric bounds/defaults, and sensitive key-value redaction. Anchor:
+- [x] Add failing tests for all eight kinds, missing required values, wrong types, trailing JSON, unknown keys, empty host-command fields, numeric bounds/defaults, and sensitive key-value redaction. Anchor:
 
 ```go
 func TestShouldRejectUnknownField(t *testing.T) {
@@ -105,8 +105,8 @@ func TestShouldRejectUnknownField(t *testing.T) {
 }
 ```
 
-- [ ] Run `./internal/typedfields`; expect undefined `Field`/`Validate` first.
-- [ ] Implement the contract below, strict one-value decoding, typed empty/default handling, and secret redaction without mutating caller data:
+- [x] Run `./internal/typedfields`; expect undefined `Field`/`Validate` first.
+- [x] Implement the contract below, strict one-value decoding, typed empty/default handling, and secret redaction without mutating caller data:
 
 ```go
 type Field struct {
@@ -124,7 +124,7 @@ type Field struct {
 }
 ```
 
-- [ ] Run focused tests and `go vet ./internal/typedfields`; expected pass. Commit `feat: add shared type field descriptors`.
+- [x] Run focused tests and `go vet ./internal/typedfields`; expected pass. Commit `feat: add shared type field descriptors`.
 
 ### Task 2: Connection, service, requirement, and alias store contracts
 
@@ -419,7 +419,7 @@ func TestShouldDefaultTailscaleToFirstDomainLabel(t *testing.T) {
 
 **Files:** Create `web/src/components/types/TypePicker.tsx`, `DescriptorFields.tsx`, `DescriptorDetails.tsx`, `web/src/lib/typed-fields.ts`; modify `web/src/api/types.ts`, `hooks.ts`, `lib/services.ts`, service form/config components and `pages/ServiceDetail.tsx`; create `.claude/scripts/pluggable-types/check-forms.cjs`.
 
-**Interfaces:** TS `Field` matches Go wire metadata. `DescriptorFields({fields,values,onChange,connections,hostCommands,secretPresence})` renders all nine kinds; values are `Record<string, unknown>`. Connection pickers filter by `conn_type`. `DescriptorDetails` renders the selected type's labels; forms never branch on a driver's ID. `useServiceDrivers()` fetches descriptors; service hooks use config/ready/requires.
+**Interfaces:** TS `Field` matches Go wire metadata. `DescriptorFields({fields,values,onChange,connections,hostCommands,secretPresence})` renders all eight kinds; values are `Record<string, unknown>`. Connection pickers filter by `conn_type`. `DescriptorDetails` renders the selected type's labels; forms never branch on a driver's ID. `useServiceDrivers()` fetches descriptors; service hooks use config/ready/requires.
 
 - [ ] Write a Playwright CLI scenario against a local server with synthetic API descriptors. Assert each driver picker generates its own labels/fields, then add a synthetic fifth driver descriptor without changing React and assert its fields render and submit. Verify Compose labels, Command argv round-trip, Kubernetes filtered cluster/namespace/replicas default, TCP/HTTP/driver-state readiness, linked Requires and required-by, and -1/0/timed idle.
 
