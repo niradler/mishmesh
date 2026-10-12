@@ -1,13 +1,535 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
+
+func TestShouldKeepMultipleConnectionsOfOneType(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	orgID := store.NewID("org")
+	otherOrgID := store.NewID("org")
+	for _, id := range []string{orgID, otherOrgID} {
+		if err := s.CreateOrg(ctx, &store.Org{ID: id, Name: id, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := &store.Connection{ID: store.NewID("conn"), OrgID: orgID, Type: "cloudflare", Name: "lab", Config: json.RawMessage(`{"level":"managed"}`), SecretsEnc: []byte{0, 255, 1}, CreatedAt: now, UpdatedAt: now}
+	if err := s.CreateConnection(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	backup := *c
+	backup.ID, backup.Name = store.NewID("conn"), "backup"
+	if err := s.CreateConnection(ctx, &backup); err != nil {
+		t.Fatal(err)
+	}
+	dup := *c
+	dup.ID = store.NewID("conn")
+	if err := s.CreateConnection(ctx, &dup); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("duplicate: %v", err)
+	}
+	dup.OrgID = otherOrgID
+	if err := s.CreateConnection(ctx, &dup); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetConnection(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != c.Type || !bytes.Equal(got.Config, c.Config) || !bytes.Equal(got.SecretsEnc, c.SecretsEnc) || !got.CreatedAt.Equal(now) {
+		t.Fatalf("connection round trip: %+v", got)
+	}
+	got.Name, got.Config, got.SecretsEnc = "updated", json.RawMessage(`{}`), nil
+	if err := s.UpdateConnection(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ListConnections(ctx, orgID)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows=%d err=%v", len(rows), err)
+	}
+	all, err := s.ListAllConnections(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, row := range all {
+		if row.OrgID == orgID || row.OrgID == otherOrgID {
+			count++
+		}
+	}
+	if count != 3 {
+		t.Fatalf("all connections: %d", count)
+	}
+	got.OrgID = otherOrgID
+	if err := s.UpdateConnection(ctx, got); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("foreign update: %v", err)
+	}
+	if err := s.DeleteConnection(ctx, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteConnection(ctx, c.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing delete: %v", err)
+	}
+}
+
+func createTypedOrg(t *testing.T, s *Store) string {
+	t.Helper()
+	id := store.NewID("org")
+	if err := s.CreateOrg(context.Background(), &store.Org{ID: id, Name: id, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestShouldUpgradeLegacyNetworkSchemaWithoutConvertingRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySchema := `
+CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE services (id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE, name TEXT NOT NULL, driver TEXT NOT NULL, spec TEXT NOT NULL, idle_timeout_seconds INTEGER NOT NULL DEFAULT 0, start_timeout_seconds INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(org_id, name));
+CREATE TABLE cloudflare_connections (org_id TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE, name TEXT NOT NULL, account_id TEXT NOT NULL, tunnel_id TEXT NOT NULL, tunnel_token_enc BLOB, api_token_enc BLOB, access_app_id TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL DEFAULT '', connector TEXT NOT NULL, metrics_addr TEXT NOT NULL DEFAULT '', prune INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL);
+INSERT INTO orgs VALUES ('org_legacy', 'legacy', 123);
+INSERT INTO services VALUES ('svc_legacy', 'org_legacy', 'legacy', 'exec', '{"exec":{"start":["start"]},"ready_tcp":"127.0.0.1:8080"}', 10, 20, 123, 456);
+INSERT INTO cloudflare_connections (org_id, name, account_id, tunnel_id, tunnel_token_enc, connector, updated_at) VALUES ('org_legacy', 'legacy', 'account', 'tunnel', x'00ff01', 'external', 456);
+`
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		s, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		svc, err := s.GetService(context.Background(), "svc_legacy")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if svc.Driver != "exec" || string(svc.Spec) != `{"exec":{"start":["start"]},"ready_tcp":"127.0.0.1:8080"}` || svc.Config != nil || svc.Ready != nil || len(svc.Requires) != 0 || len(svc.ConnectionIDs) != 0 {
+			t.Fatalf("legacy row changed: %+v", svc)
+		}
+		connection, err := s.GetCloudflareConnection(context.Background(), "org_legacy")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(connection.TunnelTokenEnc, []byte{0, 255, 1}) || connection.TunnelID != "tunnel" {
+			t.Fatalf("legacy credentials changed: %+v", connection)
+		}
+		typed, err := s.ListConnections(context.Background(), "org_legacy")
+		if err != nil || len(typed) != 0 {
+			t.Fatalf("premature conversion: %+v %v", typed, err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestShouldSerializeAliasWritesAcrossSQLiteStores(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shared.db")
+	firstStore, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstStore.Close()
+	secondStore, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondStore.Close()
+	orgID := createTypedOrg(t, firstStore)
+	connection := createTypedConnection(t, firstStore, orgID)
+	endpoint := createTypedEndpoint(t, firstStore, orgID, "")
+	other := createTypedEndpoint(t, firstStore, orgID, "")
+	other.Domain = "shared.example"
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	go func() {
+		<-start
+		results <- firstStore.ReplaceConnectionAliases(context.Background(), orgID, connection.ID, []store.EndpointAlias{{Hostname: "shared.example", EndpointID: endpoint.ID}})
+	}()
+	go func() { <-start; results <- secondStore.UpdateEndpoint(context.Background(), other) }()
+	close(start)
+	successes, conflicts := 0, 0
+	for range 2 {
+		err := <-results
+		if err == nil {
+			successes++
+		} else if errors.Is(err, store.ErrConflict) {
+			conflicts++
+		} else {
+			t.Fatal(err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("successes=%d conflicts=%d", successes, conflicts)
+	}
+}
+
+func createTypedService(t *testing.T, s *Store, orgID string) *store.Service {
+	t.Helper()
+	id := store.NewID("svc")
+	now := time.Now().UTC()
+	svc := &store.Service{ID: id, OrgID: orgID, Name: id, Driver: "docker", Config: json.RawMessage(`{"containers":["one"]}`), Ready: json.RawMessage(`{"tcp":"127.0.0.1:8080"}`), CreatedAt: now, UpdatedAt: now}
+	if err := s.CreateService(context.Background(), svc); err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+func createTypedConnection(t *testing.T, s *Store, orgID string) *store.Connection {
+	t.Helper()
+	id := store.NewID("conn")
+	now := time.Now().UTC()
+	connection := &store.Connection{ID: id, OrgID: orgID, Name: id, Type: "kubernetes", Config: json.RawMessage(`{}`), CreatedAt: now, UpdatedAt: now}
+	if err := s.CreateConnection(context.Background(), connection); err != nil {
+		t.Fatal(err)
+	}
+	return connection
+}
+
+func createTypedEndpoint(t *testing.T, s *Store, orgID, domain string) *store.Endpoint {
+	t.Helper()
+	agentID := store.NewID("ag")
+	now := time.Now().UTC()
+	if err := s.CreateAgent(context.Background(), &store.Agent{ID: agentID, OrgID: orgID, Name: agentID, Status: store.AgentActive, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &store.Endpoint{ID: store.NewID("ep"), OrgID: orgID, AgentID: agentID, Kind: store.KindHTTP, Lifecycle: store.LifecycleReserved, Domain: domain, CreatedAt: now}
+	if err := s.CreateEndpoint(context.Background(), endpoint); err != nil {
+		t.Fatal(err)
+	}
+	return endpoint
+}
+
+func TestShouldReplaceTypedServiceReferencesAtomically(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	orgID, foreignID := createTypedOrg(t, s), createTypedOrg(t, s)
+	first, second, dependent := createTypedService(t, s, orgID), createTypedService(t, s, orgID), createTypedService(t, s, orgID)
+	foreign := createTypedService(t, s, foreignID)
+	connection := createTypedConnection(t, s, orgID)
+	otherConnection := createTypedConnection(t, s, orgID)
+	foreignConnection := createTypedConnection(t, s, foreignID)
+	dependent.Requires = []string{first.ID, first.ID}
+	dependent.ConnectionIDs = []string{connection.ID, connection.ID}
+	if err := s.UpdateService(ctx, dependent); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetService(ctx, dependent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Config) != string(dependent.Config) || string(got.Ready) != string(dependent.Ready) || len(got.Spec) != 0 || !reflect.DeepEqual(got.Requires, []string{first.ID}) || !reflect.DeepEqual(got.ConnectionIDs, []string{connection.ID}) {
+		t.Fatalf("typed round trip: %+v", got)
+	}
+	original := *got
+	for _, test := range []struct {
+		name                  string
+		requires, connections []string
+	}{
+		{"missing requirement", []string{"svc_missing"}, []string{otherConnection.ID}},
+		{"foreign requirement", []string{foreign.ID}, []string{otherConnection.ID}},
+		{"self requirement", []string{dependent.ID}, []string{otherConnection.ID}},
+		{"missing connection", []string{second.ID}, []string{"conn_missing"}},
+		{"foreign connection", []string{second.ID}, []string{foreignConnection.ID}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := original
+			changed.Name = store.NewID("changed")
+			changed.Config, changed.Ready = json.RawMessage(`{}`), nil
+			changed.Requires, changed.ConnectionIDs = test.requires, test.connections
+			if err := s.UpdateService(ctx, &changed); err == nil {
+				t.Fatal("invalid reference accepted")
+			}
+			restored, err := s.GetService(ctx, dependent.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(restored, &original) {
+				t.Fatalf("failed replacement changed service: %+v", restored)
+			}
+		})
+	}
+	foreignUpdate := original
+	foreignUpdate.OrgID = foreignID
+	if err := s.UpdateService(ctx, &foreignUpdate); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("foreign update: %v", err)
+	}
+	createInvalid := original
+	createInvalid.ID, createInvalid.Name = store.NewID("svc"), store.NewID("invalid")
+	createInvalid.Requires = []string{"svc_missing"}
+	if err := s.CreateService(ctx, &createInvalid); err == nil {
+		t.Fatal("invalid create accepted")
+	}
+	if _, err := s.GetService(ctx, createInvalid.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("failed creation persisted: %v", err)
+	}
+	dependent.Requires, dependent.ConnectionIDs = []string{second.ID}, []string{otherConnection.ID}
+	if err := s.UpdateService(ctx, dependent); err != nil {
+		t.Fatal(err)
+	}
+	for _, list := range []func(context.Context) ([]*store.Service, error){func(ctx context.Context) ([]*store.Service, error) { return s.ListServices(ctx, orgID) }, s.ListAllServices} {
+		rows, err := list(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, row := range rows {
+			if row.ID == dependent.ID {
+				found = true
+				if !reflect.DeepEqual(row.Requires, []string{second.ID}) || !reflect.DeepEqual(row.ConnectionIDs, []string{otherConnection.ID}) {
+					t.Fatalf("replacement list: %+v", row)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("dependent missing from list")
+		}
+	}
+	if err := s.DeleteService(ctx, second.ID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("required delete: %v", err)
+	}
+	if err := s.DeleteConnection(ctx, otherConnection.ID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("referenced connection delete: %v", err)
+	}
+	if err := s.DeleteService(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteConnection(ctx, connection.ID); err != nil {
+		t.Fatal(err)
+	}
+	dependent.Requires, dependent.ConnectionIDs = nil, nil
+	if err := s.UpdateService(ctx, dependent); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteService(ctx, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteConnection(ctx, otherConnection.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShouldCreateTypedServiceWithReferencesAndRejectInvalidDocuments(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	orgID := createTypedOrg(t, s)
+	dependency := createTypedService(t, s, orgID)
+	connection := createTypedConnection(t, s, orgID)
+	now := time.Now().UTC()
+	svc := &store.Service{ID: store.NewID("svc"), OrgID: orgID, Name: store.NewID("typed"), Driver: "custom", Config: json.RawMessage(`{"arbitrary_runtime_field":"` + connection.ID + `"}`), Ready: json.RawMessage(`{"http":{"url":"http://127.0.0.1:8080/","status":200}}`), Requires: []string{dependency.ID, dependency.ID}, ConnectionIDs: []string{connection.ID, connection.ID}, CreatedAt: now, UpdatedAt: now}
+	if err := s.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetService(ctx, svc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Config, svc.Config) || !bytes.Equal(got.Ready, svc.Ready) || !reflect.DeepEqual(got.Requires, []string{dependency.ID}) || !reflect.DeepEqual(got.ConnectionIDs, []string{connection.ID}) {
+		t.Fatalf("typed create: %+v", got)
+	}
+	for _, test := range []struct {
+		name          string
+		config, ready json.RawMessage
+	}{
+		{"invalid config", json.RawMessage(`{"broken":`), svc.Ready},
+		{"invalid readiness", svc.Config, json.RawMessage(`{"broken":`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := *got
+			changed.Config, changed.Ready = test.config, test.ready
+			if err := s.UpdateService(ctx, &changed); err == nil {
+				t.Fatal("invalid JSON accepted")
+			}
+			restored, err := s.GetService(ctx, svc.ID)
+			if err != nil || !reflect.DeepEqual(restored, got) {
+				t.Fatalf("invalid document changed stored row: %+v %v", restored, err)
+			}
+		})
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("ConnectionIDs")) {
+		t.Fatal("derived connection IDs exposed in JSON")
+	}
+	connection.SecretsEnc = []byte("sealed-private-data")
+	encoded, err = json.Marshal(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("SecretsEnc")) {
+		t.Fatal("sealed secrets exposed in JSON")
+	}
+	if err := s.DeleteService(ctx, svc.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteService(ctx, dependency.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteConnection(ctx, connection.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShouldValidateEndpointReferencesAndGuardDeletes(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	orgID, foreignID := createTypedOrg(t, s), createTypedOrg(t, s)
+	endpoint := createTypedEndpoint(t, s, orgID, "")
+	service := createTypedService(t, s, orgID)
+	foreignService := createTypedService(t, s, foreignID)
+	connection := createTypedConnection(t, s, orgID)
+	foreignConnection := createTypedConnection(t, s, foreignID)
+	endpoint.Policy = &store.EndpointPolicy{ServiceID: service.ID, Access: []store.AccessRef{{ConnectionID: connection.ID, Hostname: "tail.example"}}}
+	if err := s.UpdateEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteService(ctx, service.ID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("endpoint-linked delete: %v", err)
+	}
+	if err := s.DeleteConnection(ctx, connection.ID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("access-linked delete: %v", err)
+	}
+	for _, policy := range []*store.EndpointPolicy{{ServiceID: foreignService.ID}, {ServiceID: "svc_missing"}, {Access: []store.AccessRef{{ConnectionID: foreignConnection.ID}}}, {Access: []store.AccessRef{{ConnectionID: "conn_missing"}}}} {
+		changed := *endpoint
+		changed.Policy = policy
+		if err := s.UpdateEndpoint(ctx, &changed); err == nil {
+			t.Fatal("foreign/missing endpoint reference accepted")
+		}
+		changed.ID = store.NewID("ep")
+		if err := s.CreateEndpoint(ctx, &changed); err == nil {
+			t.Fatal("foreign/missing endpoint reference create accepted")
+		}
+	}
+	endpoint.Policy = nil
+	if err := s.UpdateEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteService(ctx, service.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteConnection(ctx, connection.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShouldValidateAliasOwnersAndHostnameCollisions(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	orgID, foreignID := createTypedOrg(t, s), createTypedOrg(t, s)
+	connection, other := createTypedConnection(t, s, orgID), createTypedConnection(t, s, foreignID)
+	endpoint := createTypedEndpoint(t, s, orgID, "")
+	foreign := createTypedEndpoint(t, s, foreignID, store.NewID("canonical")+".example")
+	host := strings.ReplaceAll(store.NewID("alias"), "_", "-") + ".example"
+	original := []store.EndpointAlias{{Hostname: strings.ToUpper(host) + ".", EndpointID: endpoint.ID, OrgID: foreignID, ConnectionID: other.ID}}
+	if err := s.ReplaceConnectionAliases(ctx, orgID, connection.ID, original); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetEndpointByAccessHostname(ctx, host)
+	if err != nil || got.ID != endpoint.ID || got.OrgID != orgID {
+		t.Fatalf("lookup: %+v %v", got, err)
+	}
+	if err := s.ReplaceConnectionAliases(ctx, foreignID, other.ID, []store.EndpointAlias{{Hostname: host, EndpointID: foreign.ID}}); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("cross-org collision: %v", err)
+	}
+	for _, test := range []struct {
+		name, orgID, connectionID string
+		aliases                   []store.EndpointAlias
+	}{
+		{"foreign endpoint with forged owner", orgID, connection.ID, []store.EndpointAlias{{Hostname: "forged.example", EndpointID: foreign.ID, OrgID: orgID, ConnectionID: connection.ID}}},
+		{"foreign connection", orgID, other.ID, nil},
+		{"missing endpoint", orgID, connection.ID, []store.EndpointAlias{{Hostname: "missing.example", EndpointID: "ep_missing"}}},
+		{"canonical collision", orgID, connection.ID, []store.EndpointAlias{{Hostname: foreign.Domain, EndpointID: endpoint.ID}}},
+		{"invalid hostname", orgID, connection.ID, []store.EndpointAlias{{Hostname: "https://bad.example", EndpointID: endpoint.ID}}},
+		{"replacement collision rollback", orgID, connection.ID, []store.EndpointAlias{{Hostname: "new.example", EndpointID: endpoint.ID}, {Hostname: foreign.Domain, EndpointID: endpoint.ID}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := s.ReplaceConnectionAliases(ctx, test.orgID, test.connectionID, test.aliases); err == nil {
+				t.Fatal("invalid alias replacement accepted")
+			}
+			got, err := s.GetEndpointByAccessHostname(ctx, host)
+			if err != nil || got.ID != endpoint.ID {
+				t.Fatalf("replacement lost original: %+v %v", got, err)
+			}
+		})
+	}
+	foreign.Domain = host
+	if err := s.UpdateEndpoint(ctx, foreign); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("reverse canonical update: %v", err)
+	}
+	newEndpoint := *foreign
+	newEndpoint.ID = store.NewID("ep")
+	if err := s.CreateEndpoint(ctx, &newEndpoint); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("reverse canonical create: %v", err)
+	}
+	if err := s.DeleteConnection(ctx, connection.ID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("alias connection delete: %v", err)
+	}
+	if err := s.ReplaceConnectionAliases(ctx, orgID, connection.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetEndpointByAccessHostname(ctx, host); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("cleared alias: %v", err)
+	}
+	if err := s.UpdateEndpoint(ctx, foreign); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteConnection(ctx, connection.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShouldSerializeConflictingAliasReplacements(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	orgID := createTypedOrg(t, s)
+	first, second := createTypedConnection(t, s, orgID), createTypedConnection(t, s, orgID)
+	endpoint, other := createTypedEndpoint(t, s, orgID, ""), createTypedEndpoint(t, s, orgID, "")
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	host := strings.ReplaceAll(store.NewID("race"), "_", "-") + ".example"
+	for _, test := range []struct{ connection, endpoint string }{{first.ID, endpoint.ID}, {second.ID, other.ID}} {
+		go func(connectionID, endpointID string) {
+			<-start
+			results <- s.ReplaceConnectionAliases(ctx, orgID, connectionID, []store.EndpointAlias{{Hostname: host, EndpointID: endpointID}})
+		}(test.connection, test.endpoint)
+	}
+	close(start)
+	successes, conflicts := 0, 0
+	for range 2 {
+		err := <-results
+		if err == nil {
+			successes++
+		} else if errors.Is(err, store.ErrConflict) {
+			conflicts++
+		} else {
+			t.Fatal(err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("successes=%d conflicts=%d", successes, conflicts)
+	}
+}
 
 func TestServiceCRUD(t *testing.T) {
 	s := newStore(t)

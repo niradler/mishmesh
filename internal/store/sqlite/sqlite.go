@@ -165,6 +165,8 @@ CREATE TABLE IF NOT EXISTS org_policies (
 		`ALTER TABLE endpoints ADD COLUMN domain TEXT`,
 		`ALTER TABLE endpoints ADD COLUMN policy TEXT`,
 		`ALTER TABLE endpoints ADD COLUMN method TEXT`,
+		`ALTER TABLE services ADD COLUMN config TEXT`,
+		`ALTER TABLE services ADD COLUMN ready TEXT`,
 	} {
 		if _, err := s.db.ExecContext(ctx, alter); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("migrate alter: %w", err)
@@ -347,10 +349,21 @@ func (s *Store) CreateEndpoint(ctx context.Context, e *store.Endpoint) error {
 	if err != nil {
 		return wrap("create endpoint", err)
 	}
-	_, err = s.db.ExecContext(ctx,
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := validateEndpointReferences(ctx, tx, e, false); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO endpoints (id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, policy, created_at, method) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.AgentID, e.OrgID, e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, ns(e.CreatedAt), store.MethodOrDefault(e.Method))
-	return wrap("create endpoint", err)
+	if err != nil {
+		return wrap("create endpoint", err)
+	}
+	return wrap("create endpoint", tx.Commit())
 }
 
 func (s *Store) GetEndpoint(ctx context.Context, id string) (*store.Endpoint, error) {
@@ -398,10 +411,21 @@ func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
 	if err != nil {
 		return wrap("update endpoint", err)
 	}
-	_, err = s.db.ExecContext(ctx,
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := validateEndpointReferences(ctx, tx, e, true); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
 		`UPDATE endpoints SET kind = ?, lifecycle = ?, subdomain = ?, domain = ?, port = ?, policy = ?, method = ? WHERE id = ?`,
 		e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, store.MethodOrDefault(e.Method), e.ID)
-	return wrap("update endpoint", err)
+	if err != nil {
+		return wrap("update endpoint", err)
+	}
+	return wrap("update endpoint", tx.Commit())
 }
 
 func (s *Store) DeleteEndpoint(ctx context.Context, id string) error {
