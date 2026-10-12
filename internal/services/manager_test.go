@@ -1,0 +1,691 @@
+package services
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{t: time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC)}
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+type fakeDriver struct {
+	mu       sync.Mutex
+	state    State
+	stateErr error
+	startErr error
+	stopErr  error
+	noRun    bool
+	gate     chan struct{}
+	starts   int
+	stops    int
+}
+
+func (d *fakeDriver) Start(ctx context.Context) error {
+	d.mu.Lock()
+	d.starts++
+	gate := d.gate
+	startErr := d.startErr
+	noRun := d.noRun
+	d.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if startErr != nil {
+		return startErr
+	}
+	if !noRun {
+		d.setState(Running)
+	}
+	return nil
+}
+
+func (d *fakeDriver) Stop(context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stops++
+	if d.stopErr != nil {
+		return d.stopErr
+	}
+	d.state = Stopped
+	return nil
+}
+
+func (d *fakeDriver) State(context.Context) (State, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.state, d.stateErr
+}
+
+func (d *fakeDriver) setState(s State) {
+	d.mu.Lock()
+	d.state = s
+	d.mu.Unlock()
+}
+
+func (d *fakeDriver) counts() (starts, stops int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.starts, d.stops
+}
+
+type managerFixture struct {
+	manager *Manager
+	driver  *fakeDriver
+	clock   *fakeClock
+	dials   atomic.Int64
+}
+
+func newFixture(t *testing.T, svc ServiceConfig, driver *fakeDriver) *managerFixture {
+	t.Helper()
+	f := &managerFixture{driver: driver, clock: newFakeClock()}
+	if svc.Driver == "" {
+		svc.Driver = DriverExec
+	}
+	if svc.StartTimeout == 0 {
+		svc.StartTimeout = 5 * time.Second
+	}
+	cfg := &Config{Orgs: []string{"org_default"}, Services: map[string]ServiceConfig{"svc": svc}}
+	f.manager = newManager(cfg, Options{
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now: f.clock.Now,
+		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			f.dials.Add(1)
+			st, _ := driver.State(ctx)
+			if st != Running {
+				return nil, errors.New("connection refused")
+			}
+			client, server := net.Pipe()
+			_ = server.Close()
+			return client, nil
+		},
+	}, map[string]Driver{"svc": driver})
+	f.manager.pollInterval = 5 * time.Millisecond
+	return f
+}
+
+func TestEnsureRunningSingleflight(t *testing.T) {
+	driver := &fakeDriver{state: Stopped, gate: make(chan struct{})}
+	f := newFixture(t, ServiceConfig{IdleTimeout: time.Hour}, driver)
+
+	const callers = 25
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- f.manager.EnsureRunning(context.Background(), "svc", "https://127.0.0.1:9443")
+		}()
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if starts, _ := driver.counts(); starts > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("start never called")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if state, _ := f.manager.ServiceState("svc"); state != StateStarting {
+		t.Errorf("state during start = %s, want starting", state)
+	}
+	close(driver.gate)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("EnsureRunning: %v", err)
+		}
+	}
+	if starts, _ := driver.counts(); starts != 1 {
+		t.Errorf("starts = %d, want 1", starts)
+	}
+	status, _ := f.manager.Status("svc")
+	if status.State != StateRunning || status.StartedBy != StartedByMishmesh {
+		t.Errorf("status = %+v", status)
+	}
+}
+
+func TestEnsureRunningAlreadyRunningSkipsStart(t *testing.T) {
+	driver := &fakeDriver{state: Running}
+	f := newFixture(t, ServiceConfig{}, driver)
+	if err := f.manager.EnsureRunning(context.Background(), "svc", "127.0.0.1:80"); err != nil {
+		t.Fatal(err)
+	}
+	if starts, _ := driver.counts(); starts != 0 {
+		t.Errorf("starts = %d, want 0", starts)
+	}
+	status, _ := f.manager.Status("svc")
+	if status.State != StateRunning || status.StartedBy != StartedByExternal {
+		t.Errorf("status = %+v", status)
+	}
+}
+
+func TestEnsureRunningReadinessTargets(t *testing.T) {
+	tests := []struct {
+		name      string
+		ready     *ReadySpec
+		readyAddr string
+		wantDial  bool
+	}{
+		{"uses endpoint addr", nil, "http://127.0.0.1:8080/path", true},
+		{"ready spec wins", &ReadySpec{TCP: "127.0.0.1:9"}, "127.0.0.1:1", true},
+		{"no address relies on driver state", nil, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := &fakeDriver{state: Stopped}
+			f := newFixture(t, ServiceConfig{Ready: tt.ready}, driver)
+			if err := f.manager.EnsureRunning(context.Background(), "svc", tt.readyAddr); err != nil {
+				t.Fatal(err)
+			}
+			if dialed := f.dials.Load() > 0; dialed != tt.wantDial {
+				t.Errorf("dialed = %v, want %v", dialed, tt.wantDial)
+			}
+		})
+	}
+}
+
+func TestEnsureRunningReadinessTimeout(t *testing.T) {
+	driver := &fakeDriver{state: Stopped}
+	f := newFixture(t, ServiceConfig{StartTimeout: 150 * time.Millisecond}, driver)
+	f.manager.dial = func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("connection refused")
+	}
+	err := f.manager.EnsureRunning(context.Background(), "svc", "127.0.0.1:1")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	state, _ := f.manager.ServiceState("svc")
+	if state != StateError {
+		t.Errorf("state = %s, want error", state)
+	}
+	status, _ := f.manager.Status("svc")
+	if status.LastError == "" {
+		t.Error("LastError empty")
+	}
+}
+
+func TestEnsureRunningStartFailure(t *testing.T) {
+	driver := &fakeDriver{state: Stopped, startErr: errors.New("no such image")}
+	f := newFixture(t, ServiceConfig{}, driver)
+	err := f.manager.EnsureRunning(context.Background(), "svc", "127.0.0.1:1")
+	if err == nil || !errors.Is(err, driver.startErr) {
+		t.Fatalf("err = %v", err)
+	}
+	status, _ := f.manager.Status("svc")
+	if status.State != StateError || status.LastError == "" {
+		t.Errorf("status = %+v", status)
+	}
+
+	driver.mu.Lock()
+	driver.startErr = nil
+	driver.mu.Unlock()
+	if err := f.manager.EnsureRunning(context.Background(), "svc", "127.0.0.1:1"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	status, _ = f.manager.Status("svc")
+	if status.State != StateRunning || status.LastError != "" {
+		t.Errorf("status after retry = %+v", status)
+	}
+}
+
+func TestEnsureRunningCallerContextCancel(t *testing.T) {
+	driver := &fakeDriver{state: Stopped, gate: make(chan struct{})}
+	f := newFixture(t, ServiceConfig{}, driver)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := f.manager.EnsureRunning(ctx, "svc", "127.0.0.1:1")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+	close(driver.gate)
+	if err := f.manager.EnsureRunning(context.Background(), "svc", "127.0.0.1:1"); err != nil {
+		t.Fatalf("second caller: %v", err)
+	}
+	if starts, _ := driver.counts(); starts != 1 {
+		t.Errorf("starts = %d, want 1", starts)
+	}
+}
+
+func TestEnsureRunningUnknownService(t *testing.T) {
+	f := newFixture(t, ServiceConfig{}, &fakeDriver{})
+	if err := f.manager.EnsureRunning(context.Background(), "nope", ""); !errors.Is(err, ErrUnknownService) {
+		t.Errorf("err = %v", err)
+	}
+	if err := f.manager.Stop(context.Background(), "nope"); !errors.Is(err, ErrUnknownService) {
+		t.Errorf("err = %v", err)
+	}
+	f.manager.Acquire("nope")()
+}
+
+func TestStartAsync(t *testing.T) {
+	driver := &fakeDriver{state: Stopped}
+	f := newFixture(t, ServiceConfig{}, driver)
+	f.manager.StartAsync("svc", "127.0.0.1:1")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if state, _ := f.manager.ServiceState("svc"); state == StateRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("service never became running")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	f.manager.StartAsync("missing", "")
+}
+
+func TestManualStopSleeps(t *testing.T) {
+	driver := &fakeDriver{state: Stopped}
+	f := newFixture(t, ServiceConfig{}, driver)
+	ctx := context.Background()
+	if err := f.manager.EnsureRunning(ctx, "svc", "127.0.0.1:1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.manager.Stop(ctx, "svc"); err != nil {
+		t.Fatal(err)
+	}
+	if state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
+		t.Errorf("state = %s, want sleeping", state)
+	}
+	f.manager.refresh(ctx)
+	if state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
+		t.Errorf("state after refresh = %s, want sleeping", state)
+	}
+	status, _ := f.manager.Status("svc")
+	if status.StartedBy != "" {
+		t.Errorf("StartedBy = %q", status.StartedBy)
+	}
+}
+
+func TestManualStopFailure(t *testing.T) {
+	driver := &fakeDriver{state: Running, stopErr: errors.New("busy")}
+	f := newFixture(t, ServiceConfig{}, driver)
+	f.manager.refresh(context.Background())
+	if err := f.manager.Stop(context.Background(), "svc"); err == nil {
+		t.Fatal("expected error")
+	}
+	status, _ := f.manager.Status("svc")
+	if status.State != StateRunning || status.LastError == "" {
+		t.Errorf("status = %+v", status)
+	}
+}
+
+func TestIdleStop(t *testing.T) {
+	driver := &fakeDriver{state: Stopped}
+	f := newFixture(t, ServiceConfig{IdleTimeout: 10 * time.Minute}, driver)
+	ctx := context.Background()
+	if err := f.manager.EnsureRunning(ctx, "svc", "127.0.0.1:1"); err != nil {
+		t.Fatal(err)
+	}
+
+	f.clock.Advance(9 * time.Minute)
+	f.manager.stopIdle(ctx)
+	if _, stops := driver.counts(); stops != 0 {
+		t.Fatalf("stopped before idle timeout")
+	}
+
+	f.clock.Advance(2 * time.Minute)
+	f.manager.stopIdle(ctx)
+	if _, stops := driver.counts(); stops != 1 {
+		t.Fatalf("stops = %d, want 1", stops)
+	}
+	if state, _ := f.manager.ServiceState("svc"); state != StateSleeping {
+		t.Errorf("state = %s, want sleeping", state)
+	}
+
+	f.clock.Advance(time.Hour)
+	f.manager.stopIdle(ctx)
+	if _, stops := driver.counts(); stops != 1 {
+		t.Errorf("stopped again while sleeping")
+	}
+}
+
+func TestIdleDisabledNeverStops(t *testing.T) {
+	driver := &fakeDriver{state: Running}
+	f := newFixture(t, ServiceConfig{IdleTimeout: 0}, driver)
+	f.manager.refresh(context.Background())
+	f.clock.Advance(1000 * time.Hour)
+	f.manager.stopIdle(context.Background())
+	if _, stops := driver.counts(); stops != 0 {
+		t.Errorf("stops = %d", stops)
+	}
+}
+
+func TestActiveConnectionPreventsStop(t *testing.T) {
+	driver := &fakeDriver{state: Running}
+	f := newFixture(t, ServiceConfig{IdleTimeout: 10 * time.Minute}, driver)
+	ctx := context.Background()
+	f.manager.refresh(ctx)
+
+	release := f.manager.Acquire("svc")
+	f.clock.Advance(time.Hour)
+	f.manager.stopIdle(ctx)
+	if _, stops := driver.counts(); stops != 0 {
+		t.Fatal("stopped with active connection")
+	}
+	status, _ := f.manager.Status("svc")
+	if status.Active != 1 {
+		t.Errorf("active = %d", status.Active)
+	}
+
+	release()
+	release()
+	status, _ = f.manager.Status("svc")
+	if status.Active != 0 {
+		t.Errorf("active after double release = %d", status.Active)
+	}
+
+	f.clock.Advance(5 * time.Minute)
+	f.manager.stopIdle(ctx)
+	if _, stops := driver.counts(); stops != 0 {
+		t.Fatal("stopped before grace after release")
+	}
+	f.clock.Advance(6 * time.Minute)
+	f.manager.stopIdle(ctx)
+	if _, stops := driver.counts(); stops != 1 {
+		t.Fatalf("stops = %d, want 1", stops)
+	}
+}
+
+func TestIdleGraceForUnseenService(t *testing.T) {
+	driver := &fakeDriver{state: Running}
+	f := newFixture(t, ServiceConfig{IdleTimeout: 10 * time.Minute}, driver)
+	f.manager.mu.Lock()
+	f.manager.services["svc"].state = StateRunning
+	f.manager.mu.Unlock()
+	ctx := context.Background()
+
+	f.clock.Advance(9 * time.Minute)
+	f.manager.stopIdle(ctx)
+	if _, stops := driver.counts(); stops != 0 {
+		t.Fatal("stopped inside grace period")
+	}
+	f.clock.Advance(2 * time.Minute)
+	f.manager.stopIdle(ctx)
+	if _, stops := driver.counts(); stops != 1 {
+		t.Fatalf("stops = %d, want 1", stops)
+	}
+}
+
+func TestExternallyStartedServiceGetsFullGrace(t *testing.T) {
+	driver := &fakeDriver{state: Stopped}
+	f := newFixture(t, ServiceConfig{IdleTimeout: 10 * time.Minute}, driver)
+	ctx := context.Background()
+	f.manager.refresh(ctx)
+	if state, _ := f.manager.ServiceState("svc"); state != StateStopped {
+		t.Fatalf("state = %s, want stopped", state)
+	}
+
+	f.clock.Advance(time.Hour)
+	driver.setState(Running)
+	f.manager.refresh(ctx)
+	status, _ := f.manager.Status("svc")
+	if status.State != StateRunning || status.StartedBy != StartedByExternal {
+		t.Fatalf("status = %+v", status)
+	}
+	f.manager.stopIdle(ctx)
+	if _, stops := driver.counts(); stops != 0 {
+		t.Fatal("stopped externally started service immediately")
+	}
+	f.clock.Advance(11 * time.Minute)
+	f.manager.stopIdle(ctx)
+	if _, stops := driver.counts(); stops != 1 {
+		t.Fatalf("stops = %d, want 1", stops)
+	}
+}
+
+func TestRefreshStateMapping(t *testing.T) {
+	tests := []struct {
+		name        string
+		initial     string
+		stoppedByUs bool
+		driver      State
+		driverErr   error
+		want        string
+	}{
+		{"running", StateUnknown, false, Running, nil, StateRunning},
+		{"stopped", StateRunning, false, Stopped, nil, StateStopped},
+		{"stopped by us is sleeping", StateRunning, true, Stopped, nil, StateSleeping},
+		{"partial", StateRunning, false, Partial, nil, StatePartial},
+		{"starting untouched", StateStarting, false, Running, nil, StateStarting},
+		{"error kept on stopped", StateError, false, Stopped, nil, StateError},
+		{"error recovers when running", StateError, false, Running, nil, StateRunning},
+		{"unknown driver state keeps state", StateRunning, false, Unknown, nil, StateRunning},
+		{"driver error keeps state", StateRunning, false, Unknown, errors.New("socket gone"), StateRunning},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := &fakeDriver{state: tt.driver, stateErr: tt.driverErr}
+			f := newFixture(t, ServiceConfig{}, driver)
+			f.manager.mu.Lock()
+			svc := f.manager.services["svc"]
+			svc.state = tt.initial
+			svc.stoppedByUs = tt.stoppedByUs
+			f.manager.mu.Unlock()
+			f.manager.refresh(context.Background())
+			if got, _ := f.manager.ServiceState("svc"); got != tt.want {
+				t.Errorf("state = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunLoopStopsOnCancel(t *testing.T) {
+	driver := &fakeDriver{state: Running}
+	f := newFixture(t, ServiceConfig{}, driver)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		f.manager.Run(ctx)
+		close(done)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if state, _ := f.manager.ServiceState("svc"); state == StateRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("initial refresh did not run")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+}
+
+func TestVisibilityAndListing(t *testing.T) {
+	clock := newFakeClock()
+	cfg := &Config{
+		Orgs: []string{"org_a", "org_b"},
+		Services: map[string]ServiceConfig{
+			"zeta":  {Driver: DriverExec, StartTimeout: time.Minute},
+			"alpha": {Driver: DriverExec, StartTimeout: time.Minute, IdleTimeout: 90 * time.Second},
+		},
+	}
+	m := newManager(cfg, Options{Now: clock.Now}, map[string]Driver{"zeta": &fakeDriver{}, "alpha": &fakeDriver{}})
+
+	if got := m.Names(); len(got) != 2 || got[0] != "alpha" || got[1] != "zeta" {
+		t.Errorf("Names = %v", got)
+	}
+	tests := []struct {
+		org, name string
+		want      bool
+	}{
+		{"org_a", "alpha", true},
+		{"org_b", "zeta", true},
+		{"org_c", "alpha", false},
+		{"org_a", "missing", false},
+	}
+	for _, tt := range tests {
+		if got := m.VisibleTo(tt.org, tt.name); got != tt.want {
+			t.Errorf("VisibleTo(%s,%s) = %v", tt.org, tt.name, got)
+		}
+	}
+	if m.Has("missing") || !m.Has("alpha") {
+		t.Error("Has wrong")
+	}
+	if _, ok := m.Status("missing"); ok {
+		t.Error("Status(missing) ok")
+	}
+	if _, ok := m.ServiceState("missing"); ok {
+		t.Error("ServiceState(missing) ok")
+	}
+	list := m.List()
+	if len(list) != 2 || list[0].Name != "alpha" || list[1].Name != "zeta" {
+		t.Fatalf("List = %+v", list)
+	}
+	if list[0].State != StateUnknown {
+		t.Errorf("initial state = %s", list[0].State)
+	}
+}
+
+func TestStatusJSON(t *testing.T) {
+	at := time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC)
+	status := Status{
+		Name: "x", Driver: "docker", State: StateRunning, Active: 2,
+		LastActivity: at, IdleTimeout: 30 * time.Minute, StartTimeout: 2 * time.Minute,
+		LastError: "e", StartedBy: StartedByMishmesh, UpdatedAt: at,
+	}
+	raw, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"name": "x", "driver": "docker", "state": "running", "active": float64(2),
+		"last_activity": "2026-10-12T08:00:00Z", "idle_timeout_seconds": float64(1800),
+		"start_timeout_seconds": float64(120), "last_error": "e", "started_by": "mishmesh",
+		"updated_at": "2026-10-12T08:00:00Z",
+	}
+	if len(got) != len(want) {
+		t.Errorf("keys = %v", got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %v, want %v", k, got[k], v)
+		}
+	}
+
+	raw, _ = json.Marshal(Status{Name: "y"})
+	got = nil
+	_ = json.Unmarshal(raw, &got)
+	for _, absent := range []string{"last_activity", "last_error", "started_by"} {
+		if _, ok := got[absent]; ok {
+			t.Errorf("%s should be omitted when empty", absent)
+		}
+	}
+}
+
+func TestHostPortOf(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"https://127.0.0.1:9443", "127.0.0.1:9443"},
+		{"http://127.0.0.1:8080/some/path?q=1", "127.0.0.1:8080"},
+		{"127.0.0.1:80", "127.0.0.1:80"},
+		{"http://user:pw@host:81/x", "host:81"},
+		{"", ""},
+		{"  ", ""},
+	}
+	for _, tt := range tests {
+		if got := hostPortOf(tt.in); got != tt.want {
+			t.Errorf("hostPortOf(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestNewManagerBuildsDrivers(t *testing.T) {
+	cfg, err := Parse([]byte(specYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager(cfg, Options{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if len(m.Names()) != 4 {
+		t.Errorf("names = %v", m.Names())
+	}
+
+	cfg.Docker.Host = "ftp://nope"
+	if _, err := NewManager(cfg, Options{}); err == nil {
+		t.Error("expected error for bad docker host")
+	}
+
+	execOnly, err := Parse([]byte("docker:\n  host: ftp://ignored\nservices:\n  a:\n    driver: exec\n    exec: {start: [x], stop: [y]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewManager(execOnly, Options{}); err != nil {
+		t.Errorf("docker host must be ignored without docker services: %v", err)
+	}
+}
+
+func TestManagerWithDockerEngine(t *testing.T) {
+	engine := newFakeEngine(t, &fakeContainer{ID: "1", Name: "portainer", State: "exited"})
+	cfg := &Config{
+		Orgs:   []string{"org_default"},
+		Docker: DockerConfig{Host: engine.host()},
+		Services: map[string]ServiceConfig{
+			"portainer": {Driver: DriverDocker, Docker: &DockerSpec{Containers: []string{"portainer"}}, StartTimeout: 5 * time.Second},
+		},
+	}
+	m, err := NewManager(cfg, Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.EnsureRunning(context.Background(), "portainer", ""); err != nil {
+		t.Fatal(err)
+	}
+	if engine.stateOf("1") != "running" {
+		t.Error("container not running")
+	}
+	if err := m.Stop(context.Background(), "portainer"); err != nil {
+		t.Fatal(err)
+	}
+	if engine.stateOf("1") != "exited" {
+		t.Error("container not stopped")
+	}
+	if state, _ := m.ServiceState("portainer"); state != StateSleeping {
+		t.Errorf("state = %s", state)
+	}
+}
