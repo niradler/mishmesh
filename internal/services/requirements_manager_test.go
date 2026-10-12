@@ -310,6 +310,16 @@ func TestShouldKeepPriorRequirementsWhenReloadAdditionFails(t *testing.T) {
 	if status, _ := m.Status("app"); status.LastError == "" {
 		t.Fatal("reload failure not exposed")
 	}
+	m.Refresh(context.Background())
+	if len(m.RunningDependents("old")) != 1 || len(m.RunningDependents("new")) != 0 {
+		t.Fatal("refresh lost prior holds or leaked its failed addition")
+	}
+	if status, _ := m.Status("app"); status.LastError == "" {
+		t.Fatal("refresh hid the failed requirement change")
+	}
+	if err := m.Stop(context.Background(), "new"); err != nil {
+		t.Fatalf("failed addition falsely blocks manual stop: %v", err)
+	}
 	drivers["new"].mu.Lock()
 	drivers["new"].startErr = nil
 	drivers["new"].mu.Unlock()
@@ -681,4 +691,220 @@ func TestShouldWakeReloadAdditionsBeforeReleasingRemovals(t *testing.T) {
 	if _, stops := old.counts(); stops != 1 {
 		t.Fatal("old requirement was not released after readiness")
 	}
+}
+
+func TestShouldExpireTimedIdleDespitePeriodicRequirementRefresh(t *testing.T) {
+	drivers := map[string]*fakeDriver{"base": {state: Stopped}, "timed": {state: Stopped}, "app": {state: Stopped}}
+	m := requirementManager(t, drivers, Definition{ID: "base", IdleTimeout: -time.Second},
+		Definition{ID: "timed", IdleTimeout: time.Minute}, Definition{ID: "app", IdleTimeout: time.Minute, Requires: []string{"base", "timed"}})
+	clock := newFakeClock()
+	m.now = clock.Now
+	if err := m.EnsureRunning(context.Background(), "app", ""); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		clock.Advance(15 * time.Second)
+		m.Refresh(context.Background())
+		m.stopIdle(context.Background())
+	}
+	if status, _ := m.Status("app"); status.State != StateSleeping {
+		t.Fatalf("periodic refresh prevented dependent idle: %+v", status)
+	}
+	if _, stops := drivers["base"].counts(); stops != 1 {
+		t.Fatalf("With dependents requirement stops=%d", stops)
+	}
+	for range 5 {
+		clock.Advance(15 * time.Second)
+		m.Refresh(context.Background())
+		m.stopIdle(context.Background())
+	}
+	if _, stops := drivers["timed"].counts(); stops != 1 {
+		t.Fatalf("timed requirement stops=%d", stops)
+	}
+}
+
+type observedWaitContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (ctx *observedWaitContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.waiting) })
+	return ctx.Context.Done()
+}
+
+func TestShouldCompleteReloadWithoutWaitingForLaterUnrelatedWake(t *testing.T) {
+	firstEntered := make(chan struct{})
+	firstGate, releaseFirst := lifecycleGate(t)
+	laterEntered := make(chan struct{})
+	laterGate, releaseLater := lifecycleGate(t)
+	factoryEntered := make(chan struct{})
+	factoryGate, releaseFactory := lifecycleGate(t)
+	drivers := map[string]Driver{
+		"first": &lifecycleDriver{fakeDriver: &fakeDriver{state: Stopped}, beforeStart: func(ctx context.Context) error {
+			close(firstEntered)
+			select {
+			case <-firstGate:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}},
+		"later": &lifecycleDriver{fakeDriver: &fakeDriver{state: Stopped}, beforeStart: func(ctx context.Context) error {
+			close(laterEntered)
+			select {
+			case <-laterGate:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}},
+	}
+	m := newManager(Options{}, func(def Definition) (Driver, error) {
+		if def.ID == "marker" {
+			close(factoryEntered)
+			<-factoryGate
+			return &fakeDriver{state: Stopped}, nil
+		}
+		return drivers[def.ID], nil
+	})
+	defs := []Definition{{ID: "first", OrgID: "org", StartTimeout: 5 * time.Second}, {ID: "later", OrgID: "org", StartTimeout: 5 * time.Second}}
+	m.Apply(defs)
+	first := make(chan error, 1)
+	go func() { first <- m.EnsureRunning(context.Background(), "first", "") }()
+	awaitSignal(t, firstEntered)
+	applied := make(chan struct{})
+	go func() { m.Apply(append(defs, Definition{ID: "marker", OrgID: "org"})); close(applied) }()
+	awaitSignal(t, factoryEntered)
+	later := make(chan error, 1)
+	ctx := &observedWaitContext{Context: context.Background(), waiting: make(chan struct{})}
+	go func() { later <- m.EnsureRunning(ctx, "later", "") }()
+	awaitSignal(t, ctx.waiting)
+	releaseFactory()
+	releaseFirst()
+	if err := awaitResult(t, first); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-applied:
+	case <-time.After(time.Second):
+		t.Error("reload waited for a later unrelated wake instead of a finite admitted set")
+	}
+	awaitSignal(t, laterEntered)
+	releaseLater()
+	if err := awaitResult(t, later); err != nil {
+		t.Fatal(err)
+	}
+	awaitSignal(t, applied)
+}
+
+func TestShouldDrainRecursiveWakeAndReleaseCascadeDuringReload(t *testing.T) {
+	stopEntered := make(chan struct{})
+	stopGate, releaseStop := lifecycleGate(t)
+	factoryEntered := make(chan struct{})
+	factoryGate, releaseFactory := lifecycleGate(t)
+	var stops atomic.Int32
+	base := &lifecycleDriver{fakeDriver: &fakeDriver{state: Running}, beforeStop: func(ctx context.Context) error {
+		if stops.Add(1) == 1 {
+			close(stopEntered)
+			select {
+			case <-stopGate:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}}
+	app := &fakeDriver{state: Stopped, startErr: errors.New("offline")}
+	m := newManager(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, func(def Definition) (Driver, error) {
+		switch def.ID {
+		case "base":
+			return base, nil
+		case "app":
+			return app, nil
+		default:
+			close(factoryEntered)
+			<-factoryGate
+			return &fakeDriver{state: Stopped}, nil
+		}
+	})
+	defs := []Definition{{ID: "base", OrgID: "org", IdleTimeout: -time.Second, StartTimeout: time.Second}, {ID: "app", OrgID: "org", Requires: []string{"base"}, StartTimeout: time.Second}}
+	m.Apply(defs)
+	stopped := make(chan error, 1)
+	go func() { stopped <- m.Stop(context.Background(), "base") }()
+	awaitSignal(t, stopEntered)
+	ctx := &observedWaitContext{Context: context.Background(), waiting: make(chan struct{})}
+	woken := make(chan error, 1)
+	go func() { woken <- m.EnsureRunning(ctx, "app", "") }()
+	awaitSignal(t, ctx.waiting)
+	applied := make(chan struct{})
+	go func() { m.Apply(append(defs, Definition{ID: "marker", OrgID: "org"})); close(applied) }()
+	awaitSignal(t, factoryEntered)
+	releaseFactory()
+	releaseStop()
+	if err := awaitResult(t, stopped); err != nil {
+		t.Fatal(err)
+	}
+	if err := awaitResult(t, woken); err == nil || !strings.Contains(err.Error(), "offline") {
+		t.Fatalf("wake=%v", err)
+	}
+	awaitSignal(t, applied)
+	if starts, count := base.counts(); starts != 1 || count != 2 {
+		t.Fatalf("recursive start/release cascade: starts=%d stops=%d", starts, count)
+	}
+	if len(m.RunningDependents("base")) != 0 {
+		t.Fatal("failed recursive wake leaked a hold")
+	}
+}
+
+func TestShouldCancelExternalLifecycleWaitsDuringReload(t *testing.T) {
+	factoryEntered := make(chan struct{})
+	factoryGate, releaseFactory := lifecycleGate(t)
+	driver := &fakeDriver{state: Stopped}
+	m := newManager(Options{}, func(def Definition) (Driver, error) {
+		if def.ID == "marker" {
+			close(factoryEntered)
+			<-factoryGate
+		}
+		return driver, nil
+	})
+	defs := []Definition{{ID: "app", OrgID: "org", StartTimeout: time.Second}}
+	m.Apply(defs)
+	applied := make(chan struct{})
+	go func() { m.Apply(append(defs, Definition{ID: "marker", OrgID: "org"})); close(applied) }()
+	awaitSignal(t, factoryEntered)
+	for _, operation := range []string{"ensure", "stop", "refresh", "refresh-slot"} {
+		t.Run(operation, func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := &observedWaitContext{Context: parent, waiting: make(chan struct{})}
+			result := make(chan error, 1)
+			if operation == "refresh-slot" {
+				m.refreshSlot <- struct{}{}
+				defer func() { <-m.refreshSlot }()
+			}
+			go func() {
+				switch operation {
+				case "ensure":
+					result <- m.EnsureRunning(ctx, "app", "")
+				case "stop":
+					result <- m.Stop(ctx, "app")
+				default:
+					m.Refresh(ctx)
+					result <- ctx.Err()
+				}
+			}()
+			awaitSignal(t, ctx.waiting)
+			cancel()
+			if err := awaitResult(t, result); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancel=%v", err)
+			}
+		})
+	}
+	if starts, stops := driver.counts(); starts != 0 || stops != 0 {
+		t.Fatalf("cancelled admission invoked driver: starts=%d stops=%d", starts, stops)
+	}
+	releaseFactory()
+	awaitSignal(t, applied)
 }

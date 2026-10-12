@@ -99,7 +99,7 @@ func (m *Manager) holdRequirementLocked(owner, required *service) bool {
 			if stop {
 				ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 				defer cancel()
-				if err := m.stopServiceIfEligible(ctx, required, true); err != nil {
+				if err := m.stopServiceIfEligible(ctx, required, true, nil); err != nil {
 					m.log.Warn("requirement idle stop failed", "error", err)
 				}
 			}
@@ -140,7 +140,7 @@ func (m *Manager) wakeRequirements(owner *service, def Definition) ([]string, er
 				added = m.holdRequirementLocked(owner, required)
 				name := required.def.Name
 				m.mu.Unlock()
-				err := m.EnsureRunning(context.Background(), id, "")
+				err := m.ensureRunning(context.Background(), id, "", true)
 				if err != nil {
 					err = fmt.Errorf("requirement %q failed: %w", name, err)
 				}
@@ -210,6 +210,10 @@ func (m *Manager) idleEligibleLocked(s *service) bool {
 
 func (m *Manager) stopIdle(ctx context.Context) {
 	m.mu.Lock()
+	if m.reloadDone != nil {
+		m.mu.Unlock()
+		return
+	}
 	var candidates []*service
 	for _, s := range m.ordered() {
 		if m.idleEligibleLocked(s) {
@@ -219,7 +223,7 @@ func (m *Manager) stopIdle(ctx context.Context) {
 	m.mu.Unlock()
 	for _, s := range candidates {
 		callCtx, cancel := context.WithTimeout(ctx, stopTimeout)
-		err := m.stopServiceIfEligible(callCtx, s, true)
+		err := m.stopServiceIfEligible(callCtx, s, true, nil)
 		cancel()
 		if err != nil {
 			m.log.Warn("idle stop failed", "error", err)
@@ -235,7 +239,7 @@ func (m *Manager) finishRefresh() {
 	m.mu.Unlock()
 	for s := range pending {
 		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
-		err := m.stopServiceIfEligible(ctx, s, true)
+		err := m.stopServiceIfEligible(ctx, s, true, nil)
 		cancel()
 		if err != nil {
 			m.log.Warn("released requirement stop failed", "error", err)

@@ -79,8 +79,9 @@ func (s Status) MarshalJSON() ([]byte, error) {
 }
 
 type ensureCall struct {
-	done chan struct{}
-	err  error
+	done              chan struct{}
+	err               error
+	addedRequirements []string
 }
 
 type service struct {
@@ -119,7 +120,8 @@ type Manager struct {
 	readyHold    time.Duration
 
 	applyMu       sync.Mutex
-	refreshMu     sync.Mutex
+	reloadDone    chan struct{}
+	refreshSlot   chan struct{}
 	refreshing    bool
 	deferredStops map[*service]struct{}
 	mu            sync.Mutex
@@ -221,6 +223,7 @@ func newManager(opts Options, factory driverFactory) *Manager {
 		pollInterval: readyPollInterval,
 		readyHold:    readyHoldWindow,
 		services:     make(map[string]*service),
+		refreshSlot:  make(chan struct{}, 1),
 	}
 }
 
@@ -348,7 +351,11 @@ func (m *Manager) Acquire(id string) func() {
 }
 
 func (m *Manager) EnsureRunning(ctx context.Context, id, readyAddr string) error {
-	call, err := m.beginEnsure(id, readyAddr)
+	return m.ensureRunning(ctx, id, readyAddr, false)
+}
+
+func (m *Manager) ensureRunning(ctx context.Context, id, readyAddr string, recursive bool) error {
+	call, err := m.beginEnsure(ctx, id, readyAddr, recursive)
 	if err != nil {
 		return err
 	}
@@ -360,14 +367,39 @@ func (m *Manager) EnsureRunning(ctx context.Context, id, readyAddr string) error
 	}
 }
 
-func (m *Manager) StartAsync(id, readyAddr string) {
-	if _, err := m.beginEnsure(id, readyAddr); err != nil {
-		m.log.Warn("async start rejected", "id", id, "error", err)
+func (m *Manager) lockAdmission(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		if m.reloadDone == nil {
+			return nil
+		}
+		ready := m.reloadDone
+		m.mu.Unlock()
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 
-func (m *Manager) beginEnsure(id, readyAddr string) (*ensureCall, error) {
-	m.mu.Lock()
+func (m *Manager) StartAsync(id, readyAddr string) {
+	go func() {
+		if _, err := m.beginEnsure(context.Background(), id, readyAddr, false); err != nil {
+			m.log.Warn("async start rejected", "id", id, "error", err)
+		}
+	}()
+}
+
+func (m *Manager) beginEnsure(ctx context.Context, id, readyAddr string, recursive bool) (*ensureCall, error) {
+	if recursive {
+		m.mu.Lock()
+	} else if err := m.lockAdmission(ctx); err != nil {
+		return nil, err
+	}
 	defer m.mu.Unlock()
 	s, ok := m.services[id]
 	if !ok {
@@ -391,6 +423,7 @@ func (m *Manager) runEnsure(s *service, call *ensureCall, def Definition, driver
 		<-stopping
 	}
 	added, err := m.wakeRequirements(s, def)
+	added = append(added, call.addedRequirements...)
 	attempted := err == nil
 	if err == nil {
 		timeout := def.StartTimeout
@@ -566,6 +599,9 @@ func (m *Manager) ensure(ctx context.Context, s *service, def Definition, driver
 func (m *Manager) markRunning(s *service, startedByUs bool) {
 	m.mu.Lock()
 	changed := m.setState(s, StateRunning)
+	if startedByUs || !s.runtimeAlive {
+		s.lastActivity = m.now()
+	}
 	s.runtimeAlive = true
 	s.lastError = ""
 	s.stoppedByUs = false
@@ -574,7 +610,6 @@ func (m *Manager) markRunning(s *service, startedByUs bool) {
 	} else if s.startedBy == "" {
 		s.startedBy = StartedByExternal
 	}
-	s.lastActivity = m.now()
 	m.mu.Unlock()
 	m.notify(changed)
 }
@@ -591,22 +626,25 @@ func (m *Manager) failStart(s *service, err error) error {
 }
 
 func (m *Manager) Stop(ctx context.Context, id string) error {
-	s, ok := m.lookup(id)
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrUnknownService, id)
-	}
 	stopCtx, cancel := context.WithTimeout(ctx, stopTimeout)
 	defer cancel()
-	return m.stopService(stopCtx, s)
+	return m.stopServiceIfEligible(stopCtx, nil, false, &id)
 }
 
-func (m *Manager) stopService(ctx context.Context, s *service) error {
-	return m.stopServiceIfEligible(ctx, s, false)
-}
-
-func (m *Manager) stopServiceIfEligible(ctx context.Context, s *service, idle bool) error {
+func (m *Manager) stopServiceIfEligible(ctx context.Context, s *service, idle bool, externalID *string) error {
 	for {
-		m.mu.Lock()
+		if externalID != nil {
+			if err := m.lockAdmission(ctx); err != nil {
+				return err
+			}
+			s = m.services[*externalID]
+			if s == nil {
+				m.mu.Unlock()
+				return fmt.Errorf("%w: %s", ErrUnknownService, *externalID)
+			}
+		} else {
+			m.mu.Lock()
+		}
 		if m.services[s.def.ID] != s {
 			m.mu.Unlock()
 			return ErrUnknownService
@@ -703,6 +741,9 @@ func driverDefinitionEqual(a, b Definition) bool {
 func (m *Manager) Apply(defs []Definition) {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
+	m.mu.Lock()
+	m.reloadDone = make(chan struct{})
+	m.mu.Unlock()
 	type prepared struct {
 		def    Definition
 		driver Driver
@@ -798,6 +839,8 @@ func (m *Manager) Apply(defs []Definition) {
 		reconcile = append(reconcile, call)
 		go m.runEnsure(s, call, s.def, s.driver, "", nil)
 	}
+	close(m.reloadDone)
+	m.reloadDone = nil
 	m.mu.Unlock()
 	m.notify(changed)
 	for _, call := range reconcile {
@@ -806,8 +849,12 @@ func (m *Manager) Apply(defs []Definition) {
 }
 
 func (m *Manager) Refresh(ctx context.Context) {
-	m.refreshMu.Lock()
-	defer m.refreshMu.Unlock()
+	select {
+	case m.refreshSlot <- struct{}{}:
+	case <-ctx.Done():
+		return
+	}
+	defer func() { <-m.refreshSlot }()
 	type observation struct {
 		svc     *service
 		driver  Driver
@@ -815,7 +862,9 @@ func (m *Manager) Refresh(ctx context.Context) {
 		state   State
 		err     error
 	}
-	m.mu.Lock()
+	if err := m.lockAdmission(ctx); err != nil {
+		return
+	}
 	m.refreshing = true
 	all := make([]observation, 0, len(m.services))
 	for _, s := range m.ordered() {
@@ -831,7 +880,9 @@ func (m *Manager) Refresh(ctx context.Context) {
 			return
 		}
 	}
-	m.mu.Lock()
+	if err := m.lockAdmission(ctx); err != nil {
+		return
+	}
 	var release []func()
 	var reconcile []*ensureCall
 	changed := false
@@ -884,14 +935,17 @@ func (m *Manager) Refresh(ctx context.Context) {
 			s.lastError = err.Error()
 			continue
 		}
+		var added []string
 		for _, id := range s.def.Requires {
 			required := m.services[id]
 			if required.stopping == nil {
-				m.holdRequirementLocked(s, required)
+				if m.holdRequirementLocked(s, required) {
+					added = append(added, id)
+				}
 			}
 		}
 		if len(s.def.Requires) > 0 {
-			call := &ensureCall{done: make(chan struct{})}
+			call := &ensureCall{done: make(chan struct{}), addedRequirements: added}
 			s.inflight = call
 			s.version++
 			reconcile = append(reconcile, call)
