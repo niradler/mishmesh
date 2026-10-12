@@ -3,7 +3,7 @@
 ## State
 
 - Spec approved by Nir 2026-10-13: `docs/superpowers/specs/2026-10-13-pluggable-types-design.md` (commit 1a913c3).
-- Implementation plan written and self-reviewed: `docs/superpowers/plans/2026-10-13-pluggable-types.md` (20 testable tasks, including release/lab gates). Execution authorized: subagent-driven (Nir delegated the choice). Isolated worktree on feat/pluggable-types; baseline full Go race suite passed; Task 1 descriptors committed (`af1a3ad`), race tests/vet/all-package compilation passed; independent task review approved without findings. Task 2 store contracts are next.
+- Implementation plan written and self-reviewed: `docs/superpowers/plans/2026-10-13-pluggable-types.md` (20 testable tasks, including release/lab gates). Execution authorized: subagent-driven (Nir delegated the choice). Isolated worktree on feat/pluggable-types; baseline full Go race suite passed; Task 1 descriptors committed (`af1a3ad`), race tests/vet/all-package compilation passed; independent task review approved without findings. Task 2 store contracts reviewed and committed (`9ff522a`), including six live isolated Postgres race cases. Task 4 driver registry is next; Task 3 schema cutover follows Go consumer Tasks 4–14.
 - Lab runs v0.1.0-beta.4 (see `lab-network-control.md`); `lab-e2e.py` is the regression check.
 
 ## Scope
@@ -34,3 +34,7 @@
 ## Completed execution tasks
 
 - Task 1: shared typed fields, strict validation, host markers, and redaction; commit `af1a3ad`; focused race tests (97.2% coverage), vet, all-package compilation, and independent spec/quality review passed.
+
+- Task 2: typed store contracts, derived runtime references, aliases and transactional guards; `9ff522a`; SQLite/store/legacy-consumer race suites, six live Postgres cases, Windows/Linux compile and vet passed. Independent review approved with one deferred canonical-hostname fixture correction assigned to Task 14.
+
+Execution order is recorded in the plan and ledger; physical migration runs after Go consumers are converted.
