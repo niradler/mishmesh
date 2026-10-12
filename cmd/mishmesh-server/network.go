@@ -39,7 +39,14 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 	if nc.box, err = secrets.New(key); err != nil {
 		return nil, err
 	}
+	driverRegistry := services.NewRegistry()
+	for _, driver := range []services.DriverType{services.DockerType{}, services.ComposeType{}, services.CommandType{}} {
+		if err := driverRegistry.Register(driver); err != nil {
+			return nil, fmt.Errorf("register service driver: %w", err)
+		}
+	}
 	nc.services = services.NewManager(services.Options{
+		Registry:     driverRegistry,
 		Log:          log,
 		OnChange:     nc.serviceChanged,
 		DockerHost:   cfg.DockerHost,

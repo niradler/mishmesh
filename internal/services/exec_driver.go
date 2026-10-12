@@ -49,7 +49,7 @@ func runCommand(ctx context.Context, argv []string, dir string, env map[string]s
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			err = fmt.Errorf("%w: %w", ctxErr, err)
 		}
-		return output, fmt.Errorf("run %s: %w (output: %q)", argv[0], err, output)
+		return output, fmt.Errorf("run %s: %w", argv[0], err)
 	}
 	return output, nil
 }

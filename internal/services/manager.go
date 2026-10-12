@@ -38,12 +38,14 @@ const (
 var ErrUnknownService = errors.New("unknown service")
 
 type Options struct {
-	Log          *slog.Logger
-	Now          func() time.Time
-	Dial         func(ctx context.Context, network, addr string) (net.Conn, error)
-	OnChange     func()
-	DockerHost   string
-	HostCommands bool
+	Log              *slog.Logger
+	Now              func() time.Time
+	Dial             func(ctx context.Context, network, addr string) (net.Conn, error)
+	OnChange         func()
+	DockerHost       string
+	HostCommands     bool
+	Registry         *Registry
+	KubernetesClient KubernetesResolver
 }
 
 type Status struct {
@@ -115,13 +117,15 @@ func NewManager(opts Options) *Manager {
 	if host == "" {
 		host = DefaultDockerHost
 	}
-	drivers := &hostDrivers{dockerHost: host, hostCommands: opts.HostCommands}
+	drivers := &hostDrivers{dockerHost: host, hostCommands: opts.HostCommands, registry: opts.Registry, kubernetesClient: opts.KubernetesClient}
 	return newManager(opts, drivers.build)
 }
 
 type hostDrivers struct {
-	dockerHost   string
-	hostCommands bool
+	dockerHost       string
+	hostCommands     bool
+	registry         *Registry
+	kubernetesClient KubernetesResolver
 
 	mu     sync.Mutex
 	client *dockerClient
@@ -141,26 +145,29 @@ func (h *hostDrivers) docker() (*dockerClient, error) {
 }
 
 func (h *hostDrivers) build(def Definition) (Driver, error) {
-	if UsesHostCommands(def.Driver, def.Spec) && !h.hostCommands {
-		return nil, ErrHostCommandsOff
+	if h.registry == nil {
+		return nil, errors.New("driver registry is required")
 	}
-	switch def.Driver {
-	case DriverDocker:
-		client, err := h.docker()
+	name, config := def.Driver, def.Config
+	if len(config) == 0 {
+		driverType, legacyConfig, err := legacyDriverConfig(name, def.Spec)
 		if err != nil {
 			return nil, err
 		}
-		return newDockerDriver(client, *def.Spec.Docker), nil
-	case DriverCompose:
-		client, err := h.docker()
-		if err != nil {
-			return nil, err
-		}
-		return newComposeDriver(client, *def.Spec.Compose), nil
-	case DriverExec:
-		return newExecDriver(*def.Spec.Exec), nil
+		name, config = driverType.Describe().Type, legacyConfig
 	}
-	return nil, fmt.Errorf("unknown driver %q", def.Driver)
+	driverType, ok := h.registry.Lookup(name)
+	if !ok {
+		return nil, fmt.Errorf("unknown driver %q", name)
+	}
+	deps := Deps{OrgID: def.OrgID, Docker: h.docker, HostCommands: h.hostCommands, KubernetesClient: h.kubernetesClient}
+	if err := validateHostConfig(driverType.Describe(), config, deps); err != nil {
+		return nil, err
+	}
+	if err := driverType.Validate(config); err != nil {
+		return nil, err
+	}
+	return driverType.New(config, deps)
 }
 
 type brokenDriver struct{ err error }
@@ -391,6 +398,9 @@ func (m *Manager) beginEnsure(id, readyAddr string) (*ensureCall, error) {
 }
 
 func readyTarget(def Definition, readyAddr string) string {
+	if def.Ready.TCP != "" {
+		return def.Ready.TCP
+	}
 	if def.Spec.ReadyTCP != "" {
 		return def.Spec.ReadyTCP
 	}

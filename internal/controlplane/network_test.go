@@ -367,6 +367,17 @@ func TestServiceHostCommandsGate(t *testing.T) {
 	}
 }
 
+func TestShouldGateExplicitComposeHostFieldsBeforeNormalization(t *testing.T) {
+	f := newNetworkFixture(t)
+	f.api.SetHostCommands(false)
+	for _, field := range []string{`"bin":"custom-docker"`, `"bin":" "`, `"file":" "`} {
+		body := `{"name":"stack","driver":"compose","spec":{"compose":{"project":"stack",` + field + `}}}`
+		if code, resp := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services", body); code != http.StatusForbidden || !strings.Contains(resp, "MISHMESH_HOST_COMMANDS") {
+			t.Fatalf("explicit host field bypassed gate: %d %s", code, resp)
+		}
+	}
+}
+
 func statusBody(t *testing.T, f *networkFixture, method, path string) string {
 	t.Helper()
 	code, body := statusAndBody(t, f.srv, method, path, "")

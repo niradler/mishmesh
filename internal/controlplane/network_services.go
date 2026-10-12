@@ -149,12 +149,12 @@ func (a *API) buildService(w http.ResponseWriter, r *http.Request, existing *sto
 		writeError(w, http.StatusBadRequest, err.Error())
 		return nil, false
 	}
+	hostCommands := services.UsesHostCommands(in.Driver, spec)
 	spec = services.Normalize(in.Driver, spec)
 	if err := services.Validate(in.Name, in.Driver, spec, in.IdleTimeoutSeconds, in.StartTimeoutSeconds); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return nil, false
 	}
-	hostCommands := services.UsesHostCommands(in.Driver, spec)
 	if existing != nil && storedUsesHostCommands(existing) {
 		hostCommands = true
 	}
