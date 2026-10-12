@@ -3,7 +3,7 @@
 ## State
 
 - Spec approved by Nir 2026-10-13: `docs/superpowers/specs/2026-10-13-pluggable-types-design.md` (commit 1a913c3).
-- No implementation plan yet, no code yet.
+- Implementation plan written and self-reviewed: `docs/superpowers/plans/2026-10-13-pluggable-types.md` (20 testable tasks, including release/lab gates). Execution authorized: subagent-driven (Nir delegated the choice). Isolated worktree on feat/pluggable-types; baseline verification and Task 1 setup in progress.
 - Lab runs v0.1.0-beta.4 (see `lab-network-control.md`); `lab-e2e.py` is the regression check.
 
 ## Scope
@@ -20,5 +20,13 @@
 
 ## Next
 
-1. Write the implementation plan (superpowers:writing-plans) from the spec; Nir picks the execution method.
+1. Execute the plan with per-task implementation/review gates; resume from `.superpowers/sdd/2026-10-13-pluggable-types/progress.md` in the isolated worktree.
 2. Implement, `make check`, PR, merge, release v0.1.0-beta.5, roll out to the lab, extend and run `lab-e2e.py`.
+
+## Planning notes (2026-10-13)
+
+- Store opens before the current network controller loads the secret key. Plan moves key loading ahead of migration and tests atomic re-sealing, corrupt/missing keys, malformed rows, reopen/idempotence and Postgres concurrent opens.
+- Runtime Requires holds need protection across concurrent/shared wakes, external state refresh, failed stops and config reloads; tests precede lifecycle changes.
+- Plan makes idle `-1` = With dependents, argv-list Command fields, generic descriptor defaults/sensitivity, persistent Tailscale ownership, and derived ingress aliases explicit implementation choices.
+- Existing uncommitted network-map layout changes and browser artifacts belong to the previous task and must be preserved/separately scoped.
+- No lab, sudoers, host-command flag, Tailscale installation, Kubernetes cluster, release or external publication changes made during planning.
