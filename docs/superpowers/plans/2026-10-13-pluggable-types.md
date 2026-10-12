@@ -244,7 +244,7 @@ func TestShouldRejectCycleOnUpdate(t *testing.T) {
 
 **Interfaces:** Keep `EnsureRunning`, `Acquire`, `Stop` signatures. Produce `RunningDependents(id string) []Status`; typed `RequirementInUseError{Dependents []Status}` for API 409 translation. Each runtime service owns a map of idempotent release functions keyed by requirement ID.
 
-- [ ] Write tests for ordered readiness before dependent start, requirements starting in parallel, requirement failure preventing dependent start, 25 concurrent callers, diamond/shared requirements, caller cancel, partial start/failed stop, external running services, reload/config update, and idempotent release. Use existing `fakeDriver` and `newManager`; anchor:
+- [x] Write tests for ordered readiness before dependent start, requirements starting in parallel, requirement failure preventing dependent start, 25 concurrent callers, diamond/shared requirements, caller cancel, partial start/failed stop, external running services, reload/config update, and idempotent release. Use existing `fakeDriver` and `newManager`; anchor:
 
 ```go
 func TestShouldNotStartDependentAfterRequirementFailure(t *testing.T) {
@@ -262,12 +262,13 @@ func TestShouldNotStartDependentAfterRequirementFailure(t *testing.T) {
 }
 ```
 
-- [ ] Run `./internal/services`; expect the dependent to start despite its unprocessed Requires before implementation.
-- [ ] Add requirement holds before each wake to protect the readiness/start interval. Never hold `Manager.mu` while recursing or invoking drivers. Each requirement keeps its own start deadline; start the dependent's deadline after requirements are ready. Transfer holds to the running dependent exactly once; unwind on failure. Runtime graph validation protects against corrupt stored cycles before any goroutine starts.
-- [ ] Populate internal `Definition.FallbackReadyAddr` from same-org linked endpoints for dependency wakes. Probe precedence: explicit service readiness, caller endpoint target, linked fallback target, driver state. Endpoint link-refresh integration is verified in Task14.
-- [ ] Separate own traffic activity from dependency holds. For -1 stop after last requirement hold disappears only if there is no active/recent own traffic; use the existing 30s idle interval as the recent-traffic grace. Positive timeout keeps timed idle behavior; zero never stops automatically. Do not release on a failed stop while the driver remains running.
-- [ ] Refresh/startup must reconcile running dependents and holds before any idle pass, release holds when an externally stopped dependent is observed, and preserve unchanged holds through `Apply`. Requirement changes on a running dependent acquire/wake additions before releasing removals; failed change leaves prior runtime requirements protected and exposes an error. Manual stop cannot race with a newly acquired dependent hold.
-- [ ] Run `./internal/services ./internal/ingress ./internal/health` with race checks. Commit `feat: hold service requirements while dependents run`.
+- [x] Run `./internal/services`; expect the dependent to start despite its unprocessed Requires before implementation.
+- [x] Add requirement holds before each wake to protect the readiness/start interval. Never hold `Manager.mu` while recursing or invoking drivers. Each requirement keeps its own start deadline; start the dependent's deadline after requirements are ready. Transfer holds to the running dependent exactly once; unwind on failure. Runtime graph validation protects against corrupt stored cycles before any goroutine starts.
+- [x] Populate internal `Definition.FallbackReadyAddr` from same-org linked endpoints for dependency wakes. Probe precedence: explicit service readiness, caller endpoint target, linked fallback target, driver state. Endpoint link-refresh integration is verified in Task14.
+- [x] Separate own traffic activity from dependency holds. For -1 stop after last requirement hold disappears only if there is no active/recent own traffic; use the existing 30s idle interval as the recent-traffic grace. Positive timeout keeps timed idle behavior; zero never stops automatically. Do not release on a failed stop while the driver remains running.
+- [x] Unsafe direct `Apply` driver/config replacement or removal preserves the live/held runtime and exposes a stable error until stopped and a subsequent Apply. API Task13 reloads desired state before restart and implements the selected edit policy; no silent workload stop or hold loss.
+- [x] Refresh/startup must reconcile running dependents and holds before any idle pass, release holds when an externally stopped dependent is observed, and preserve unchanged holds through `Apply`. Requirement changes on a running dependent acquire/wake additions before releasing removals; failed change leaves prior runtime requirements protected and exposes an error. Manual stop cannot race with a newly acquired dependent hold. Refresh preserves positive idle activity and owns pre-reserved additions for failure cleanup; reload uses finite admission with recursive/release bypass and fixed reconciliation reservations.
+- [x] Run `./internal/services ./internal/ingress ./internal/health` with race checks. Commit `feat: hold service requirements while dependents run`.
 
 ### Task 8: Generic connection registry and instance hub
 
@@ -543,6 +544,7 @@ git diff --check
 
 **Interfaces:** Release tag `v0.1.0-beta.5`; existing `.github/workflows/release.yml` and GoReleaser publish server/agent, UI archive, images and chart. Lab remains `nir@lab-z170mx`, API `127.0.0.1:8091`, ingress `127.0.0.1:8090`, existing cloudflared tunnel.
 
+- [ ] Prepare release docs/runbook/metadata first and complete the Task20 preparation review plus whole-branch review before merge/tag/publication or lab rollout. External execution follows clean review/CI; Task20 completes only after its rollout/evidence gates.
 - [ ] Verify beta.5 is unused with `git tag --list v0.1.0-beta.5` and `gh release view v0.1.0-beta.5`; distinguish “not found” from auth/network failures. Read current lab start script/env paths and binary version without exposing credentials. Prepare exact release assets/checksum paths from the existing GoReleaser conventions.
 - [ ] Write CHANGELOG describing API/DB breakage and restore requirements. Update tracking with all validation evidence. Stage only feature paths; push `feat/pluggable-types`, create the PR with an exact body file describing behavior, migration, validation and live-test limits. Merge through the PR after review/CI pass; do not push master directly.
 - [ ] Tag the reviewed merged commit `v0.1.0-beta.5`, push that exact tag, wait for all release jobs with bounded polls, and verify published artifacts/checksums/version. A successful binary job alone does not prove images/chart/UI publication.
