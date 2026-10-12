@@ -111,7 +111,11 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	proxy.Register(context.Background(), data, conns, log, proxyGuard)
+	connector := proxy.Register(context.Background(), data, conns, log, proxyGuard)
+	network, err := newNetworkControl(cfg, data, conns, proxyGuard, connector, log)
+	if err != nil {
+		return err
+	}
 
 	stopPprof, err := startPprof(cfg.PprofAddr, log)
 	if err != nil {
@@ -198,6 +202,7 @@ func serve() error {
 		RedirectURL:        cfg.OIDCRedirectURL,
 		Issuer:             cfg.OIDCIssuer,
 	})
+	network.attach(cp)
 	cp.Register(apiMux)
 	if cfg.ReachInEnabled {
 		log.Info("reach-in data-plane api enabled")
@@ -236,6 +241,7 @@ func serve() error {
 			LookupCacheTTL:          cfg.IngressCacheTTL,
 			DisablePathRouting:      !cfg.PathRouting,
 			UpstreamResponseTimeout: cfg.UpstreamResponseTimeout,
+			Services:                network.ingressWaker(),
 		})
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg, data)
@@ -307,8 +313,12 @@ func serve() error {
 				tcpIngress.Shutdown()
 			}
 		},
-		onServersStopped: clusterRT.drain,
+		onServersStopped: func(ctx context.Context) {
+			network.stop(ctx, log)
+			clusterRT.drain(ctx)
+		},
 	}
+	network.start()
 	return runServers(log, servers, hooks)
 }
 

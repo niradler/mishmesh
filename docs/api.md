@@ -119,7 +119,8 @@ Proxy policy fields:
 - `proxy_targets` is the list of backends. Requests are spread across healthy targets and a failed dial moves on to the next target.
 - `load_balance` is empty or `round_robin` (default with several targets: rotate across healthy targets) or `failover` (always the first healthy target in order). A target whose last health probe failed is tried only after every healthy or not-yet-probed target. HTTP only.
 - `origin_tls` applies to `https://` targets and is returned unredacted (nothing in it is a secret). The proxy dials the IP the guard validated and wraps it in TLS with ALPN `http/1.1`. `server_name` overrides the verified name (default: the target host; an IP-literal host is checked against IP SANs). Verification: `insecure_skip_verify` skips all checks; otherwise, when `pin_sha256` is set, the leaf certificate's SPKI SHA-256 must equal one pin (standard base64 of the 32-byte hash) and the chain is not checked; otherwise the chain is verified against `ca_pem` when set, else the system roots. An unparseable `ca_pem` or a pin that does not decode to 32 bytes returns 400.
-- `service` and `front_door` are reserved for the services and Cloudflare front-door integration.
+- `service` names a service from the host-local services file (`MISHMESH_SERVICES_FILE`, see `docs/services.md`) that the org is allowlisted for; any other value returns 400. A request to the endpoint wakes a stopped or sleeping service: browsers (GET/HEAD accepting `text/html`) get a 503 "starting" page that refreshes every 2s, while other clients are held until the service is ready and then proxied. Wakes happen only after IP rules, rate limits and authentication pass. While requests are in flight the service is not idled out.
+- `front_door` is empty or `cloudflare`. `cloudflare` requires the front door to be configured for the org (`MISHMESH_CLOUDFLARE_*`, see `docs/cloudflare.md`) and a custom `domain` on the endpoint, else 400. The front door then keeps the tunnel ingress rule, DNS CNAME and Access application for that domain in sync.
 
 `health` (on every endpoint, read-only): `{state, detail?, checked_at, latency_ms?, targets?:[{target, healthy, latency_ms, error?, checked_at}], service?}`.
 
@@ -138,6 +139,35 @@ Proxy policy fields:
 Client IP for `ip_allow`/`ip_deny`/`rate_limit` and `X-Forwarded-For` is the socket peer, unless that peer is inside `MISHMESH_TRUSTED_PROXIES` (comma-separated IPs/CIDRs). In that case the rightmost `X-Forwarded-For` hop that is not itself a trusted proxy is used. Set it whenever ingress sits behind a load balancer, otherwise every client appears as the balancer's address.
 
 `mtls`: when set, the HTTPS edge requires a client certificate that chains to `client_ca_pem` (and whose CN is in `allowed_cns`, if given), otherwise 403. Requires the HTTPS ingress (`TLS_ENABLED`).
+
+## Services (scale to zero)
+
+Services are defined only in the host-local services file; the API reads and controls them but never creates them.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/services` | services the org is allowlisted for → `[serviceDTO]`; `[]` when no services file is configured |
+| POST | `/services/{name}/start` | starts the service and waits until it is ready → serviceDTO. 404 if not visible to the org, 502 if the driver fails |
+| POST | `/services/{name}/stop` | stops it now → serviceDTO. 404 / 502 as above |
+
+`serviceDTO`: `{name, driver, state, active, last_activity?, last_error?, started_by?, updated_at, idle_timeout_seconds, start_timeout_seconds, endpoints:[endpoint id]}`. `state` is `running`, `stopped` (stopped outside mishmesh or never started), `sleeping` (idled out by mishmesh), `starting`, `partial` (some containers up), `error` or `unknown`. `active` is the number of in-flight requests.
+
+## Front doors
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/frontdoors` | `{cloudflare: status}`; `status.enabled` is false when the front door is not configured for the org |
+| POST | `/frontdoors/cloudflare/sync` | runs a reconcile now → `{cloudflare: status}`. 404 if not enabled, 502 if Cloudflare rejects the sync |
+
+`status`: `{enabled, tunnel?:{id, name, status, connections}, origin, last_sync?, last_error?, hostnames:[{host, endpoint_id, ingress, dns, dns_detail?, access, state, detail?}], supervisor?}`. A hostname `state` is `synced`, `pending` or `conflict`/`error` with the reason in `detail`. An existing DNS record that does not point at the tunnel is reported as a conflict and never overwritten.
+
+## Topology
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/topology` | the org's network graph → `{nodes:[{id, kind, label, state, detail?}], edges:[{from, to, kind}]}` |
+
+Node kinds: `frontdoor`, `hostname`, `endpoint`, `target`, `service`, `agent`. Edge kinds: `routes` (front door → hostname), `serves` (hostname → endpoint), `proxies` (endpoint → target), `tunnels` (endpoint → agent), `wakes` (endpoint → service). Node `state` uses the endpoint health vocabulary; a node shared by several endpoints shows the worst state.
 
 ## Custom domains (ownership verification)
 

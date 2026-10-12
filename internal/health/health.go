@@ -242,18 +242,33 @@ func (p *Prober) probeProxy(ctx context.Context, ep *store.Endpoint) EndpointHea
 	wg.Wait()
 	h := summarize(statuses)
 	if p.services != nil && ep.Policy.Service != "" {
-		name := ep.Policy.Service
-		state, ok := p.services.ServiceState(name)
-		switch {
-		case ok && (state == ServiceSleeping || state == ServiceStopped):
-			h.State = StateSleeping
-			h.Detail = fmt.Sprintf("service %s is %s", name, state)
-		case ok && state == ServiceStarting:
-			h.State = StateWaking
-			h.Detail = fmt.Sprintf("service %s is starting", name)
-		}
+		applyServiceState(&h, ep.Policy.Service, p.services)
 	}
 	return h
+}
+
+func applyServiceState(h *EndpointHealth, name string, services ServiceStates) {
+	state, ok := services.ServiceState(name)
+	if !ok {
+		h.State = StateDown
+		h.Detail = fmt.Sprintf("service %s is not configured on this server", name)
+		return
+	}
+	switch state {
+	case ServiceStarting:
+		h.State = StateWaking
+		h.Detail = fmt.Sprintf("service %s is starting", name)
+	case ServiceSleeping:
+		if h.State != StateUp {
+			h.State = StateSleeping
+			h.Detail = fmt.Sprintf("service %s is scaled to zero and wakes on request", name)
+		}
+	case ServiceStopped, ServiceError:
+		if h.State != StateUp {
+			h.State = StateDown
+			h.Detail = fmt.Sprintf("service %s is %s; a request will try to start it", name, state)
+		}
+	}
 }
 
 func (p *Prober) probeTarget(ctx context.Context, target string, otls *store.OriginTLS) TargetStatus {

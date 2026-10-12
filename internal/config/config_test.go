@@ -6,7 +6,30 @@ import (
 )
 
 func baseValid() Server {
-	return Server{BaseDomain: "localhost:8080", PublicScheme: "http", APIAuthToken: "tok", UpstreamResponseTimeout: 5 * time.Minute, DataQueryTimeout: 5 * time.Second}
+	return Server{BaseDomain: "localhost:8080", PublicScheme: "http", APIAuthToken: "tok", UpstreamResponseTimeout: 5 * time.Minute, DataQueryTimeout: 5 * time.Second, HealthInterval: 15 * time.Second, HealthTimeout: 3 * time.Second}
+}
+
+func TestValidateHealthDurations(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval time.Duration
+		timeout  time.Duration
+		wantErr  bool
+	}{
+		{"defaults", 15 * time.Second, 3 * time.Second, false},
+		{"zero interval", 0, 3 * time.Second, true},
+		{"zero timeout", 15 * time.Second, 0, true},
+		{"negative interval", -time.Second, 3 * time.Second, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := baseValid()
+			s.HealthInterval, s.HealthTimeout = tc.interval, tc.timeout
+			if err := s.Validate(); (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
 }
 
 func TestUpstreamResponseTimeout(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/endpointurl"
+	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/subdomain"
 )
@@ -24,19 +25,20 @@ func hostOnly(hostport string) string {
 }
 
 type endpointDTO struct {
-	ID        string                `json:"id"`
-	AgentID   string                `json:"agent_id"`
-	OrgID     string                `json:"org_id"`
-	Kind      string                `json:"kind"`
-	Method    string                `json:"method"`
-	Lifecycle string                `json:"lifecycle"`
-	Subdomain string                `json:"subdomain"`
-	Domain    string                `json:"domain"`
-	Port      int                   `json:"port"`
-	PublicURL string                `json:"public_url"`
-	Online    bool                  `json:"online"`
-	Policy    *store.EndpointPolicy `json:"policy,omitempty"`
-	CreatedAt time.Time             `json:"created_at"`
+	ID        string                 `json:"id"`
+	AgentID   string                 `json:"agent_id"`
+	OrgID     string                 `json:"org_id"`
+	Kind      string                 `json:"kind"`
+	Method    string                 `json:"method"`
+	Lifecycle string                 `json:"lifecycle"`
+	Subdomain string                 `json:"subdomain"`
+	Domain    string                 `json:"domain"`
+	Port      int                    `json:"port"`
+	PublicURL string                 `json:"public_url"`
+	Online    bool                   `json:"online"`
+	Policy    *store.EndpointPolicy  `json:"policy,omitempty"`
+	Health    *health.EndpointHealth `json:"health,omitempty"`
+	CreatedAt time.Time              `json:"created_at"`
 }
 
 type endpointInput struct {
@@ -62,8 +64,20 @@ func (a *API) toEndpointDTO(ep *store.Endpoint) endpointDTO {
 	return endpointDTO{
 		ID: ep.ID, AgentID: ep.AgentID, OrgID: ep.OrgID, Kind: ep.Kind, Method: store.MethodOrDefault(ep.Method),
 		Lifecycle: ep.Lifecycle, Subdomain: ep.Subdomain, Domain: ep.Domain, Port: ep.Port,
-		PublicURL: a.publicURL(ep), Online: online, Policy: redactPolicy(ep.Policy), CreatedAt: ep.CreatedAt,
+		PublicURL: a.publicURL(ep), Online: online, Policy: redactPolicy(ep.Policy), Health: a.healthOf(ep.ID),
+		CreatedAt: ep.CreatedAt,
 	}
+}
+
+func (a *API) healthOf(endpointID string) *health.EndpointHealth {
+	if a.endpointHealth == nil {
+		return nil
+	}
+	h, ok := a.endpointHealth.Get(endpointID)
+	if !ok {
+		return nil
+	}
+	return &h
 }
 
 func (a *API) publicURL(ep *store.Endpoint) string {
@@ -170,6 +184,10 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := a.validateNetworkPolicy(orgID, domain, pol); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	agentID := req.AgentID
 	if method == store.MethodProxy {
 		agentID = proxy.AgentID
@@ -202,6 +220,7 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		a.conns.BindEndpoint(ep.ID, proxy.AgentID)
 	}
 	a.audit(r, "endpoint.create", ep.ID, kind)
+	a.endpointChanged(ep)
 	writeJSON(w, http.StatusCreated, a.toEndpointDTO(ep))
 }
 
@@ -260,10 +279,15 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		ep.Policy = pol
 	}
+	if err := a.validateNetworkPolicy(ep.OrgID, ep.Domain, ep.Policy); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if a.handleErr(w, a.data.UpdateEndpoint(r.Context(), ep)) {
 		return
 	}
 	a.audit(r, "endpoint.update", ep.ID, "")
+	a.endpointChanged(ep)
 	writeJSON(w, http.StatusOK, a.toEndpointDTO(ep))
 }
 
@@ -283,6 +307,7 @@ func (a *API) deleteEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		a.conns.UnbindEndpoint(ep.ID)
 	}
 	a.audit(r, "endpoint.delete", ep.ID, "")
+	a.endpointRemoved(ep)
 	w.WriteHeader(http.StatusNoContent)
 }
 

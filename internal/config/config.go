@@ -88,6 +88,10 @@ type Server struct {
 	TrustedProxies string
 
 	AllowedOrigins []string
+
+	ServicesFile   string
+	HealthInterval time.Duration
+	HealthTimeout  time.Duration
 }
 
 type Agent struct {
@@ -181,6 +185,10 @@ func LoadServer() Server {
 		TrustedProxies: env("TRUSTED_PROXIES", ""),
 
 		AllowedOrigins: envList("ALLOWED_ORIGINS"),
+
+		ServicesFile:   env("SERVICES_FILE", ""),
+		HealthInterval: strictDuration("HEALTH_INTERVAL", "15s"),
+		HealthTimeout:  strictDuration("HEALTH_TIMEOUT", "3s"),
 	}
 }
 
@@ -266,6 +274,9 @@ func (s Server) Validate() error {
 	}
 	if s.UpstreamResponseTimeout <= 0 {
 		return fmt.Errorf("config: UPSTREAM_RESPONSE_TIMEOUT must be a positive duration")
+	}
+	if s.HealthInterval <= 0 || s.HealthTimeout <= 0 {
+		return fmt.Errorf("config: HEALTH_INTERVAL and HEALTH_TIMEOUT must be positive durations")
 	}
 	if s.DataQueryTimeout <= 0 {
 		return fmt.Errorf("config: DATA_QUERY_TIMEOUT must be a positive duration")

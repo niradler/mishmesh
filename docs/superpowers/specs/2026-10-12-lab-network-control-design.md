@@ -42,8 +42,7 @@ Stored in the existing JSON `policy` column, so no migration on SQLite or Postgr
 
 ```json
 {
-  "proxy_target": "https://127.0.0.1:9443",
-  "proxy_targets": ["10.0.0.5:8080", "10.0.0.6:8080"],
+  "proxy_targets": ["https://127.0.0.1:9443", "10.0.0.6:8080"],
   "load_balance": "round_robin | failover",
   "origin_tls": {
     "server_name": "portainer.local",
@@ -56,7 +55,7 @@ Stored in the existing JSON `policy` column, so no migration on SQLite or Postgr
 }
 ```
 
-`EndpointPolicy.Targets()` returns `proxy_target` followed by `proxy_targets`, deduplicated.
+`proxy_targets` is the only target field. The single-target `proxy_target` was removed: there is one user, so no compatibility path.
 
 ## 4. Health (A)
 
@@ -68,7 +67,7 @@ Stored in the existing JSON `policy` column, so no migration on SQLite or Postgr
 
 ## 5. Load balancing (B)
 
-- Targets come from `Targets()`. `round_robin` (default when there is more than one target) rotates across healthy targets. `failover` always takes the first healthy target in order.
+- Targets come from `proxy_targets`. `round_robin` (default when there is more than one target) rotates across healthy targets. `failover` always takes the first healthy target in order.
 - Unknown health counts as healthy. When every target is unhealthy, all of them are tried in order.
 - A dial error moves on to the next target in the same request. This is safe because nothing has been written yet.
 - HTTP only for v1. TCP and TLS-passthrough endpoints use the first target.
@@ -199,7 +198,7 @@ Validation:
 
 - `service` must name a configured service visible to the org.
 - `front_door` must be `cloudflare`, with Cloudflare enabled for the org and a custom `domain` set.
-- Every target in `Targets()` passes the guard.
+- Every target in `proxy_targets` passes the guard.
 - `origin_tls.ca_pem` must parse.
 - Each pin is a 32-byte base64 value.
 - `load_balance` is empty or one of the two modes.

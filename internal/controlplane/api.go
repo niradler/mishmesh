@@ -38,6 +38,9 @@ type API struct {
 	allowedOrigins     map[string]struct{}
 	proxyGuard         *proxy.Guard
 	maxOrgsPerUser     int
+	services           ServiceControl
+	endpointHealth     HealthSource
+	frontDoor          FrontDoorControl
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
@@ -197,6 +200,13 @@ func (a *API) routes() []route {
 		{"GET /api/v1/endpoints/{id}", a.require(authz.ActionEndpointRead, a.getEndpointHandler)},
 		{"PATCH /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.patchEndpointHandler)},
 		{"DELETE /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.deleteEndpointHandler)},
+
+		{"GET /api/v1/services", a.require(authz.ActionEndpointRead, a.listServicesHandler)},
+		{"POST /api/v1/services/{name}/start", a.require(authz.ActionEndpointWrite, a.startServiceHandler)},
+		{"POST /api/v1/services/{name}/stop", a.require(authz.ActionEndpointWrite, a.stopServiceHandler)},
+		{"GET /api/v1/frontdoors", a.require(authz.ActionEndpointRead, a.listFrontDoorsHandler)},
+		{"POST /api/v1/frontdoors/cloudflare/sync", a.require(authz.ActionEndpointWrite, a.syncCloudflareHandler)},
+		{"GET /api/v1/topology", a.require(authz.ActionEndpointRead, a.topologyHandler)},
 
 		{"GET /api/v1/quota", a.require(authz.ActionQuotaRead, a.getQuotaHandler)},
 		{"PUT /api/v1/quota", a.require(authz.ActionQuotaWrite, a.putQuotaHandler)},

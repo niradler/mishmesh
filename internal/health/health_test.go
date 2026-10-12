@@ -109,11 +109,13 @@ func TestProbeProxyStates(t *testing.T) {
 		{"all down", []string{dead, dead2}, "", nil, StateDown},
 		{"degraded", []string{live, dead}, "", nil, StateDegraded},
 		{"sleeping service", []string{dead}, "svc", fakeServices{"svc": ServiceSleeping}, StateSleeping},
-		{"stopped service", []string{dead}, "svc", fakeServices{"svc": ServiceStopped}, StateSleeping},
+		{"sleeping service answering is up", []string{live}, "svc", fakeServices{"svc": ServiceSleeping}, StateUp},
+		{"externally stopped service is down", []string{dead}, "svc", fakeServices{"svc": ServiceStopped}, StateDown},
+		{"failed service is down", []string{dead}, "svc", fakeServices{"svc": ServiceError}, StateDown},
 		{"starting service", []string{dead}, "svc", fakeServices{"svc": ServiceStarting}, StateWaking},
 		{"running service with dead target", []string{dead}, "svc", fakeServices{"svc": ServiceRunning}, StateDown},
 		{"running service with live target", []string{live}, "svc", fakeServices{"svc": ServiceRunning}, StateUp},
-		{"unknown service ignored", []string{dead}, "other", fakeServices{"svc": ServiceSleeping}, StateDown},
+		{"unconfigured service is down", []string{live}, "other", fakeServices{"svc": ServiceSleeping}, StateDown},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
