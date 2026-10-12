@@ -114,7 +114,10 @@ func (a *API) topologyHandler(w http.ResponseWriter, r *http.Request) {
 		agentNames[ag.ID] = ag.Name
 	}
 	b := newTopologyBuilder()
-	fd := a.frontDoorStatus(orgID)
+	fd, err := a.frontDoorStatus(r.Context(), orgID)
+	if a.handleErr(w, err) {
+		return
+	}
 	hosts := a.addFrontDoor(b, fd)
 	for _, ep := range eps {
 		a.addEndpoint(b, ep, hosts, agentNames)

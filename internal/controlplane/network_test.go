@@ -279,10 +279,23 @@ func TestFrontDoorRoutes(t *testing.T) {
 	if code, _ := statusAndBody(t, srv, http.MethodPost, "/api/v1/frontdoors/cloudflare/sync", ""); code != http.StatusNotFound {
 		t.Fatalf("sync when disabled: %d", code)
 	}
-	fd := &fakeFrontDoor{orgs: map[string]bool{defaultOrgID: true}, status: cloudflare.Status{Enabled: true, Origin: "http://127.0.0.1:8090", Hostnames: []cloudflare.HostStatus{{Host: "a.example.org", State: "synced"}}}}
+	code, body = statusAndBody(t, srv, http.MethodPost, "/api/v1/endpoints", `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"]}}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	var mine endpointDTO
+	_ = json.Unmarshal([]byte(body), &mine)
+	fd := &fakeFrontDoor{orgs: map[string]bool{defaultOrgID: true, "org_other": true}, status: cloudflare.Status{Enabled: true, Origin: "http://127.0.0.1:8090", Hostnames: []cloudflare.HostStatus{
+		{Host: "a.example.org", EndpointID: mine.ID, State: "synced"},
+		{Host: "other-tenant.example.org", EndpointID: "ep_other", State: "synced"},
+	}}}
 	api.SetFrontDoor(fd)
+	code, body = statusAndBody(t, srv, http.MethodGet, "/api/v1/frontdoors", "")
+	if code != http.StatusOK || !strings.Contains(body, "a.example.org") || strings.Contains(body, "other-tenant") {
+		t.Fatalf("hostnames not scoped to the org: %d %s", code, body)
+	}
 	code, body = statusAndBody(t, srv, http.MethodPost, "/api/v1/frontdoors/cloudflare/sync", "")
-	if code != http.StatusOK || !strings.Contains(body, "a.example.org") {
+	if code != http.StatusOK || !strings.Contains(body, "a.example.org") || strings.Contains(body, "other-tenant") {
 		t.Fatalf("sync: %d %s", code, body)
 	}
 	fd.syncErr = errors.New("cloudflare api: 403")
@@ -303,7 +316,6 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 	api.SetServices(newFakeServices())
 	fd := &fakeFrontDoor{orgs: map[string]bool{defaultOrgID: true}, status: cloudflare.Status{
 		Enabled: true, Tunnel: &cloudflare.Tunnel{Name: "lab", Status: "healthy"},
-		Hostnames: []cloudflare.HostStatus{{Host: "sync.example.org", State: "synced"}},
 	}}
 	api.SetFrontDoor(fd)
 	code, body := statusAndBody(t, srv, http.MethodPost, "/api/v1/endpoints", `{"method":"proxy","domain":"sync.example.org","policy":{"proxy_targets":["93.184.216.34:8384","https://93.184.216.35:8384"],"service":"syncthing","front_door":"cloudflare"}}`)
@@ -312,6 +324,7 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 	}
 	var ep endpointDTO
 	_ = json.Unmarshal([]byte(body), &ep)
+	fd.status.Hostnames = []cloudflare.HostStatus{{Host: "sync.example.org", EndpointID: ep.ID, State: "synced"}}
 	h.mu.Lock()
 	h.results[ep.ID] = health.EndpointHealth{State: health.StateDegraded, Targets: []health.TargetStatus{
 		{Target: "93.184.216.34:8384", Healthy: true},

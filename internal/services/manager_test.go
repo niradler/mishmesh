@@ -125,11 +125,12 @@ func newFixture(t *testing.T, svc ServiceConfig, driver *fakeDriver) *managerFix
 				return nil, errors.New("connection refused")
 			}
 			client, server := net.Pipe()
-			_ = server.Close()
+			t.Cleanup(func() { _ = server.Close() })
 			return client, nil
 		},
 	}, map[string]Driver{"svc": driver})
 	f.manager.pollInterval = 5 * time.Millisecond
+	f.manager.readyHold = 5 * time.Millisecond
 	return f
 }
 
@@ -687,5 +688,41 @@ func TestManagerWithDockerEngine(t *testing.T) {
 	}
 	if state, _ := m.ServiceState("portainer"); state != StateSleeping {
 		t.Errorf("state = %s", state)
+	}
+}
+
+func TestProbeRequiresListeningService(t *testing.T) {
+	tests := []struct {
+		name      string
+		serve     func(net.Conn)
+		wantReady bool
+	}{
+		{"accept then close like a docker proxy without backend", func(c net.Conn) { _ = c.Close() }, false},
+		{"quiet listener holding the connection", func(c net.Conn) { time.Sleep(time.Second); _ = c.Close() }, true},
+		{"server speaks first", func(c net.Conn) { _, _ = c.Write([]byte("SSH-2.0-x\r\n")); time.Sleep(time.Second); _ = c.Close() }, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			go func() {
+				for {
+					c, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					go tc.serve(c)
+				}
+			}()
+			m := newManager(&Config{}, Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil)
+			m.readyHold = 200 * time.Millisecond
+			err = m.probe(context.Background(), ln.Addr().String())
+			if (err == nil) != tc.wantReady {
+				t.Fatalf("probe err = %v, want ready=%v", err, tc.wantReady)
+			}
+		})
 	}
 }

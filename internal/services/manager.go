@@ -30,6 +30,7 @@ const (
 	idleCheckInterval = 30 * time.Second
 	readyPollInterval = 500 * time.Millisecond
 	readyDialTimeout  = 2 * time.Second
+	readyHoldWindow   = 300 * time.Millisecond
 	driverCallTimeout = 30 * time.Second
 	stopTimeout       = 60 * time.Second
 )
@@ -96,6 +97,7 @@ type Manager struct {
 	started time.Time
 
 	pollInterval time.Duration
+	readyHold    time.Duration
 
 	mu       sync.Mutex
 	services map[string]*service
@@ -149,6 +151,7 @@ func newManager(cfg *Config, opts Options, drivers map[string]Driver) *Manager {
 		dial:         dial,
 		started:      now(),
 		pollInterval: readyPollInterval,
+		readyHold:    readyHoldWindow,
 		services:     make(map[string]*service, len(cfg.Services)),
 	}
 	for name, svcCfg := range cfg.Services {
@@ -324,7 +327,17 @@ func (m *Manager) probe(ctx context.Context, addr string) error {
 	if err != nil {
 		return err
 	}
-	return conn.Close()
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(m.readyHold)); err != nil {
+		return err
+	}
+	var first [1]byte
+	_, err = conn.Read(first[:])
+	var netErr net.Error
+	if err == nil || (errors.As(err, &netErr) && netErr.Timeout()) {
+		return nil
+	}
+	return fmt.Errorf("%s accepted the connection but closed it, the service is not listening yet: %w", addr, err)
 }
 
 func (m *Manager) ensure(ctx context.Context, s *service, readyAddr string) error {

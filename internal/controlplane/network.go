@@ -227,15 +227,38 @@ type frontDoorsDTO struct {
 	Cloudflare cloudflare.Status `json:"cloudflare"`
 }
 
-func (a *API) frontDoorStatus(orgID string) cloudflare.Status {
+func (a *API) frontDoorStatus(ctx context.Context, orgID string) (cloudflare.Status, error) {
 	if a.frontDoor == nil || !a.frontDoor.Enabled(orgID) {
-		return cloudflare.Status{Hostnames: []cloudflare.HostStatus{}}
+		return cloudflare.Status{Hostnames: []cloudflare.HostStatus{}}, nil
 	}
-	return a.frontDoor.Status()
+	return a.scopeFrontDoor(ctx, orgID, a.frontDoor.Status())
+}
+
+func (a *API) scopeFrontDoor(ctx context.Context, orgID string, st cloudflare.Status) (cloudflare.Status, error) {
+	eps, err := a.data.ListEndpointsByOrg(ctx, orgID)
+	if err != nil {
+		return cloudflare.Status{}, err
+	}
+	owned := make(map[string]bool, len(eps))
+	for _, ep := range eps {
+		owned[ep.ID] = true
+	}
+	hosts := make([]cloudflare.HostStatus, 0, len(st.Hostnames))
+	for _, h := range st.Hostnames {
+		if owned[h.EndpointID] {
+			hosts = append(hosts, h)
+		}
+	}
+	st.Hostnames = hosts
+	return st, nil
 }
 
 func (a *API) listFrontDoorsHandler(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, frontDoorsDTO{Cloudflare: a.frontDoorStatus(a.orgScope(r))})
+	st, err := a.frontDoorStatus(r.Context(), a.orgScope(r))
+	if a.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, frontDoorsDTO{Cloudflare: st})
 }
 
 func (a *API) syncCloudflareHandler(w http.ResponseWriter, r *http.Request) {
@@ -249,5 +272,9 @@ func (a *API) syncCloudflareHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "frontdoor.sync", store.FrontDoorCloudflare, "")
+	st, err = a.scopeFrontDoor(r.Context(), a.orgScope(r), st)
+	if a.handleErr(w, err) {
+		return
+	}
 	writeJSON(w, http.StatusOK, frontDoorsDTO{Cloudflare: st})
 }

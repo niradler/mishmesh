@@ -24,11 +24,16 @@ type fakeWaker struct {
 	mu        sync.Mutex
 	state     string
 	known     bool
+	hiddenOrg bool
 	ensureErr error
 	ensured   []string
 	async     []string
 	active    int
 	acquired  int
+}
+
+func (f *fakeWaker) VisibleTo(orgID, _ string) bool {
+	return orgID == "org_1" && !f.hiddenOrg
 }
 
 func (f *fakeWaker) ServiceState(string) (string, bool) {
@@ -93,6 +98,7 @@ func TestWakeServiceIngress(t *testing.T) {
 		name         string
 		state        string
 		known        bool
+		hiddenOrg    bool
 		ensureErr    error
 		accept       string
 		wantCode     int
@@ -101,16 +107,17 @@ func TestWakeServiceIngress(t *testing.T) {
 		wantAsync    int
 		wantAcquired int
 	}{
-		{"running proxies and tracks activity", services.StateRunning, true, nil, "text/html", http.StatusOK, "backend", 0, 0, 1},
-		{"sleeping browser gets waking page", services.StateSleeping, true, nil, "text/html,application/xhtml+xml", http.StatusServiceUnavailable, "Starting svc", 0, 1, 0},
-		{"sleeping api call is held then proxied", services.StateSleeping, true, nil, "application/json", http.StatusOK, "backend", 1, 0, 1},
-		{"stopped api call wakes too", services.StateStopped, true, nil, "", http.StatusOK, "backend", 1, 0, 1},
-		{"wake failure is 503 without detail", services.StateSleeping, true, errors.New("docker: secret path /x"), "", http.StatusServiceUnavailable, "retry shortly", 1, 0, 0},
-		{"unknown service fails closed", "", false, nil, "", http.StatusServiceUnavailable, "service unavailable", 0, 0, 0},
+		{"running proxies and tracks activity", services.StateRunning, true, false, nil, "text/html", http.StatusOK, "backend", 0, 0, 1},
+		{"sleeping browser gets waking page", services.StateSleeping, true, false, nil, "text/html,application/xhtml+xml", http.StatusServiceUnavailable, "Starting svc", 0, 1, 0},
+		{"sleeping api call is held then proxied", services.StateSleeping, true, false, nil, "application/json", http.StatusOK, "backend", 1, 0, 1},
+		{"stopped api call wakes too", services.StateStopped, true, false, nil, "", http.StatusOK, "backend", 1, 0, 1},
+		{"wake failure is 503 without detail", services.StateSleeping, true, false, errors.New("docker: secret path /x"), "", http.StatusServiceUnavailable, "retry shortly", 1, 0, 0},
+		{"unknown service fails closed", "", false, false, nil, "", http.StatusServiceUnavailable, "service unavailable", 0, 0, 0},
+		{"service no longer allowlisted for the org never wakes", services.StateSleeping, true, true, nil, "text/html", http.StatusServiceUnavailable, "service unavailable", 0, 0, 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			waker := &fakeWaker{state: tc.state, known: tc.known, ensureErr: tc.ensureErr}
+			waker := &fakeWaker{state: tc.state, known: tc.known, hiddenOrg: tc.hiddenOrg, ensureErr: tc.ensureErr}
 			ing := newWakeIngress(t, pol, waker)
 			r := httptest.NewRequest(http.MethodGet, "http://app.example.com/", nil)
 			if tc.accept != "" {

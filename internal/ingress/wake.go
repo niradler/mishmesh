@@ -12,6 +12,7 @@ import (
 )
 
 type ServiceWaker interface {
+	VisibleTo(orgID, name string) bool
 	ServiceState(name string) (string, bool)
 	EnsureRunning(ctx context.Context, name, readyAddr string) error
 	StartAsync(name, readyAddr string)
@@ -26,7 +27,7 @@ func (i *Ingress) wakeService(w http.ResponseWriter, r *http.Request, ep *store.
 		return func() {}, true
 	}
 	state, known := i.services.ServiceState(name)
-	if !known {
+	if !known || !i.services.VisibleTo(ep.OrgID, name) {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		i.recordCode(http.StatusServiceUnavailable)
 		i.log.Warn("endpoint references unknown service", "endpoint_id", ep.ID, "service", name)
