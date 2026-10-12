@@ -433,7 +433,7 @@ func scanConnection(row interface{ Scan(...any) error }) (*store.Connection, err
 const networkWriteLockKey int64 = 731907244
 
 func (s *Store) beginNetworkWrite(ctx context.Context) (*sql.Tx, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, wrap("begin network write", err)
 	}
