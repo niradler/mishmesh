@@ -109,6 +109,26 @@ func (a *API) reloadServices(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list services: %w", err)
 	}
+	fallbacks := make(map[string]map[string]string)
+	for _, rec := range recs {
+		if _, loaded := fallbacks[rec.OrgID]; loaded {
+			continue
+		}
+		endpoints, err := a.data.ListEndpointsByOrg(ctx, rec.OrgID)
+		if err != nil {
+			return fmt.Errorf("list service endpoints: %w", err)
+		}
+		targets := make(map[string]string)
+		for _, ep := range endpoints {
+			if ep.OrgID != rec.OrgID || ep.Policy == nil || len(ep.Policy.ProxyTargets) == 0 {
+				continue
+			}
+			if targets[ep.Policy.ServiceID] == "" {
+				targets[ep.Policy.ServiceID] = ep.Policy.ProxyTargets[0]
+			}
+		}
+		fallbacks[rec.OrgID] = targets
+	}
 	defs := make([]services.Definition, 0, len(recs))
 	for _, rec := range recs {
 		def, err := services.FromRecord(rec)
@@ -116,6 +136,7 @@ func (a *API) reloadServices(ctx context.Context) error {
 			a.log.Error("service skipped", "id", rec.ID, "org", rec.OrgID, "err", err)
 			continue
 		}
+		def.FallbackReadyAddr = fallbacks[rec.OrgID][rec.ID]
 		defs = append(defs, def)
 	}
 	a.services.Apply(defs)

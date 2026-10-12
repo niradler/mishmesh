@@ -26,7 +26,7 @@ func TestValidate(t *testing.T) {
 		{"exec", "job", DriverExec, Spec{Exec: &ExecSpec{Start: []string{"a"}, Stop: []string{"b"}}}, 0, 0, ""},
 		{"ready tcp", "portainer", DriverDocker, Spec{Docker: docker.Docker, ReadyTCP: "127.0.0.1:9443"}, 0, 0, ""},
 		{"bad name", "Bad Name", DriverDocker, docker, 0, 0, "name must"},
-		{"negative idle", "x", DriverDocker, docker, -1, 0, "idle_timeout_seconds"},
+		{"negative idle", "x", DriverDocker, docker, -2, 0, "idle_timeout_seconds"},
 		{"huge start", "x", DriverDocker, docker, 0, maxTimeoutSeconds + 1, "start_timeout_seconds"},
 		{"ready without port", "x", DriverDocker, Spec{Docker: docker.Docker, ReadyTCP: "localhost"}, 0, 0, "ready_tcp"},
 		{"missing driver", "x", "", docker, 0, 0, "driver is required"},
@@ -169,5 +169,26 @@ func TestShouldLoadCustomDriverRecordUsingRegistry(t *testing.T) {
 	definition, err := FromRecordWithRegistry(&store.Service{ID: "svc_1", OrgID: "org_a", Name: "custom", Driver: "test", Config: json.RawMessage(`{}`)}, registry)
 	if err != nil || definition.Driver != "test" {
 		t.Fatalf("definition=%+v error=%v", definition, err)
+	}
+}
+
+func TestShouldLoadWithDependentsIdleSentinel(t *testing.T) {
+	for _, typed := range []bool{false, true} {
+		for _, idle := range []int{-2, -1, 0, 1} {
+			rec := &store.Service{ID: "svc", OrgID: "org", Name: "svc", Driver: DriverDocker, IdleTimeoutSeconds: idle, Spec: json.RawMessage(`{"docker":{"containers":["web"]}}`)}
+			if typed {
+				rec.Config = json.RawMessage(`{"containers":["web"]}`)
+			}
+			def, err := FromRecord(rec)
+			if idle < -1 {
+				if err == nil {
+					t.Fatal("invalid negative timeout accepted")
+				}
+				continue
+			}
+			if err != nil || def.IdleTimeout != time.Duration(idle)*time.Second {
+				t.Fatalf("typed=%v idle=%d def=%+v err=%v", typed, idle, def, err)
+			}
+		}
 	}
 }

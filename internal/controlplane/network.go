@@ -18,6 +18,7 @@ import (
 type ServiceControl interface {
 	Apply(defs []services.Definition)
 	Status(id string) (services.Status, bool)
+	RunningDependents(id string) []services.Status
 	EnsureRunning(ctx context.Context, id, readyAddr string) error
 	Stop(ctx context.Context, id string) error
 }

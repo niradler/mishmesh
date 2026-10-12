@@ -60,16 +60,17 @@ type ExecSpec struct {
 }
 
 type Definition struct {
-	ID           string
-	OrgID        string
-	Name         string
-	Driver       string
-	Spec         Spec
-	Config       json.RawMessage
-	Ready        Readiness
-	Requires     []string
-	IdleTimeout  time.Duration
-	StartTimeout time.Duration
+	ID                string
+	OrgID             string
+	Name              string
+	Driver            string
+	Spec              Spec
+	Config            json.RawMessage
+	Ready             Readiness
+	Requires          []string
+	FallbackReadyAddr string
+	IdleTimeout       time.Duration
+	StartTimeout      time.Duration
 }
 
 func UsesHostCommands(driver string, spec Spec) bool {
@@ -147,8 +148,8 @@ func Validate(name, driver string, spec Spec, idleSeconds, startSeconds int) err
 	if !NamePattern.MatchString(name) {
 		return fmt.Errorf("name must be 1-63 lowercase letters, digits, '-', '_' or '.', starting with a letter or digit")
 	}
-	if idleSeconds < 0 || idleSeconds > maxTimeoutSeconds {
-		return fmt.Errorf("idle_timeout_seconds must be between 0 and %d", maxTimeoutSeconds)
+	if idleSeconds < -1 || idleSeconds > maxTimeoutSeconds {
+		return fmt.Errorf("idle_timeout_seconds must be between -1 and %d", maxTimeoutSeconds)
 	}
 	if startSeconds < 0 || startSeconds > maxTimeoutSeconds {
 		return fmt.Errorf("start_timeout_seconds must be between 0 and %d", maxTimeoutSeconds)
@@ -225,7 +226,7 @@ func FromRecordWithRegistry(rec *store.Service, registry *Registry) (Definition,
 	if !NamePattern.MatchString(rec.Name) {
 		return Definition{}, errors.New("invalid service name")
 	}
-	if rec.IdleTimeoutSeconds < 0 || rec.IdleTimeoutSeconds > maxTimeoutSeconds || rec.StartTimeoutSeconds < 0 || rec.StartTimeoutSeconds > maxTimeoutSeconds {
+	if rec.IdleTimeoutSeconds < -1 || rec.IdleTimeoutSeconds > maxTimeoutSeconds || rec.StartTimeoutSeconds < 0 || rec.StartTimeoutSeconds > maxTimeoutSeconds {
 		return Definition{}, errors.New("service timeout is out of range")
 	}
 	if registry == nil {

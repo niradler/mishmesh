@@ -74,6 +74,8 @@ func (f *fakeServiceControl) EnsureRunning(_ context.Context, id, ready string) 
 	return nil
 }
 
+func (f *fakeServiceControl) RunningDependents(string) []services.Status { return nil }
+
 func (f *fakeServiceControl) Stop(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -296,7 +298,7 @@ func TestServiceCRUD(t *testing.T) {
 		`{"name":"x","driver":"docker","spec":{}}`,
 		`{"name":"x","driver":"docker","spec":{"docker":{"containers":["x"]},"bogus":1}}`,
 		`{"name":"x","driver":"podman","spec":{}}`,
-		`{"name":"x","driver":"docker","spec":{"docker":{"containers":["x"]}},"idle_timeout_seconds":-1}`,
+		`{"name":"x","driver":"docker","spec":{"docker":{"containers":["x"]}},"idle_timeout_seconds":-2}`,
 	}
 	for _, body := range invalid {
 		if code, resp := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services", body); code != http.StatusBadRequest {
@@ -482,6 +484,32 @@ func TestServiceInvalidRecordIsSkipped(t *testing.T) {
 	}
 	if code, _ := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services/"+bad.ID+"/start", ""); code != http.StatusConflict {
 		t.Fatalf("start unloaded: %d", code)
+	}
+}
+
+type fallbackEndpointStore struct {
+	store.DataStore
+	endpoints []*store.Endpoint
+}
+
+func (s fallbackEndpointStore) ListEndpointsByOrg(context.Context, string) ([]*store.Endpoint, error) {
+	return s.endpoints, nil
+}
+
+func TestShouldLoadServiceLinkedFallbackOnlyFromSameOrganization(t *testing.T) {
+	f := newNetworkFixture(t)
+	svc := f.createService(t, dockerServiceBody)
+	f.api.data = fallbackEndpointStore{DataStore: f.api.data, endpoints: []*store.Endpoint{
+		{OrgID: "foreign", Policy: &store.EndpointPolicy{ServiceID: svc.ID, ProxyTargets: []string{"http://foreign.invalid:1234"}}},
+		{OrgID: defaultOrgID, Policy: &store.EndpointPolicy{ServiceID: svc.ID, ProxyTargets: []string{"http://127.0.0.1:4321", "http://127.0.0.1:4322"}}},
+	}}
+	if err := f.api.LoadServices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.mu.Lock()
+	defer f.svc.mu.Unlock()
+	if len(f.svc.applied) != 1 || f.svc.applied[0].FallbackReadyAddr != "http://127.0.0.1:4321" {
+		t.Fatalf("definitions=%+v", f.svc.applied)
 	}
 }
 

@@ -605,6 +605,14 @@ func TestApplyKeepsRuntimeStateAndDropsRemoved(t *testing.T) {
 	}
 
 	m.Apply(nil)
+	if !m.Has("svc_1") {
+		t.Fatal("live definition silently discarded")
+	}
+	release()
+	if err := m.Stop(context.Background(), "svc_1"); err != nil {
+		t.Fatal(err)
+	}
+	m.Apply(nil)
 	if m.Has("svc_1") {
 		t.Fatal("removed definition still present")
 	}
