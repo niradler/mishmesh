@@ -363,6 +363,7 @@ type DataStore interface {
 	CreateService(ctx context.Context, svc *Service) error
 	GetService(ctx context.Context, id string) (*Service, error)
 	ListServices(ctx context.Context, orgID string) ([]*Service, error)
+	ListServiceDependents(ctx context.Context, orgID, serviceID string) ([]*Service, error)
 	ListAllServices(ctx context.Context) ([]*Service, error)
 	UpdateService(ctx context.Context, svc *Service) error
 	DeleteService(ctx context.Context, id string) error

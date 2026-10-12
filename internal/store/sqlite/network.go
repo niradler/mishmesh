@@ -93,6 +93,9 @@ func (s *Store) CreateService(ctx context.Context, svc *store.Service) error {
 	if err != nil {
 		return err
 	}
+	if err := validateServiceRequirements(ctx, tx, svc, false); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO services (id, org_id, name, driver, spec, config, ready, idle_timeout_seconds, start_timeout_seconds, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, svc.ID, svc.OrgID, svc.Name, svc.Driver, spec, config, ready, svc.IdleTimeoutSeconds, svc.StartTimeoutSeconds, ns(svc.CreatedAt), ns(svc.UpdatedAt))
 	if err != nil {
 		return uniqueErr("create service", err)
@@ -136,6 +139,10 @@ func (s *Store) ListAllServices(ctx context.Context) ([]*store.Service, error) {
 	return s.queryServices(ctx, `SELECT `+serviceCols+` FROM services ORDER BY org_id, name`)
 }
 
+func (s *Store) ListServiceDependents(ctx context.Context, orgID, serviceID string) ([]*store.Service, error) {
+	return s.queryServices(ctx, `SELECT `+serviceCols+` FROM services WHERE org_id = ? AND id IN (SELECT service_id FROM service_requires WHERE org_id = ? AND requires_id = ?) ORDER BY name, id`, orgID, orgID, serviceID)
+}
+
 func (s *Store) queryServices(ctx context.Context, query string, args ...any) ([]*store.Service, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -161,6 +168,9 @@ func (s *Store) UpdateService(ctx context.Context, svc *store.Service) error {
 	defer tx.Rollback()
 	spec, config, ready, err := serviceDocuments(svc)
 	if err != nil {
+		return err
+	}
+	if err := validateServiceRequirements(ctx, tx, svc, true); err != nil {
 		return err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE services SET name = ?, driver = ?, spec = ?, config = ?, ready = ?, idle_timeout_seconds = ?, start_timeout_seconds = ?, updated_at = ? WHERE id = ? AND org_id = ?`, svc.Name, svc.Driver, spec, config, ready, svc.IdleTimeoutSeconds, svc.StartTimeoutSeconds, ns(svc.UpdatedAt), svc.ID, svc.OrgID)
@@ -189,9 +199,6 @@ func replaceServiceReferences(ctx context.Context, tx *sql.Tx, svc *store.Servic
 			continue
 		}
 		seen[id] = true
-		if id == svc.ID {
-			return fmt.Errorf("service cannot require itself: %w", store.ErrConflict)
-		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO service_requires (org_id, service_id, requires_id) VALUES (?, ?, ?)`, svc.OrgID, svc.ID, id); err != nil {
 			return wrap("replace requirements", err)
 		}
@@ -207,6 +214,33 @@ func replaceServiceReferences(ctx context.Context, tx *sql.Tx, svc *store.Servic
 		}
 	}
 	return nil
+}
+
+func validateServiceRequirements(ctx context.Context, tx *sql.Tx, svc *store.Service, requireExisting bool) error {
+	rows, err := tx.QueryContext(ctx, `SELECT `+serviceCols+` FROM services WHERE org_id = ? ORDER BY name, id`, svc.OrgID)
+	if err != nil {
+		return wrap("read requirement graph", err)
+	}
+	defer rows.Close()
+	var services []*store.Service
+	exists := false
+	for rows.Next() {
+		service, err := scanService(rows)
+		if err != nil {
+			return err
+		}
+		services = append(services, service)
+		if service.ID == svc.ID {
+			exists = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return wrap("read requirement graph", err)
+	}
+	if requireExisting && !exists {
+		return store.ErrNotFound
+	}
+	return store.ValidateRequirements(svc.OrgID, svc.ID, svc.Requires, append(services, svc))
 }
 
 func (s *Store) DeleteService(ctx context.Context, id string) error {

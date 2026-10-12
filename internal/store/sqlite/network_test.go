@@ -15,6 +15,188 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
+func TestShouldEnforceRequirementDAG(t *testing.T) {
+	s := newStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	now := time.Now().UTC()
+	orgID, otherOrgID := store.NewID("org"), store.NewID("org")
+	for _, id := range []string{orgID, otherOrgID} {
+		if err := s.CreateOrg(ctx, &store.Org{ID: id, Name: id, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	makeService := func(name, org string) *store.Service {
+		svc := &store.Service{ID: store.NewID("svc"), OrgID: org, Name: name, Driver: "custom", Config: json.RawMessage("{}"), CreatedAt: now, UpdatedAt: now}
+		if err := s.CreateService(ctx, svc); err != nil {
+			t.Fatal(err)
+		}
+		return svc
+	}
+	a, b, c, d := makeService("alpha", orgID), makeService("beta", orgID), makeService("charlie", orgID), makeService("delta", orgID)
+	private := makeService("private-name", otherOrgID)
+	for _, svc := range []*store.Service{b, c, a} {
+		svc.Requires = []string{d.ID}
+		if svc == a {
+			svc.Requires = []string{c.ID, b.ID, b.ID}
+		}
+		if err := s.UpdateService(ctx, svc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name     string
+		requires []string
+	}{
+		{"long cycle", []string{a.ID}},
+		{"self cycle", []string{d.ID}},
+		{"missing", []string{"missing-private-id"}},
+		{"cross org", []string{private.ID}},
+		{"empty", []string{""}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := *d
+			changed.Name, changed.Config, changed.Requires = "changed", json.RawMessage("{\"changed\":true}"), test.requires
+			err := s.UpdateService(ctx, &changed)
+			if !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("want conflict, got %v", err)
+			}
+			for _, secret := range []string{private.ID, private.Name, "missing-private-id"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("error leaked %q: %v", secret, err)
+				}
+			}
+			got, err := s.GetService(ctx, d.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Name != d.Name || string(got.Config) != string(d.Config) || len(got.Requires) != 0 {
+				t.Fatalf("failed update changed row: %+v", got)
+			}
+		})
+	}
+	t.Run("failed create", func(t *testing.T) {
+		invalid := *d
+		invalid.ID, invalid.Name, invalid.Requires = store.NewID("svc"), "invalid", []string{private.ID}
+		if err := s.CreateService(ctx, &invalid); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("want conflict, got %v", err)
+		}
+		if _, err := s.GetService(ctx, invalid.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("create persisted: %v", err)
+		}
+	})
+	t.Run("foreign owner update", func(t *testing.T) {
+		changed := *a
+		changed.OrgID = otherOrgID
+		if err := s.UpdateService(ctx, &changed); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("foreign owner update: %v", err)
+		}
+	})
+	t.Run("late reference failure restores row and edges", func(t *testing.T) {
+		changed := *a
+		changed.Name, changed.Requires, changed.ConnectionIDs = "changed", []string{d.ID}, []string{"missing-connection"}
+		if err := s.UpdateService(ctx, &changed); err == nil {
+			t.Fatal("invalid connection accepted")
+		}
+		got, err := s.GetService(ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{b.ID, c.ID}
+		if want[0] > want[1] {
+			want[0], want[1] = want[1], want[0]
+		}
+		if got.Name != a.Name || !reflect.DeepEqual(got.Requires, want) {
+			t.Fatalf("failed update changed row/edges: %+v", got)
+		}
+	})
+	dependents, err := s.ListServiceDependents(ctx, orgID, d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dependents) != 2 || dependents[0].Name != "beta" || dependents[1].Name != "charlie" {
+		t.Fatalf("dependents: %+v", dependents)
+	}
+	otherDependents, err := s.ListServiceDependents(ctx, otherOrgID, d.ID)
+	if err != nil || len(otherDependents) != 0 {
+		t.Fatalf("cross-org dependents: %+v, %v", otherDependents, err)
+	}
+	if err := s.DeleteService(ctx, d.ID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("delete required: %v", err)
+	}
+	dependents, err = s.ListServiceDependents(ctx, orgID, d.ID)
+	if err != nil || len(dependents) != 2 {
+		t.Fatalf("delete changed inbound edges: %+v, %v", dependents, err)
+	}
+	a.Requires = []string{d.ID}
+	if err := s.UpdateService(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	b.Requires = []string{a.ID}
+	if err := s.UpdateService(ctx, b); err != nil {
+		t.Fatalf("replacement retained old edge: %v", err)
+	}
+}
+
+func TestShouldSerializeOpposingRequirementUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requirements.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	now := time.Now().UTC()
+	orgID := store.NewID("org")
+	if err := first.CreateOrg(ctx, &store.Org{ID: orgID, Name: orgID, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 10; attempt++ {
+		a := &store.Service{ID: store.NewID("svc"), OrgID: orgID, Name: store.NewID("alpha"), Driver: "custom", Config: json.RawMessage("{}"), CreatedAt: now, UpdatedAt: now}
+		b := &store.Service{ID: store.NewID("svc"), OrgID: orgID, Name: store.NewID("beta"), Driver: "custom", Config: json.RawMessage("{}"), CreatedAt: now, UpdatedAt: now}
+		for _, svc := range []*store.Service{a, b} {
+			if err := first.CreateService(ctx, svc); err != nil {
+				t.Fatal(err)
+			}
+		}
+		a.Requires, b.Requires = []string{b.ID}, []string{a.ID}
+		start, results := make(chan struct{}), make(chan error, 2)
+		go func() { <-start; results <- first.UpdateService(ctx, a) }()
+		go func() { <-start; results <- second.UpdateService(ctx, b) }()
+		close(start)
+		successes, conflicts := 0, 0
+		for i := 0; i < 2; i++ {
+			err := <-results
+			if err == nil {
+				successes++
+			} else if errors.Is(err, store.ErrConflict) {
+				conflicts++
+			} else {
+				t.Fatalf("unexpected concurrent error: %v", err)
+			}
+		}
+		if successes != 1 || conflicts != 1 {
+			t.Fatalf("opposing updates: %d successes, %d conflicts", successes, conflicts)
+		}
+		graph, err := first.ListServices(ctx, orgID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, svc := range graph {
+			if err := store.ValidateRequirements(orgID, svc.ID, svc.Requires, graph); err != nil {
+				t.Fatalf("persisted cycle: %v", err)
+			}
+		}
+	}
+}
+
 func TestShouldKeepMultipleConnectionsOfOneType(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
