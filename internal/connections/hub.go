@@ -148,9 +148,6 @@ func (h *Hub) Reload(ctx context.Context, connectionID string) error {
 	if stopped {
 		return ErrHubStopped
 	}
-	if pending {
-		return ErrDrainPending
-	}
 	loadCtx, cancel := context.WithCancel(ctx)
 	stopCancel := context.AfterFunc(base, cancel)
 	defer stopCancel()
@@ -164,6 +161,9 @@ func (h *Hub) Reload(ctx context.Context, connectionID string) error {
 		old := h.replace(connectionID, nil, downStatus(ErrNotConnected.Error()))
 		h.waitClosed(loadCtx, old)
 		return loadCtx.Err()
+	}
+	if pending {
+		return ErrDrainPending
 	}
 	if record.ID != connectionID || record.ID == "" || record.OrgID == "" {
 		return h.failLoad(connectionID, "invalid connection identity")
