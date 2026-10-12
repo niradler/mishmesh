@@ -1,11 +1,28 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"strings"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
+
+var forwardingHeaders = []string{"X-Forwarded-For", "Forwarded", "X-Real-IP", "CF-Connecting-IP"}
+
+func isDirectLoopback(r *http.Request) bool {
+	for _, h := range forwardingHeaders {
+		if len(r.Header.Values(h)) > 0 {
+			return false
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func metricsAuth(metricsToken, apiToken string, next http.Handler) http.Handler {
 	required := metricsToken
@@ -13,7 +30,13 @@ func metricsAuth(metricsToken, apiToken string, next http.Handler) http.Handler 
 		required = apiToken
 	}
 	if required == "" {
-		return next
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !isDirectLoopback(r) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		const prefix = "Bearer "

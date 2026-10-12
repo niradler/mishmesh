@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/endpointurl"
+	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/subdomain"
 )
@@ -23,19 +25,20 @@ func hostOnly(hostport string) string {
 }
 
 type endpointDTO struct {
-	ID        string                `json:"id"`
-	AgentID   string                `json:"agent_id"`
-	OrgID     string                `json:"org_id"`
-	Kind      string                `json:"kind"`
-	Method    string                `json:"method"`
-	Lifecycle string                `json:"lifecycle"`
-	Subdomain string                `json:"subdomain"`
-	Domain    string                `json:"domain"`
-	Port      int                   `json:"port"`
-	PublicURL string                `json:"public_url"`
-	Online    bool                  `json:"online"`
-	Policy    *store.EndpointPolicy `json:"policy,omitempty"`
-	CreatedAt time.Time             `json:"created_at"`
+	ID        string                 `json:"id"`
+	AgentID   string                 `json:"agent_id"`
+	OrgID     string                 `json:"org_id"`
+	Kind      string                 `json:"kind"`
+	Method    string                 `json:"method"`
+	Lifecycle string                 `json:"lifecycle"`
+	Subdomain string                 `json:"subdomain"`
+	Domain    string                 `json:"domain"`
+	Port      int                    `json:"port"`
+	PublicURL string                 `json:"public_url"`
+	Online    bool                   `json:"online"`
+	Policy    *store.EndpointPolicy  `json:"policy,omitempty"`
+	Health    *health.EndpointHealth `json:"health,omitempty"`
+	CreatedAt time.Time              `json:"created_at"`
 }
 
 type endpointInput struct {
@@ -61,8 +64,20 @@ func (a *API) toEndpointDTO(ep *store.Endpoint) endpointDTO {
 	return endpointDTO{
 		ID: ep.ID, AgentID: ep.AgentID, OrgID: ep.OrgID, Kind: ep.Kind, Method: store.MethodOrDefault(ep.Method),
 		Lifecycle: ep.Lifecycle, Subdomain: ep.Subdomain, Domain: ep.Domain, Port: ep.Port,
-		PublicURL: a.publicURL(ep), Online: online, Policy: redactPolicy(ep.Policy), CreatedAt: ep.CreatedAt,
+		PublicURL: a.publicURL(ep), Online: online, Policy: redactPolicy(ep.Policy), Health: a.healthOf(ep.ID),
+		CreatedAt: ep.CreatedAt,
 	}
+}
+
+func (a *API) healthOf(endpointID string) *health.EndpointHealth {
+	if a.endpointHealth == nil {
+		return nil
+	}
+	h, ok := a.endpointHealth.Get(endpointID)
+	if !ok {
+		return nil
+	}
+	return &h
 }
 
 func (a *API) publicURL(ep *store.Endpoint) string {
@@ -140,12 +155,16 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		kind = store.KindHTTP
 	}
 	method := store.MethodOrDefault(req.Method)
-	if !validMethod(method) {
-		writeError(w, http.StatusBadRequest, "unknown method")
+	if msg := methodError(method); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 	pol, err := buildPolicy(req.Policy, nil)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.validatePolicyForMethod(method, pol); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -165,16 +184,12 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := a.validateNetworkPolicy(r.Context(), orgID, domain, pol, false); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	agentID := req.AgentID
 	if method == store.MethodProxy {
-		if pol == nil || pol.ProxyTarget == "" {
-			writeError(w, http.StatusBadRequest, "proxy_target required for proxy method")
-			return
-		}
-		if err := a.guardProxyTarget(pol.ProxyTarget); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
 		agentID = proxy.AgentID
 	} else {
 		ag, err := a.data.GetAgent(r.Context(), req.AgentID)
@@ -205,6 +220,7 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		a.conns.BindEndpoint(ep.ID, proxy.AgentID)
 	}
 	a.audit(r, "endpoint.create", ep.ID, kind)
+	a.endpointChanged(ep)
 	writeJSON(w, http.StatusCreated, a.toEndpointDTO(ep))
 }
 
@@ -251,28 +267,28 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Port != nil {
 		ep.Port = *req.Port
 	}
+	wasPublic := endpointPublic(ep)
 	if req.Policy != nil {
 		pol, err := buildPolicy(req.Policy, ep.Policy)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if ep.Method == store.MethodProxy {
-			if pol == nil || pol.ProxyTarget == "" {
-				writeError(w, http.StatusBadRequest, "proxy_target required for proxy method")
-				return
-			}
-			if err := a.guardProxyTarget(pol.ProxyTarget); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		if err := a.validatePolicyForMethod(ep.Method, pol); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		ep.Policy = pol
+	}
+	if err := a.validateNetworkPolicy(r.Context(), ep.OrgID, ep.Domain, ep.Policy, wasPublic); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	if a.handleErr(w, a.data.UpdateEndpoint(r.Context(), ep)) {
 		return
 	}
 	a.audit(r, "endpoint.update", ep.ID, "")
+	a.endpointChanged(ep)
 	writeJSON(w, http.StatusOK, a.toEndpointDTO(ep))
 }
 
@@ -292,16 +308,46 @@ func (a *API) deleteEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		a.conns.UnbindEndpoint(ep.ID)
 	}
 	a.audit(r, "endpoint.delete", ep.ID, "")
+	a.endpointRemoved(ep)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func validMethod(m string) bool {
+func methodError(m string) string {
 	switch m {
-	case store.MethodNative, store.MethodSSH, store.MethodProxy, store.MethodTailscale, store.MethodCloudflare:
-		return true
+	case store.MethodNative, store.MethodSSH, store.MethodProxy:
+		return ""
+	case store.MethodTailscale, store.MethodCloudflare:
+		return "method " + m + " is not implemented"
 	default:
-		return false
+		return "unknown method"
 	}
+}
+
+func (a *API) validatePolicyForMethod(method string, pol *store.EndpointPolicy) error {
+	if method != store.MethodProxy {
+		if pol != nil && len(pol.ProxyTargets) > 0 {
+			return errors.New("proxy_targets is only valid for proxy method")
+		}
+		return nil
+	}
+	return a.validateProxyPolicy(pol)
+}
+
+func (a *API) validateProxyPolicy(pol *store.EndpointPolicy) error {
+	if pol == nil || len(pol.ProxyTargets) == 0 {
+		return errors.New("proxy_targets required for proxy method")
+	}
+	for _, target := range pol.ProxyTargets {
+		if err := a.guardProxyTarget(target); err != nil {
+			return err
+		}
+	}
+	switch pol.LoadBalance {
+	case "", store.LoadBalanceRoundRobin, store.LoadBalanceFailover:
+	default:
+		return fmt.Errorf("load_balance must be %s or %s", store.LoadBalanceRoundRobin, store.LoadBalanceFailover)
+	}
+	return proxy.ValidateOriginTLS(pol.OriginTLS)
 }
 
 func buildPolicy(in *policyInput, existing *store.EndpointPolicy) (*store.EndpointPolicy, error) {

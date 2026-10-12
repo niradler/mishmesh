@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -13,49 +15,112 @@ import (
 const (
 	AgentID     = "ag_proxy"
 	SystemOrgID = "org_system"
+
+	dialTimeout = 10 * time.Second
 )
 
-type conn struct {
-	data  store.DataStore
-	log   *slog.Logger
-	guard *Guard
+type TargetHealth interface {
+	TargetHealthy(endpointID, target string) (healthy bool, known bool)
 }
 
-var _ store.AgentConn = (*conn)(nil)
+type Connector struct {
+	data     store.DataStore
+	log      *slog.Logger
+	guard    *Guard
+	counters sync.Map
+	mu       sync.RWMutex
+	health   TargetHealth
+}
 
-func newConn(data store.DataStore, log *slog.Logger, guard *Guard) *conn {
+var _ store.AgentConn = (*Connector)(nil)
+
+func newConn(data store.DataStore, log *slog.Logger, guard *Guard) *Connector {
 	if guard == nil {
 		guard = DefaultGuard()
 	}
-	return &conn{data: data, log: log, guard: guard}
+	return &Connector{data: data, log: log, guard: guard}
 }
 
-func (c *conn) AgentID() string { return AgentID }
+func (c *Connector) AgentID() string { return AgentID }
 
-func (c *conn) OpenStream(ctx context.Context, endpointID, _ string, _ map[string]string) (net.Conn, error) {
+func (c *Connector) SetTargetHealth(h TargetHealth) {
+	c.mu.Lock()
+	c.health = h
+	c.mu.Unlock()
+}
+
+func (c *Connector) targetHealth() TargetHealth {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.health
+}
+
+func (c *Connector) counter(endpointID string) *atomic.Uint64 {
+	if v, ok := c.counters.Load(endpointID); ok {
+		return v.(*atomic.Uint64)
+	}
+	v, _ := c.counters.LoadOrStore(endpointID, new(atomic.Uint64))
+	return v.(*atomic.Uint64)
+}
+
+func (c *Connector) orderTargets(endpointID string, pol *store.EndpointPolicy) []string {
+	targets := pol.ProxyTargets
+	if len(targets) < 2 {
+		return targets
+	}
+	h := c.targetHealth()
+	preferred := make([]string, 0, len(targets))
+	fallback := make([]string, 0, len(targets))
+	for _, t := range targets {
+		if h != nil {
+			if healthy, known := h.TargetHealthy(endpointID, t); known && !healthy {
+				fallback = append(fallback, t)
+				continue
+			}
+		}
+		preferred = append(preferred, t)
+	}
+	if pol.LoadBalance != store.LoadBalanceFailover && len(preferred) > 1 {
+		offset := int((c.counter(endpointID).Add(1) - 1) % uint64(len(preferred)))
+		rotated := make([]string, 0, len(preferred))
+		rotated = append(rotated, preferred[offset:]...)
+		rotated = append(rotated, preferred[:offset]...)
+		preferred = rotated
+	}
+	return append(preferred, fallback...)
+}
+
+func (c *Connector) OpenStream(ctx context.Context, endpointID, _ string, _ map[string]string) (net.Conn, error) {
 	ep, err := c.data.GetEndpoint(ctx, endpointID)
 	if err != nil {
 		return nil, err
 	}
-	if ep.Policy == nil || ep.Policy.ProxyTarget == "" {
-		return nil, fmt.Errorf("proxy: endpoint %s has no proxy_target", endpointID)
+	if ep.Policy == nil || len(ep.Policy.ProxyTargets) == 0 {
+		return nil, fmt.Errorf("proxy: endpoint %s has no proxy_targets", endpointID)
 	}
-	dialAddr, err := c.guard.Resolve(ctx, ep.Policy.ProxyTarget)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for _, target := range c.orderTargets(endpointID, ep.Policy) {
+		conn, err := c.guard.Dial(ctx, target, ep.Policy.OriginTLS, dialTimeout)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			break
+		}
 	}
-	d := net.Dialer{Timeout: 10 * time.Second}
-	return d.DialContext(ctx, "tcp", dialAddr)
+	return nil, fmt.Errorf("proxy: endpoint %s: all targets failed: %w", endpointID, lastErr)
 }
 
-func (c *conn) Close() error { return nil }
+func (c *Connector) Close() error { return nil }
 
-func Register(ctx context.Context, data store.DataStore, conns store.ConnectionStore, log *slog.Logger, guard *Guard) {
+func Register(ctx context.Context, data store.DataStore, conns store.ConnectionStore, log *slog.Logger, guard *Guard) *Connector {
 	ensureProxyAgent(ctx, data)
-	conns.AddAgent(newConn(data, log, guard))
+	connector := newConn(data, log, guard)
+	conns.AddAgent(connector)
 	orgs, err := data.ListOrgs(ctx)
 	if err != nil {
-		return
+		return connector
 	}
 	for _, org := range orgs {
 		eps, err := data.ListEndpointsByOrg(ctx, org.ID)
@@ -68,6 +133,7 @@ func Register(ctx context.Context, data store.DataStore, conns store.ConnectionS
 			}
 		}
 	}
+	return connector
 }
 
 func ensureProxyAgent(ctx context.Context, data store.DataStore) {
@@ -79,4 +145,4 @@ func ensureProxyAgent(ctx context.Context, data store.DataStore) {
 	}
 }
 
-func (c *conn) ClusterLocal() bool { return true }
+func (c *Connector) ClusterLocal() bool { return true }

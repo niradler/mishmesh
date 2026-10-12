@@ -4,10 +4,12 @@ export const API_BASE = "/api/v1";
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  readonly body: unknown;
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -29,14 +31,15 @@ function buildUrl(path: string, query?: RequestOptions["query"]): string {
   return qs ? `${url}?${qs}` : url;
 }
 
-async function parseError(res: Response): Promise<string> {
+async function toApiError(res: Response): Promise<ApiError> {
+  const fallback = res.statusText || `Request failed (${res.status})`;
   try {
-    const data = (await res.json()) as Partial<ApiErrorBody>;
-    if (data && typeof data.error === "string") return data.error;
+    const data = (await res.json()) as Partial<ApiErrorBody> | null;
+    if (data && typeof data.error === "string") return new ApiError(res.status, data.error, data);
+    return new ApiError(res.status, fallback, data);
   } catch {
-    /* fall through to status text */
+    return new ApiError(res.status, fallback);
   }
-  return res.statusText || `Request failed (${res.status})`;
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -56,11 +59,8 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     signal,
   });
 
-  if (res.status === 401) {
-    throw new ApiError(401, await parseError(res));
-  }
   if (!res.ok) {
-    throw new ApiError(res.status, await parseError(res));
+    throw await toApiError(res);
   }
   if (res.status === 204) {
     return undefined as T;
@@ -78,3 +78,9 @@ export const api = {
   put: <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "PUT", body }),
   del: <T>(path: string) => apiRequest<T>(path, { method: "DELETE" }),
 };
+
+export function errorMessage(err: unknown, fallback = "Unexpected error"): string {
+  if (err instanceof ApiError) return err.message;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}

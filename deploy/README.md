@@ -177,7 +177,7 @@ The full list with defaults is in the [root README](../README.md#server-configur
 | `MISHMESH_SELF_SIGNED_TLS` | in-memory self-signed cert for the apex and wildcard (dev) |
 | `MISHMESH_TCP_ENABLED` / `TCP_PORT_MIN` / `TCP_PORT_MAX` | public TCP endpoint range |
 | `MISHMESH_TLS_PASSTHROUGH_ENABLED` / `TLS_PASSTHROUGH_ADDR` | SNI-routed passthrough listener for `tls` endpoints (default port 8444) |
-| `MISHMESH_SSH_ENABLED` / `SSH_ADDR` / `SSH_HOST_KEY_FILE` | clientless `ssh -R` front door |
+| `MISHMESH_SSH_ENABLED` / `SSH_ADDR` / `SSH_HOST_KEY_FILE` | clientless `ssh -R` entry point |
 | `MISHMESH_AUTH_ENABLED` / `AUTH_PASSWORD_ENABLED` | browser login; password on/off (off means Google only) |
 | `MISHMESH_SIGNUP_MODE` | `org` (default, every signup gets an org) or `invite` |
 | `MISHMESH_DOMAIN_VERIFICATION` | require DNS TXT proof for custom domains (default on in `org` mode) |
@@ -187,6 +187,10 @@ The full list with defaults is in the [root README](../README.md#server-configur
 | `MISHMESH_METRICS_ENABLED` / `METRICS_TOKEN` | Prometheus `/metrics` on the control listener. The bearer is `METRICS_TOKEN`, or the API token if that is unset |
 | `MISHMESH_REACHIN_ENABLED` | reach-in data-plane API |
 | `MISHMESH_QUOTA_MAX_AGENTS` / `_MAX_ENDPOINTS` / `_MAX_BANDWIDTH_BYTES` | default per-org quotas (0 = unlimited) |
+| `MISHMESH_SECRET_KEY_FILE` | key that seals stored Cloudflare tokens (default `mishmesh-secret.key` next to the SQLite file, else the working directory). Keep it on a persistent volume and back it up |
+| `MISHMESH_HOST_COMMANDS` | allow services that run host commands (default on in `invite` mode). See [docs/services.md](../docs/services.md) |
+| `MISHMESH_DOCKER_HOST` | Docker Engine for `docker`/`compose` services (default `unix:///var/run/docker.sock`; use a socket proxy in containers) |
+| `MISHMESH_CLOUDFLARED_BIN` | cloudflared binary for managed connectors. See [docs/cloudflare.md](../docs/cloudflare.md) |
 
 Agent reach-in allowlist: `MISHMESH_ALLOW`, `--allow` or `allow:` in the agent config (deny-first, comma-separated `host|cidr[:port;port]`). Loopback, link-local and cloud-metadata IPs are always denied.
 
@@ -196,7 +200,7 @@ Besides the native agent tunnel, endpoints carry a `method`: `native | ssh | pro
 
 ### Clientless SSH remote-forward (no install)
 
-A stock-SSH front door: users expose a service with the `ssh` client already on their machine, with no mishmesh agent.
+A stock-SSH entry point: users expose a service with the `ssh` client already on their machine, with no mishmesh agent.
 
 ```text
 MISHMESH_SSH_ENABLED=true
@@ -222,7 +226,7 @@ For a target the server can already reach, create a `method=proxy` endpoint. mis
 ```bash
 curl -XPOST http://127.0.0.1:8081/api/v1/endpoints \
   -H "Authorization: Bearer $MISHMESH_API_AUTH_TOKEN" \
-  -d '{"kind":"http","method":"proxy","subdomain":"internal","policy":{"proxy_target":"10.0.0.5:8080"}}'
+  -d '{"kind":"http","method":"proxy","subdomain":"internal","policy":{"proxy_targets":["10.0.0.5:8080"]}}'
 ```
 
 Targets that resolve to cloud-metadata, link-local, multicast or unspecified addresses are always refused. Loopback, private/LAN (RFC1918, CGNAT, ULA) addresses and internal names (`*.svc`, `*.cluster.local`, single-label) are refused by default too, because any tenant can create proxy endpoints. The target is checked when the endpoint is saved and again when dialling, and the checked IP is pinned for the dial, so DNS rebinding does not work. To proxy into your own network, set `MISHMESH_PROXY_ALLOWED_CIDRS=10.0.0.0/8` (preferred) or `MISHMESH_PROXY_ALLOW_PRIVATE=true`; use `MISHMESH_PROXY_ALLOW_LOOPBACK=true` only to reach the server's own loopback. The example above needs one of these opt-ins.
@@ -240,6 +244,8 @@ A request without a certificate that chains to `client_ca_pem` (and matches `all
 ### Managed Tailscale / Cloudflare
 
 These are orchestrate-only methods: mishmesh would provision the provider's resources and traffic would flow over the provider. They are scaffolded behind the `method` field but need live provider API credentials, and they are not enabled in this build.
+
+Publishing endpoints through a Cloudflare Tunnel is a separate, working feature: an org connection plus `policy.public_access: "cloudflare"` on the endpoint. See [docs/cloudflare.md](../docs/cloudflare.md).
 
 ## Cluster mode (multiple identical pods)
 

@@ -37,6 +37,7 @@ type Options struct {
 	UpstreamResponseTimeout time.Duration
 	LookupCacheTTL          time.Duration
 	DisablePathRouting      bool
+	Services                ServiceWaker
 }
 
 type Ingress struct {
@@ -50,6 +51,7 @@ type Ingress struct {
 	trusted     []*net.IPNet
 	limiter     ratelimit.Limiter
 	proxy       *httputil.ReverseProxy
+	services    ServiceWaker
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
@@ -70,6 +72,7 @@ func New(opts Options) *Ingress {
 		trusted:     opts.TrustedProxies,
 		limiter:     opts.Limiter,
 		pathRouting: !opts.DisablePathRouting,
+		services:    opts.Services,
 
 		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
@@ -114,6 +117,11 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		i.recordCode(http.StatusServiceUnavailable)
 		return
 	}
+	release, proceed := i.wakeService(w, r, ep)
+	if !proceed {
+		return
+	}
+	defer release()
 	if isUpgrade(r) {
 		i.proxyUpgrade(w, r, conn, ep, outPath, limit)
 		return

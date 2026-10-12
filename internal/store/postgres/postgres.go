@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at BIGINT NOT NULL
 );
 `
-	if _, err := conn.ExecContext(ctx, schema); err != nil {
+	if _, err := conn.ExecContext(ctx, schema+networkSchema); err != nil {
 		return fmt.Errorf("postgres migrate: %w", err)
 	}
 	for _, alter := range []string{

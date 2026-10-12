@@ -28,3 +28,4 @@
 /dist/
 /dist-web/
 /dist-charts/
+__pycache__/

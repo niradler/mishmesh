@@ -35,6 +35,10 @@ const (
 	ActionStatusRead    Action = "status:read"
 	ActionPolicyRead    Action = "policy:read"
 	ActionPolicyWrite   Action = "policy:write"
+	ActionServiceRead   Action = "service:read"
+	ActionServiceWrite  Action = "service:write"
+	ActionCloudflare    Action = "cloudflare:manage"
+	ActionHostExec      Action = "host:exec"
 )
 
 func AllActions() []Action {
@@ -45,6 +49,8 @@ func AllActions() []Action {
 		ActionMemberRead, ActionMemberManage,
 		ActionAuditRead, ActionStatusRead,
 		ActionPolicyRead, ActionPolicyWrite,
+		ActionServiceRead, ActionServiceWrite,
+		ActionCloudflare, ActionHostExec,
 	}
 }
 

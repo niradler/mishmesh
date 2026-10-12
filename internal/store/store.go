@@ -2,13 +2,17 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"time"
 )
 
-var ErrNotFound = errors.New("store: not found")
+var (
+	ErrNotFound = errors.New("store: not found")
+	ErrConflict = errors.New("store: conflict")
+)
 
 func MethodOrDefault(m string) string {
 	if m == "" {
@@ -94,7 +98,25 @@ type EndpointPolicy struct {
 	OIDC                  *OIDCEndpointAuth `json:"oidc,omitempty"`
 	MTLS                  *MTLSConfig       `json:"mtls,omitempty"`
 	RateLimit             *RateLimit        `json:"rate_limit,omitempty"`
-	ProxyTarget           string            `json:"proxy_target,omitempty"`
+	ProxyTargets          []string          `json:"proxy_targets,omitempty"`
+	LoadBalance           string            `json:"load_balance,omitempty"`
+	OriginTLS             *OriginTLS        `json:"origin_tls,omitempty"`
+	ServiceID             string            `json:"service_id,omitempty"`
+	PublicAccess          string            `json:"public_access,omitempty"`
+}
+
+const (
+	LoadBalanceRoundRobin = "round_robin"
+	LoadBalanceFailover   = "failover"
+
+	PublicAccessCloudflare = "cloudflare"
+)
+
+type OriginTLS struct {
+	ServerName         string   `json:"server_name,omitempty"`
+	CAPEM              string   `json:"ca_pem,omitempty"`
+	PinSHA256          []string `json:"pin_sha256,omitempty"`
+	InsecureSkipVerify bool     `json:"insecure_skip_verify,omitempty"`
 }
 
 type RateLimit struct {
@@ -209,6 +231,38 @@ type Domain struct {
 	CreatedAt  time.Time
 }
 
+type Service struct {
+	ID                  string
+	OrgID               string
+	Name                string
+	Driver              string
+	Spec                json.RawMessage
+	IdleTimeoutSeconds  int
+	StartTimeoutSeconds int
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+const (
+	CloudflareConnectorExternal = "external"
+	CloudflareConnectorManaged  = "managed"
+)
+
+type CloudflareConnection struct {
+	OrgID          string
+	Name           string
+	AccountID      string
+	TunnelID       string
+	TunnelTokenEnc []byte
+	APITokenEnc    []byte
+	AccessAppID    string
+	Origin         string
+	Connector      string
+	MetricsAddr    string
+	Prune          bool
+	UpdatedAt      time.Time
+}
+
 type DataStore interface {
 	CreateOrg(ctx context.Context, o *Org) error
 	GetOrg(ctx context.Context, id string) (*Org, error)
@@ -275,6 +329,18 @@ type DataStore interface {
 
 	GetOrgPolicy(ctx context.Context, orgID string) (*OrgPolicy, error)
 	SetOrgPolicy(ctx context.Context, p *OrgPolicy) error
+
+	CreateService(ctx context.Context, svc *Service) error
+	GetService(ctx context.Context, id string) (*Service, error)
+	ListServices(ctx context.Context, orgID string) ([]*Service, error)
+	ListAllServices(ctx context.Context) ([]*Service, error)
+	UpdateService(ctx context.Context, svc *Service) error
+	DeleteService(ctx context.Context, id string) error
+
+	GetCloudflareConnection(ctx context.Context, orgID string) (*CloudflareConnection, error)
+	ListCloudflareConnections(ctx context.Context) ([]*CloudflareConnection, error)
+	SetCloudflareConnection(ctx context.Context, c *CloudflareConnection) error
+	DeleteCloudflareConnection(ctx context.Context, orgID string) error
 
 	AppendAudit(ctx context.Context, e *AuditEvent) error
 	ListAudit(ctx context.Context, orgID string, limit int) ([]*AuditEvent, error)

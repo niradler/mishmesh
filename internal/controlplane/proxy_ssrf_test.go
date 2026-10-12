@@ -32,7 +32,7 @@ func TestProxyEndpointTargetValidation(t *testing.T) {
 	for _, tc := range tests {
 		t.Run("create "+tc.name, func(t *testing.T) {
 			_, srv := newTestAPI(t)
-			body := `{"kind":"http","method":"proxy","policy":{"proxy_target":"` + tc.target + `"}}`
+			body := `{"kind":"http","method":"proxy","policy":{"proxy_targets":["` + tc.target + `"]}}`
 			got := postStatus(t, srv, http.MethodPost, "/api/v1/endpoints", body)
 			if tc.allowed && got == http.StatusBadRequest {
 				t.Fatalf("target %q should pass validation, got 400", tc.target)
@@ -54,13 +54,13 @@ func TestProxyEndpointPatchValidation(t *testing.T) {
 	_ = api.data.CreateOrg(context.Background(), &store.Org{ID: defaultOrgID, Name: "default", CreatedAt: time.Now()})
 	proxy.Register(context.Background(), api.data, api.conns, nil, guard)
 	var ep endpointDTO
-	do(t, srv, http.MethodPost, "/api/v1/endpoints", `{"kind":"http","method":"proxy","policy":{"proxy_target":"10.0.0.5:80"}}`, http.StatusCreated, &ep)
+	do(t, srv, http.MethodPost, "/api/v1/endpoints", `{"kind":"http","method":"proxy","policy":{"proxy_targets":["10.0.0.5:80"]}}`, http.StatusCreated, &ep)
 
 	api.SetProxyGuard(nil)
-	do(t, srv, http.MethodPatch, "/api/v1/endpoints/"+ep.ID, `{"policy":{"proxy_target":"169.254.169.254:80"}}`, http.StatusBadRequest, nil)
-	do(t, srv, http.MethodPatch, "/api/v1/endpoints/"+ep.ID, `{"policy":{"proxy_target":"10.0.0.6:80"}}`, http.StatusBadRequest, nil)
+	do(t, srv, http.MethodPatch, "/api/v1/endpoints/"+ep.ID, `{"policy":{"proxy_targets":["169.254.169.254:80"]}}`, http.StatusBadRequest, nil)
+	do(t, srv, http.MethodPatch, "/api/v1/endpoints/"+ep.ID, `{"policy":{"proxy_targets":["10.0.0.6:80"]}}`, http.StatusBadRequest, nil)
 	do(t, srv, http.MethodPatch, "/api/v1/endpoints/"+ep.ID, `{"policy":{"compression":true}}`, http.StatusBadRequest, nil)
-	do(t, srv, http.MethodPatch, "/api/v1/endpoints/"+ep.ID, `{"policy":{"proxy_target":"93.184.216.34:443"}}`, http.StatusOK, nil)
+	do(t, srv, http.MethodPatch, "/api/v1/endpoints/"+ep.ID, `{"policy":{"proxy_targets":["93.184.216.34:443"]}}`, http.StatusOK, nil)
 }
 
 func TestProxyEndpointOperatorOptIn(t *testing.T) {
@@ -72,8 +72,8 @@ func TestProxyEndpointOperatorOptIn(t *testing.T) {
 	api.SetProxyGuard(guard)
 	_ = api.data.CreateOrg(context.Background(), &store.Org{ID: defaultOrgID, Name: "default", CreatedAt: time.Now()})
 	proxy.Register(context.Background(), api.data, api.conns, nil, guard)
-	do(t, srv, http.MethodPost, "/api/v1/endpoints", `{"kind":"http","method":"proxy","policy":{"proxy_target":"10.2.3.4:80"}}`, http.StatusCreated, nil)
-	do(t, srv, http.MethodPost, "/api/v1/endpoints", `{"kind":"http","method":"proxy","policy":{"proxy_target":"192.168.1.1:80"}}`, http.StatusBadRequest, nil)
+	do(t, srv, http.MethodPost, "/api/v1/endpoints", `{"kind":"http","method":"proxy","policy":{"proxy_targets":["10.2.3.4:80"]}}`, http.StatusCreated, nil)
+	do(t, srv, http.MethodPost, "/api/v1/endpoints", `{"kind":"http","method":"proxy","policy":{"proxy_targets":["192.168.1.1:80"]}}`, http.StatusBadRequest, nil)
 }
 
 func postStatus(t *testing.T, srv *httptest.Server, method, path, body string) int {

@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at INTEGER NOT NULL
 );
 `
-	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+	if _, err := s.db.ExecContext(ctx, schema+networkSchema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	for _, alter := range []string{

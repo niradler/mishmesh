@@ -16,6 +16,25 @@ import { ApiError } from "@/api/client";
 import { formatBytes } from "@/lib/utils";
 import type { Policy, Quota, QuotaUpdate } from "@/api/types";
 
+const ACTION_LABELS: Record<string, { label: string; description: string }> = {
+  "agent:read": { label: "View agents", description: "List agents and their connection state." },
+  "agent:write": { label: "Manage agents", description: "Create, rename, revoke and delete agents and rotate tokens." },
+  "endpoint:read": { label: "View endpoints", description: "List endpoints, the network map and the Cloudflare status." },
+  "endpoint:write": { label: "Manage endpoints", description: "Reserve, edit, publish and delete endpoints, and sync Cloudflare." },
+  "quota:read": { label: "View quota", description: "See limits and usage." },
+  "quota:write": { label: "Change quota", description: "Change agent, endpoint and bandwidth limits." },
+  "member:read": { label: "View members", description: "List members and invites." },
+  "member:manage": { label: "Manage members", description: "Invite, remove and change member roles." },
+  "audit:read": { label: "View audit log", description: "Read the audit trail." },
+  "status:read": { label: "View status", description: "See the dashboard counters." },
+  "policy:read": { label: "View permissions", description: "Read this permission matrix." },
+  "policy:write": { label: "Change permissions", description: "Edit this permission matrix." },
+  "service:read": { label: "View services", description: "List services and their state." },
+  "service:write": { label: "Manage services", description: "Create, edit, start, stop and delete services." },
+  "cloudflare:manage": { label: "Manage Cloudflare", description: "Connect, edit and disconnect the Cloudflare tunnel and its tokens." },
+  "host:exec": { label: "Run host commands", description: "Define services that run commands on the server host. Off for everyone by default." },
+};
+
 function Flag({ label, on }: { label: string; on: boolean }) {
   return (
     <div className="flex items-center justify-between rounded-md border border-border px-3 py-2.5">
@@ -138,7 +157,13 @@ function PermissionMatrix({ orgId, policy }: { orgId?: string; policy: Policy })
           <TableBody>
             {policy.actions.map((action) => (
               <TableRow key={action}>
-                <TableCell className="font-mono text-xs">{action}</TableCell>
+                <TableCell>
+                  <p className="text-sm font-medium">{ACTION_LABELS[action]?.label ?? action}</p>
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-mono">{action}</span>
+                    {ACTION_LABELS[action] && ` · ${ACTION_LABELS[action].description}`}
+                  </p>
+                </TableCell>
                 {policy.roles.map((role) => (
                   <TableCell key={role} className="text-center">
                     <Switch
