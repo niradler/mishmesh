@@ -26,7 +26,7 @@
 - Follow `CLAUDE.md`: no new code comments, bind dev listeners to `127.0.0.1`, explicit shell deadlines, no AI attribution.
 - Preserve the existing uncommitted Network layout fix and its browser artifacts. Do not stage it as part of this feature without Nir's direction.
 - For destructive commands, print the exact command and effect and ask Nir to run it, unless he explicitly authorizes the agent to run it. This includes kind deletion, regression fixture deletion, and rollback/restoration. Prepare scripts with opt-in cleanup; do not silently execute their cleanup on the lab.
-- Execution method is not selected. Writing this plan does not authorize starting implementation.
+- Nir delegated the execution method and authorized implementation; subagent-driven execution is active. Explicit lab gates above remain required.
 
 ## Review Focus
 
@@ -203,11 +203,11 @@ func TestShouldRejectUnknownDriver(t *testing.T) {
 
 ### Task 5: Generic TCP and HTTP readiness
 
-**Files:** Extend `internal/services/readiness.go`; create `readiness_test.go`; modify `spec.go`, `manager.go`, `manager_test.go`, `internal/controlplane/network_services.go`.
+**Files:** Extend `internal/services/readiness.go`; create `readiness_test.go`; modify `spec.go`, `manager.go`, `manager_test.go`; extend targeted `internal/controlplane/network_test.go`, `internal/health/health_test.go`, `internal/ingress/wake_test.go` fixtures/regressions as required.
 
 **Interfaces:** Produce `Readiness{TCP string; HTTP *HTTPReadiness}`, `HTTPReadiness{URL string; Status int}` with lower-case JSON tags; `DecodeReadiness(json.RawMessage) (Readiness, error)`, `ValidateReadiness(Readiness) error`. Preserve `EnsureRunning(ctx, id, readyAddr)` so ingress/health consumers need no unrelated redesign. Add `Options.HTTPClient *http.Client` for deterministic probes.
 
-- [ ] Add tests for exclusive TCP/HTTP, malformed host/port, invalid schemes/status, exact HTTP status, retry/timeout, cancellation, empty fallback to endpoint target, and no target falling back to driver state. Anchor:
+- [x] Add tests for exclusive TCP/HTTP, malformed host/port, invalid schemes/status, exact HTTP status, retry/timeout, cancellation, empty fallback to endpoint target, and no target falling back to driver state. Anchor:
 
 ```go
 func TestShouldRejectTwoReadinessModes(t *testing.T) {
@@ -215,13 +215,13 @@ func TestShouldRejectTwoReadinessModes(t *testing.T) {
 }
 ```
 
-- [ ] Run `./internal/services`; expected missing readiness types.
-- [ ] Implement strict decoding and bounded probes. HTTP uses per-request context, closes response bodies, does not follow redirects to make a configured status appear successful, and does not send credentials to a redirected host. Validate numeric TCP port and HTTP status in 100–599; use status 200 as the UI/API default.
-- [ ] Keep the existing shared wake call independent of an individual request's canceled wait; driver start/readiness still have bounded lifetime. Run `./internal/services ./internal/health ./internal/ingress`. Commit `feat: support service-owned tcp and http readiness`.
+- [x] Run `./internal/services`; expected missing readiness types.
+- [x] Implement strict decoding and bounded probes. HTTP uses per-request context, closes response bodies, does not follow redirects to make a configured status appear successful, and does not send credentials to a redirected host. Validate numeric TCP port and HTTP status in 100–599; use status 200 as the UI/API default.
+- [x] Fix the observed TCP hold/read cancellation issue: a canceled bounded probe must close its connection and return the context cause instead of succeeding after the hold; test a real TCP peer and goroutine cleanup. Keep the existing shared wake call independent of an individual request's canceled wait; driver start/readiness still have bounded lifetime. Seed durable same-org linked service records in older health/ingress fixtures exposed by Task2 validation, preserving their fake runtime behavior. Run `./internal/services ./internal/health ./internal/ingress`. Commit `feat: support service-owned tcp and http readiness`.
 
 ### Task 6: Persist and validate an org-scoped Requires DAG
 
-**Files:** Create `internal/services/requirements.go`, `requirements_test.go`; modify both stores' `network.go`/tests and `internal/controlplane/network_services.go`.
+**Files:** Create `internal/services/requirements.go`, `requirements_test.go` and shared `internal/store/requirements.go`/tests; modify `DataStore` and both stores' `network.go`/tests. Legacy API integration remains Task13.
 
 **Interfaces:** Produce `ValidateRequirements(orgID, serviceID string, requires []string, services []*store.Service) error`; service stores enforce the same graph invariant within the transaction that replaces the set. Produce `ListServiceDependents(ctx context.Context, orgID, serviceID string) ([]*Service, error)` on `DataStore` for delete/stop guards and detail DTOs.
 
@@ -235,12 +235,12 @@ func TestShouldRejectCycleOnUpdate(t *testing.T) {
 ```
 
 - [ ] Run `./internal/services ./internal/store/sqlite ./internal/store/postgres`; expect missing graph validator/dependents lookup.
-- [ ] Implement DFS using the prospective replacement set and same-org service snapshot, deterministic names in failures, DB FK/transaction enforcement, and a Postgres graph serialization lock scoped per org. Concurrent A→B/B→A must yield at most one success, even through two server/store instances. Delete required services returns `store.ErrConflict`, without first deleting inbound edges.
+- [ ] Implement DFS using the prospective replacement set and same-org service snapshot, deterministic names in failures, DB FK/transaction enforcement, and the existing cross-process network-write transaction lock in each backend; reuse it for graph snapshot and replacement without a second lock order. Concurrent A→B/B→A must yield at most one success, even through two server/store instances. Delete required services returns `store.ErrConflict`, without first deleting inbound edges.
 - [ ] Run focused suites with the race detector; verify no cross-org service name/ID appears in client errors. Commit `feat: validate service requirement graphs`.
 
 ### Task 7: Wake requirements and hold them through the dependent lifecycle
 
-**Files:** Modify `internal/services/requirements.go`, `manager.go`, `manager_test.go`; create `requirements_manager_test.go`; extend the control interface in `internal/controlplane/network.go`.
+**Files:** Modify `internal/services/requirements.go`, `manager.go`, `manager_test.go`, Definition and API `reloadServices`; create `requirements_manager_test.go`; extend the control interface in `internal/controlplane/network.go`.
 
 **Interfaces:** Keep `EnsureRunning`, `Acquire`, `Stop` signatures. Produce `RunningDependents(id string) []Status`; typed `RequirementInUseError{Dependents []Status}` for API 409 translation. Each runtime service owns a map of idempotent release functions keyed by requirement ID.
 
@@ -264,6 +264,7 @@ func TestShouldNotStartDependentAfterRequirementFailure(t *testing.T) {
 
 - [ ] Run `./internal/services`; expect the dependent to start despite its unprocessed Requires before implementation.
 - [ ] Add requirement holds before each wake to protect the readiness/start interval. Never hold `Manager.mu` while recursing or invoking drivers. Each requirement keeps its own start deadline; start the dependent's deadline after requirements are ready. Transfer holds to the running dependent exactly once; unwind on failure. Runtime graph validation protects against corrupt stored cycles before any goroutine starts.
+- [ ] Populate internal `Definition.FallbackReadyAddr` from same-org linked endpoints for dependency wakes. Probe precedence: explicit service readiness, caller endpoint target, linked fallback target, driver state. Endpoint link-refresh integration is verified in Task14.
 - [ ] Separate own traffic activity from dependency holds. For -1 stop after last requirement hold disappears only if there is no active/recent own traffic; use the existing 30s idle interval as the recent-traffic grace. Positive timeout keeps timed idle behavior; zero never stops automatically. Do not release on a failed stop while the driver remains running.
 - [ ] Refresh/startup must reconcile running dependents and holds before any idle pass, release holds when an externally stopped dependent is observed, and preserve unchanged holds through `Apply`. Requirement changes on a running dependent acquire/wake additions before releasing removals; failed change leaves prior runtime requirements protected and exposes an error. Manual stop cannot race with a newly acquired dependent hold.
 - [ ] Run `./internal/services ./internal/ingress ./internal/health` with race checks. Commit `feat: hold service requirements while dependents run`.

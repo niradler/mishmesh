@@ -2,9 +2,11 @@
 
 ## State
 
-- Spec approved by Nir 2026-10-13: `docs/superpowers/specs/2026-10-13-pluggable-types-design.md` (commit 1a913c3).
-- Implementation plan written and self-reviewed: `docs/superpowers/plans/2026-10-13-pluggable-types.md` (20 testable tasks, including release/lab gates). Execution authorized: subagent-driven (Nir delegated the choice). Isolated worktree on feat/pluggable-types; baseline full Go race suite passed; Task 1 descriptors committed (`af1a3ad`), race tests/vet/all-package compilation passed; independent task review approved without findings. Task 2 store contracts reviewed and committed (`9ff522a`), including six live isolated Postgres race cases. Task 4 driver registry is next; Task 3 schema cutover follows Go consumer Tasks 4–14.
-- Lab runs v0.1.0-beta.4 (see `lab-network-control.md`); `lab-e2e.py` is the regression check.
+- Spec approved by Nir 2026-10-13: `docs/superpowers/specs/2026-10-13-pluggable-types-design.md` (commit `1a913c3`).
+- Implementation plan: `docs/superpowers/plans/2026-10-13-pluggable-types.md`; subagent-driven execution authorized (Nir delegated method choice).
+- Tasks 1, 2, 4 and 5 complete with independent review. Task 5 TCP diagnostic leak fixed (`a7c6a41`), regression-tested and scoped review approved. Task 6 is next.
+- Active worktree: `C:/Projects/products/mishmesh/.claude/worktrees/pluggable-types` on `feat/pluggable-types`. Original checkout on `work/network-layout` preserves its uncommitted prior map fix.
+- Lab still runs `v0.1.0-beta.4`; no rollout, host flag, sudoers, Tailscale install or kind-cluster changes made.
 
 ## Scope
 
@@ -20,25 +22,31 @@
 
 ## Next
 
-1. Execute the plan with per-task implementation/review gates; resume from `.superpowers/sdd/2026-10-13-pluggable-types/progress.md` in the isolated worktree.
-2. Implement, `make check`, PR, merge, release v0.1.0-beta.5, roll out to the lab, extend and run `lab-e2e.py`.
+1. Execute Task 6. Resume from `.superpowers/sdd/2026-10-13-pluggable-types/progress.md` in the active worktree; do not re-dispatch completed tasks.
+2. Execution order: **1,2,4,5,6,7,8,9,10,11,12,13,14,3,15,16,17,18,19,20**. Physical Task 3 cutover follows Go consumers to avoid temporary encrypted legacy-table emulation. No intermediate checkpoint is deployed.
+3. Continue to complete validation, PR/merge, beta.5 release and lab E2E, respecting the approval/action gates below.
 
-## Planning notes (2026-10-13)
+## Completed work and evidence
 
-- Store opens before the current network controller loads the secret key. Plan moves key loading ahead of migration and tests atomic re-sealing, corrupt/missing keys, malformed rows, reopen/idempotence and Postgres concurrent opens.
-- Runtime Requires holds need protection across concurrent/shared wakes, external state refresh, failed stops and config reloads; tests precede lifecycle changes.
-- Plan makes idle `-1` = With dependents, argv-list Command fields, generic descriptor defaults/sensitivity, persistent Tailscale ownership, and derived ingress aliases explicit implementation choices.
-- Existing uncommitted network-map layout changes and browser artifacts belong to the previous task and must be preserved/separately scoped.
-- No lab, sudoers, host-command flag, Tailscale installation, Kubernetes cluster, release or external publication changes made during planning.
+- Task 1 (`af1a3ad`): eight shared field kinds, strict JSON/default/required validation, host markers and redaction. Focused race tests (97.2% coverage), vet/all-consumer compile and independent review passed.
+- Task 2 (`9ff522a`): additive typed connection/service stores, derived runtime references, requirements/aliases and transactional ownership/delete guards. SQLite/store/legacy-consumer race suites, Windows/Linux compile/vet and six live isolated Postgres race cases passed; independent review approved.
+- Task 4 (`ce31f02`): injected driver registry, generic config definitions, pure legacy converter, pinned matching Kubernetes modules v0.35.4. Compatibility race/compile/vet and services govulncheck passed; independent review approved. Command captured output no longer leaks into errors/status/logs; host markers captured before legacy API normalization, both regression-tested red/green.
+- Task 5 (`26b4f7f` + `a7c6a41`, review approved): strict TCP/HTTP readiness and bounded probes, no redirects/client mutation/body leaks, TCP hold cancellation correction, shared legacy TCP validation. TCP errors use stable diagnostics and preserve only context causes. Services/health/ingress race suites, focused API, consumer compile/vet/format passed. Health/ingress fixtures now have valid durable service links while preserving fake runtime states.
 
-## Completed execution tasks
+## Decisions and open validation
 
-- Task 1: shared typed fields, strict validation, host markers, and redaction; commit `af1a3ad`; focused race tests (97.2% coverage), vet, all-package compilation, and independent spec/quality review passed.
+- Exact rulings, task briefs, reports and review packages live in this plan's ignored `.superpowers/sdd/2026-10-13-pluggable-types/` workspace. They are the execution recovery record.
+- Internal `ConnectionIDs`/`service_connections` derive runtime references from arbitrary descriptor field names. They do not expand API payloads. API extraction is Task 13.
+- Idle `-1` means With dependents; existing0 remains Never. Command input stays argv lists. Generic defaults/sensitivity and persistent provider ownership/derived aliases remain as planned.
+- Missing-key creation must inspect existing encrypted rows first; atomic migration/reopen/corruption/concurrent Postgres proof still belongs to Tasks 3/19.
+- Requires holds must survive concurrent/shared wakes, failed stops, external state refresh and reloads; lifecycle work/tests remain Task 7.
+- Task 2 minor review finding deferred to Task 14: canonical-collision fixture names use underscores and can mask the intended collision validation; replace with valid hyphenated hosts and assert the proper error path in both stores.
+- Task 5 minor deferred to Task 19/final review: TCP cancellation regression needs peer EOF and explicit test-owned cleanup completion assertions.
+- Full real Postgres legacy migrations, provider APIs/live tailnet, kind wake traffic, generic API tenancy and browser save/reopen validation remain future gates; compilation/skipped cases are not runtime evidence.
+- Test Postgres container `mishmesh-types-pg-1791842027` is stopped and retained (no published ports). Temporary Go test containers are retained; no destructive cleanup run.
 
-- Task 2: typed store contracts, derived runtime references, aliases and transactional guards; `9ff522a`; SQLite/store/legacy-consumer race suites, six live Postgres cases, Windows/Linux compile and vet passed. Independent review approved with one deferred canonical-hostname fixture correction assigned to Task 14.
+## Explicit human gates
 
-Execution order is recorded in the plan and ledger; physical migration runs after Go consumers are converted.
-
-Task 4 in progress: built-in registry, generic Config definitions, pure legacy converter and compatible pinned Kubernetes dependencies. Security regressions verified red/green for raw command output in LastError/logs and host markers discarded by legacy API normalization; implementation committed (`ce31f02`), compatibility race/consumer compile/vet/govulncheck passed, independent review approved; Task 5 readiness is next.
-
-- Task 4: driver registry/generic config and pure legacy service converter (`ce31f02`), reviewed without findings. Raw command output leak and pre-normalize host-marker bypass fixed with red/green regressions; compatibility race/compile/vet and services vulnerability scan passed.
+- Confirm with Nir before lab sudoers or `MISHMESH_HOST_COMMANDS`; prepare exact reviewed contents/commands first.
+- Nir installs/joins Tailscale and approves the tagged host. Live Tailscale proof stays pending until those prerequisites exist.
+- Print exact destructive cleanup/restore commands and effects for Nir unless he explicitly authorizes agent execution. No direct master push.
