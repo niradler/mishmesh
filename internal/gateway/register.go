@@ -39,12 +39,18 @@ func (g *Gateway) registerOne(ctx context.Context, agent *store.Agent, req tunne
 		lifecycle = store.LifecycleEphemeral
 	}
 	switch kind {
-	case store.KindTCP:
-		return g.registerTCP(ctx, agent, req, lifecycle)
+	case store.KindTCP, store.KindUDP:
+		if req.Private {
+			return g.registerPrivate(ctx, agent, req, kind, lifecycle)
+		}
+		return g.registerPort(ctx, agent, req, kind, lifecycle)
 	case store.KindHTTP, store.KindTLS:
+		if req.Private {
+			return tunnel.EndpointBinding{}, fmt.Errorf("private applies only to tcp and udp endpoints, not %s", kind)
+		}
 		return g.registerHostBased(ctx, agent, req, kind, lifecycle)
 	default:
-		return tunnel.EndpointBinding{}, fmt.Errorf("unsupported endpoint kind %q (want http, tcp or tls)", kind)
+		return tunnel.EndpointBinding{}, fmt.Errorf("unsupported endpoint kind %q (want http, tcp, tls or udp)", kind)
 	}
 }
 
@@ -152,25 +158,122 @@ func (g *Gateway) binding(ref string, ep *store.Endpoint) tunnel.EndpointBinding
 	return b
 }
 
-func (g *Gateway) registerTCP(ctx context.Context, agent *store.Agent, req tunnel.EndpointRequest, lifecycle string) (tunnel.EndpointBinding, error) {
-	if g.ports == nil {
-		if err := g.kindError(store.KindTCP); err != nil {
+func (g *Gateway) portsFor(kind string) PortOpener {
+	if kind == store.KindUDP {
+		return g.udpPorts
+	}
+	return g.ports
+}
+
+func (g *Gateway) endpointPolicy(req tunnel.EndpointRequest) *store.EndpointPolicy {
+	pol := decodePolicy(req.Policy, g.log)
+	if req.Private {
+		if pol == nil {
+			pol = &store.EndpointPolicy{}
+		}
+		if pol.Connect == nil {
+			pol.Connect = &store.ConnectPolicy{}
+		}
+	}
+	if pol != nil && pol.Connect != nil && pol.Connect.Name == "" {
+		pol.Connect.Name = req.Name
+	}
+	return pol
+}
+
+func connectName(pol *store.EndpointPolicy) string {
+	if pol == nil || pol.Connect == nil {
+		return ""
+	}
+	return pol.Connect.Name
+}
+
+func (g *Gateway) connectNameOwner(ctx context.Context, agent *store.Agent, name string) (*store.Endpoint, error) {
+	if name == "" {
+		return nil, nil
+	}
+	ep, err := store.FindConnectEndpoint(ctx, g.data, agent.OrgID, name)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		g.log.Error("connect name lookup failed", "name", name, "err", err)
+		return nil, errors.New("internal error looking up connect name")
+	}
+	if ep.AgentID != agent.ID {
+		return nil, fmt.Errorf("connect name %q is already used by another agent in this organization", name)
+	}
+	return ep, nil
+}
+
+func (g *Gateway) registerPrivate(ctx context.Context, agent *store.Agent, req tunnel.EndpointRequest, kind, lifecycle string) (tunnel.EndpointBinding, error) {
+	pol := g.endpointPolicy(req)
+	name := connectName(pol)
+	if name == "" {
+		return tunnel.EndpointBinding{}, errors.New("private endpoints need a name (the tunnel name or policy.connect.name)")
+	}
+	if len(pol.Connect.AllowAgents) == 0 {
+		g.log.Warn("private endpoint allows no agents to connect", "agent_id", agent.ID, "name", name)
+	}
+	existing, err := g.connectNameOwner(ctx, agent, name)
+	if err != nil {
+		return tunnel.EndpointBinding{}, err
+	}
+	if existing != nil {
+		if existing.Kind != kind || existing.Port != 0 {
+			return tunnel.EndpointBinding{}, fmt.Errorf("connect name %q is already registered as a public %s endpoint", name, existing.Kind)
+		}
+		existing.Policy = pol
+		if err := g.data.UpdateEndpoint(ctx, existing); err != nil {
+			g.log.Warn("update private endpoint failed", "endpoint_id", existing.ID, "err", err)
+		}
+		return g.bindExisting(agent, req, existing), nil
+	}
+	if !g.quotaAllowsEndpoint(ctx, agent.OrgID) {
+		return tunnel.EndpointBinding{}, errors.New("endpoint quota exceeded for this organization")
+	}
+	ep := &store.Endpoint{
+		ID:        store.NewID("ep"),
+		AgentID:   agent.ID,
+		OrgID:     agent.OrgID,
+		Kind:      kind,
+		Lifecycle: lifecycle,
+		Policy:    pol,
+		CreatedAt: time.Now(),
+	}
+	if err := g.data.CreateEndpoint(ctx, ep); err != nil {
+		g.log.Warn("create private endpoint failed", "agent_id", agent.ID, "err", err)
+		return tunnel.EndpointBinding{}, errors.New("internal error creating endpoint")
+	}
+	g.conns.BindEndpoint(ep.ID, agent.ID)
+	g.log.Info("private endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "kind", kind, "name", name)
+	return g.binding(req.Ref, ep), nil
+}
+
+func (g *Gateway) registerPort(ctx context.Context, agent *store.Agent, req tunnel.EndpointRequest, kind, lifecycle string) (tunnel.EndpointBinding, error) {
+	ports := g.portsFor(kind)
+	if ports == nil {
+		if err := g.kindError(kind); err != nil {
 			return tunnel.EndpointBinding{}, err
 		}
-		return tunnel.EndpointBinding{}, errors.New("tcp ingress is disabled on this server")
+		return tunnel.EndpointBinding{}, fmt.Errorf("%s ingress is disabled on this server", kind)
+	}
+	pol := g.endpointPolicy(req)
+	if _, err := g.connectNameOwner(ctx, agent, connectName(pol)); err != nil {
+		return tunnel.EndpointBinding{}, err
 	}
 	if req.Port > 0 {
 		endpoints, err := g.data.ListEndpointsByAgent(ctx, agent.ID)
 		if err != nil {
-			g.log.Warn("tcp endpoint lookup failed", "agent_id", agent.ID, "err", err)
-			return tunnel.EndpointBinding{}, errors.New("internal error looking up tcp endpoint")
+			g.log.Warn("port endpoint lookup failed", "agent_id", agent.ID, "kind", kind, "err", err)
+			return tunnel.EndpointBinding{}, fmt.Errorf("internal error looking up %s endpoint", kind)
 		}
 		for _, endpoint := range endpoints {
-			if endpoint.Kind != store.KindTCP || endpoint.Port != req.Port {
+			if endpoint.Kind != kind || endpoint.Port != req.Port {
 				continue
 			}
-			if _, err := g.ports.Open(endpoint.ID, endpoint.Port); err != nil {
-				return tunnel.EndpointBinding{}, fmt.Errorf("tcp port %d unavailable: %v", req.Port, err)
+			if _, err := ports.Open(endpoint.ID, endpoint.Port); err != nil {
+				return tunnel.EndpointBinding{}, fmt.Errorf("%s port %d unavailable: %v", kind, req.Port, err)
 			}
 			return g.bindExisting(agent, req, endpoint), nil
 		}
@@ -182,36 +285,39 @@ func (g *Gateway) registerTCP(ctx context.Context, agent *store.Agent, req tunne
 		ID:        store.NewID("ep"),
 		AgentID:   agent.ID,
 		OrgID:     agent.OrgID,
-		Kind:      store.KindTCP,
+		Kind:      kind,
 		Lifecycle: lifecycle,
-		Policy:    decodePolicy(req.Policy, g.log),
+		Policy:    pol,
 		CreatedAt: time.Now(),
 	}
-	port, err := g.ports.Open(ep.ID, req.Port)
+	port, err := ports.Open(ep.ID, req.Port)
 	if err != nil {
 		if req.Port > 0 {
-			return tunnel.EndpointBinding{}, fmt.Errorf("tcp port %d unavailable: %v", req.Port, err)
+			return tunnel.EndpointBinding{}, fmt.Errorf("%s port %d unavailable: %v", kind, req.Port, err)
 		}
-		return tunnel.EndpointBinding{}, fmt.Errorf("tcp port allocation failed: %v", err)
+		return tunnel.EndpointBinding{}, fmt.Errorf("%s port allocation failed: %v", kind, err)
 	}
 	ep.Port = port
 	if err := g.data.CreateEndpoint(ctx, ep); err != nil {
-		g.ports.Close(ep.ID)
-		g.log.Warn("create tcp endpoint failed", "agent_id", agent.ID, "err", err)
+		ports.Close(ep.ID)
+		g.log.Warn("create port endpoint failed", "agent_id", agent.ID, "kind", kind, "err", err)
 		return tunnel.EndpointBinding{}, errors.New("internal error creating endpoint")
 	}
 	g.conns.BindEndpoint(ep.ID, agent.ID)
-	url := fmt.Sprintf("tcp://%s:%d", g.publicHost(), port)
-	g.log.Info("tcp endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "url", url)
-	return tunnel.EndpointBinding{Ref: req.Ref, EndpointID: ep.ID, Kind: store.KindTCP, Port: port, PublicURL: url}, nil
+	b := g.binding(req.Ref, ep)
+	g.log.Info("port endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "kind", kind, "url", b.PublicURL)
+	return b, nil
 }
 
 func (g *Gateway) publicURL(ep *store.Endpoint) string {
 	switch {
 	case ep.Kind == store.KindTLS:
 		return endpointurl.TLS(ep, g.baseDomain, g.tlsPublicPort)
-	case ep.Kind == store.KindTCP:
-		return fmt.Sprintf("tcp://%s:%d", g.publicHost(), ep.Port)
+	case store.PortKind(ep.Kind):
+		if ep.Port == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%s://%s:%d", ep.Kind, g.publicHost(), ep.Port)
 	case ep.Domain != "":
 		return fmt.Sprintf("%s://%s", g.publicScheme, ep.Domain)
 	case ep.Subdomain != "":

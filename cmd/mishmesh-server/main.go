@@ -19,6 +19,7 @@ import (
 
 	"github.com/mishmesh/mishmesh/internal/cluster"
 	"github.com/mishmesh/mishmesh/internal/config"
+	"github.com/mishmesh/mishmesh/internal/connect/bridge"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connect/sshfwd"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
@@ -152,6 +153,27 @@ func serve() error {
 		log.Info("tcp ingress enabled", "bind", cfg.TCPBindHost, "ports", fmt.Sprintf("%d-%d", cfg.TCPPortMin, cfg.TCPPortMax))
 	}
 
+	var udpIngress *ingress.UDP
+	if cfg.IngressEnabled && cfg.UDPEnabled {
+		if clusterRT != nil {
+			log.Warn("udp ingress is not supported in cluster mode yet; public udp ports are disabled")
+		} else {
+			udpIngress = ingress.NewUDP(ingress.UDPOptions{
+				Conns:    conns,
+				Data:     data,
+				Log:      log,
+				BindHost: cfg.UDPBindHost,
+				PortMin:  cfg.UDPPortMin,
+				PortMax:  cfg.UDPPortMax,
+				Meter:    mx,
+				Idle:     cfg.UDPIdleTimeout,
+				MaxFlows: cfg.UDPMaxFlows,
+			})
+			defer udpIngress.Shutdown()
+			log.Info("udp ingress enabled", "bind", cfg.UDPBindHost, "ports", fmt.Sprintf("%d-%d", cfg.UDPPortMin, cfg.UDPPortMax))
+		}
+	}
+
 	gwOpts := gateway.Options{
 		Data:               data,
 		Conns:              conns,
@@ -165,7 +187,13 @@ func serve() error {
 	if tcpIngress != nil {
 		gwOpts.Ports = tcpIngress
 	}
-	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil)
+	if udpIngress != nil {
+		gwOpts.UDPPorts = udpIngress
+	}
+	if cfg.ConnectEnabled {
+		gwOpts.Connect = bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Meter: mx})
+	}
+	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)
 	gw := gateway.New(gwOpts)
 	if swept, err := gw.SweepOrphanedEphemeral(context.Background()); err != nil {
 		log.Warn("sweep of orphaned ephemeral endpoints failed", "err", err)
@@ -546,13 +574,14 @@ func endpointOIDCKey(cfg config.Server) []byte {
 	return nil
 }
 
-func unavailableKinds(cfg config.Server, tcpActive bool) map[string]string {
+func unavailableKinds(cfg config.Server, tcpActive, udpActive bool) map[string]string {
 	out := make(map[string]string)
 	if !cfg.IngressEnabled {
 		const reason = "ingress is disabled on this server (MISHMESH_INGRESS_ENABLED=false)"
 		out[store.KindHTTP] = "http " + reason
 		out[store.KindTLS] = "tls " + reason
 		out[store.KindTCP] = "tcp " + reason
+		out[store.KindUDP] = "udp " + reason
 		return out
 	}
 	if !cfg.TLSPassthroughEnabled {
@@ -560,6 +589,9 @@ func unavailableKinds(cfg config.Server, tcpActive bool) map[string]string {
 	}
 	if !tcpActive {
 		out[store.KindTCP] = "tcp ingress is disabled on this server (MISHMESH_TCP_ENABLED=false)"
+	}
+	if !udpActive {
+		out[store.KindUDP] = "udp ingress is disabled on this server (MISHMESH_UDP_ENABLED=false or cluster mode)"
 	}
 	return out
 }

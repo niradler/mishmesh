@@ -43,6 +43,7 @@ func buildStartOptions(configPath, gateway, token, allow string, names []string)
 		Log:        newLogger(firstNonEmpty(file.LogLevel, env.LogLevel)),
 		Out:        os.Stdout,
 		Endpoints:  specs,
+		Connects:   file.Connects,
 		Allowlist:  file.Allow,
 	}
 	if allow != "" {

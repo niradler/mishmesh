@@ -34,6 +34,13 @@ type Server struct {
 	TCPBindHost              string
 	TCPPortMin               int
 	TCPPortMax               int
+	UDPEnabled               bool
+	UDPBindHost              string
+	UDPPortMin               int
+	UDPPortMax               int
+	UDPIdleTimeout           time.Duration
+	UDPMaxFlows              int
+	ConnectEnabled           bool
 	TLSPassthroughAddr       string
 	TLSPassthroughEnabled    bool
 	TLSPassthroughPublicPort int
@@ -135,6 +142,13 @@ func LoadServer() Server {
 		TCPBindHost:              env("TCP_BIND_HOST", "127.0.0.1"),
 		TCPPortMin:               envInt("TCP_PORT_MIN", 10000),
 		TCPPortMax:               envInt("TCP_PORT_MAX", 10100),
+		UDPEnabled:               envBool("UDP_ENABLED", false),
+		UDPBindHost:              env("UDP_BIND_HOST", "127.0.0.1"),
+		UDPPortMin:               envInt("UDP_PORT_MIN", 10200),
+		UDPPortMax:               envInt("UDP_PORT_MAX", 10300),
+		UDPIdleTimeout:           envDuration("UDP_IDLE_TIMEOUT", 60*time.Second),
+		UDPMaxFlows:              envInt("UDP_MAX_FLOWS", 1024),
+		ConnectEnabled:           envBool("CONNECT_ENABLED", true),
 		TLSPassthroughAddr:       env("TLS_PASSTHROUGH_ADDR", "127.0.0.1:8444"),
 		TLSPassthroughEnabled:    envBool("TLS_PASSTHROUGH_ENABLED", false),
 		TLSPassthroughPublicPort: envInt("TLS_PASSTHROUGH_PUBLIC_PORT", 8444),

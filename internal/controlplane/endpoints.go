@@ -90,8 +90,11 @@ func (a *API) publicURL(ep *store.Endpoint) string {
 		return endpointurl.TLS(ep, a.baseDomain, a.tlsPublicPort)
 	case ep.Domain != "":
 		return fmt.Sprintf("%s://%s", scheme, ep.Domain)
-	case ep.Kind == store.KindTCP && ep.Port > 0:
-		return fmt.Sprintf("tcp://%s:%d", hostOnly(a.baseDomain), ep.Port)
+	case store.PortKind(ep.Kind):
+		if ep.Port == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%s://%s:%d", ep.Kind, hostOnly(a.baseDomain), ep.Port)
 	case ep.Subdomain != "":
 		return fmt.Sprintf("%s://%s.%s", scheme, ep.Subdomain, a.baseDomain)
 	default:

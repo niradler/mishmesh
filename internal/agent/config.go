@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -23,6 +25,7 @@ type FileConfig struct {
 	Allow    []string
 	LogLevel string
 	Tunnels  []NamedTunnel
+	Connects []ConnectSpec
 }
 
 type NamedTunnel struct {
@@ -38,6 +41,7 @@ type TunnelConfig struct {
 	Domain      string         `yaml:"domain"`
 	Port        int            `yaml:"port"`
 	Reserved    bool           `yaml:"reserved"`
+	Private     bool           `yaml:"private"`
 	TargetHTTPS bool           `yaml:"target_https"`
 	Insecure    bool           `yaml:"insecure"`
 	Policy      map[string]any `yaml:"policy"`
@@ -61,9 +65,10 @@ func (e *ConfigError) Error() string {
 var (
 	envRef        = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
 	tunnelName    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
-	rootKeys      = []string{"gateway", "token", "allow", "log_level", "tunnels"}
-	tunnelKeys    = []string{"proto", "addr", "subdomain", "domain", "port", "reserved", "target_https", "insecure", "policy"}
-	validProtos   = []string{store.KindHTTP, store.KindTCP, store.KindTLS}
+	rootKeys      = []string{"gateway", "token", "allow", "log_level", "tunnels", "connects"}
+	tunnelKeys    = []string{"proto", "addr", "subdomain", "domain", "port", "reserved", "private", "target_https", "insecure", "policy"}
+	connectKeys   = []string{"endpoint", "proto", "listen", "idle_timeout"}
+	validProtos   = []string{store.KindHTTP, store.KindTCP, store.KindTLS, store.KindUDP}
 	validProtoMsg = strings.Join(validProtos, ", ")
 )
 
@@ -173,6 +178,7 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 		Allow    []string  `yaml:"allow"`
 		LogLevel string    `yaml:"log_level"`
 		Tunnels  yaml.Node `yaml:"tunnels"`
+		Connects yaml.Node `yaml:"connects"`
 	}
 	if err := root.Decode(&raw); err != nil {
 		p.addf(root.Line, "%s", strings.ReplaceAll(strings.TrimPrefix(err.Error(), "yaml: "), "\n", "; "))
@@ -196,7 +202,93 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 	default:
 		cfg.Tunnels = p.parseTunnels(&raw.Tunnels)
 	}
+	switch {
+	case raw.Connects.Kind == 0 || raw.Connects.Tag == "!!null":
+	case raw.Connects.Kind != yaml.MappingNode:
+		p.addf(raw.Connects.Line, "connects must be a mapping of name to connect definition")
+	default:
+		cfg.Connects = p.parseConnects(&raw.Connects)
+	}
 	return cfg
+}
+
+type connectConfig struct {
+	Endpoint    string `yaml:"endpoint"`
+	Proto       string `yaml:"proto"`
+	Listen      string `yaml:"listen"`
+	IdleTimeout string `yaml:"idle_timeout"`
+}
+
+func (p *configParser) parseConnects(n *yaml.Node) []ConnectSpec {
+	seen := make(map[string]bool)
+	listens := make(map[string]string)
+	var out []ConnectSpec
+	for i := 0; i < len(n.Content); i += 2 {
+		key, val := n.Content[i], n.Content[i+1]
+		name := key.Value
+		fail := func(format string, args ...any) {
+			p.addf(key.Line, "connect %q: %s", name, fmt.Sprintf(format, args...))
+		}
+		if !tunnelName.MatchString(name) {
+			p.addf(key.Line, "connect name %q is invalid (use letters, digits, '-' and '_')", name)
+			continue
+		}
+		if seen[name] {
+			p.addf(key.Line, "connect %q is defined twice", name)
+			continue
+		}
+		seen[name] = true
+		if val.Kind != yaml.MappingNode {
+			p.addf(val.Line, "connect %q must be a mapping", name)
+			continue
+		}
+		p.checkKeys(val, connectKeys, fmt.Sprintf("connect %q", name))
+		var cc connectConfig
+		if err := val.Decode(&cc); err != nil {
+			fail("%s", strings.ReplaceAll(strings.TrimPrefix(err.Error(), "yaml: unmarshal errors:\n  "), "\n  ", "; "))
+			continue
+		}
+		spec := ConnectSpec{Name: name, Endpoint: cc.Endpoint, Kind: cc.Proto}
+		if spec.Endpoint == "" {
+			spec.Endpoint = name
+		}
+		if !store.PortKind(spec.Kind) {
+			fail("proto must be tcp or udp, got %q", cc.Proto)
+		}
+		if strings.TrimSpace(cc.Listen) == "" {
+			fail("listen is required (a port like 51820 or host:port)")
+		} else {
+			spec.Listen = normalizeListen(cc.Listen)
+			if _, _, err := net.SplitHostPort(spec.Listen); err != nil {
+				fail("listen %q must be a port or host:port", cc.Listen)
+			}
+			owner := spec.Kind + " " + spec.Listen
+			if other, dup := listens[owner]; dup {
+				fail("listen %s is already used by connect %q", spec.Listen, other)
+			}
+			listens[owner] = name
+		}
+		if cc.IdleTimeout != "" {
+			d, err := time.ParseDuration(cc.IdleTimeout)
+			if err != nil || d <= 0 {
+				fail("idle_timeout %q must be a positive duration like 90s", cc.IdleTimeout)
+			}
+			if cc.Proto != store.KindUDP {
+				fail("idle_timeout only applies to udp connects")
+			}
+			spec.Idle = d
+		}
+		out = append(out, spec)
+	}
+	return out
+}
+
+func normalizeListen(listen string) string {
+	listen = strings.TrimSpace(listen)
+	if isDigits(listen) {
+		return "127.0.0.1:" + strings.TrimPrefix(listen, ":")
+	}
+	return listen
 }
 
 func (p *configParser) parseTunnels(n *yaml.Node) []NamedTunnel {
@@ -249,19 +341,25 @@ func (p *configParser) validateTunnel(t NamedTunnel) {
 		fail("subdomain and domain are mutually exclusive")
 	}
 	switch t.Proto {
-	case store.KindTCP:
+	case store.KindTCP, store.KindUDP:
 		if t.Subdomain != "" || t.Domain != "" {
-			fail("subdomain and domain do not apply to tcp tunnels (use port)")
+			fail("subdomain and domain do not apply to %s tunnels (use port)", t.Proto)
 		}
 		if t.TargetHTTPS {
-			fail("target_https does not apply to tcp tunnels")
+			fail("target_https does not apply to %s tunnels", t.Proto)
 		}
-		if t.Addr != "" && !strings.Contains(strings.TrimPrefix(t.Addr, "tcp://"), ":") && !isDigits(t.Addr) {
+		if t.Addr != "" && !strings.Contains(strings.TrimPrefix(t.Addr, t.Proto+"://"), ":") && !isDigits(t.Addr) {
 			fail("addr %q must be a port or host:port", t.Addr)
+		}
+		if t.Private && t.Port != 0 {
+			fail("private tunnels have no public port; remove port")
 		}
 	case store.KindHTTP, store.KindTLS:
 		if t.Port != 0 {
-			fail("port only applies to tcp tunnels")
+			fail("port only applies to tcp and udp tunnels")
+		}
+		if t.Private {
+			fail("private only applies to tcp and udp tunnels")
 		}
 		if t.Proto == store.KindTLS && t.TargetHTTPS {
 			fail("target_https does not apply to tls tunnels: TLS passthrough forwards the encrypted stream untouched")
@@ -390,6 +488,7 @@ func (t NamedTunnel) Spec() (EndpointSpec, error) {
 		Subdomain:      t.Subdomain,
 		Domain:         t.Domain,
 		Port:           t.Port,
+		Private:        t.Private,
 		LocalTarget:    addr,
 		TargetTLS:      (t.TargetHTTPS || schemeTLS) && t.Proto == store.KindHTTP,
 		TargetInsecure: t.Insecure,
@@ -419,6 +518,8 @@ func NormalizeTarget(arg string) (addr string, useTLS bool) {
 		arg = strings.TrimPrefix(arg, "http://")
 	case strings.HasPrefix(arg, "tcp://"):
 		arg = strings.TrimPrefix(arg, "tcp://")
+	case strings.HasPrefix(arg, "udp://"):
+		arg = strings.TrimPrefix(arg, "udp://")
 	}
 	arg = strings.TrimSuffix(arg, "/")
 	if strings.HasPrefix(arg, ":") {

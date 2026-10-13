@@ -112,8 +112,12 @@ func (g *Guard) Dial(ctx context.Context, target string, otls *store.OriginTLS, 
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
+	network := "tcp"
+	if t.Datagram() {
+		network = "udp"
+	}
 	var d net.Dialer
-	raw, err := d.DialContext(ctx, "tcp", addr)
+	raw, err := d.DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, fmt.Errorf("proxy: dial %s: %w", target, err)
 	}

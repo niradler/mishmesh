@@ -14,7 +14,11 @@ type Target struct {
 	Port   string
 }
 
+const SchemeUDP = "udp"
+
 func (t Target) TLS() bool { return t.Scheme == "https" }
+
+func (t Target) Datagram() bool { return t.Scheme == SchemeUDP }
 
 func (t Target) Addr() string { return net.JoinHostPort(t.Host, t.Port) }
 
@@ -23,7 +27,7 @@ func ParseTarget(s string) (Target, error) {
 	hostPort := s
 	if i := strings.Index(s, "://"); i >= 0 {
 		scheme = strings.ToLower(s[:i])
-		if scheme != "http" && scheme != "https" {
+		if scheme != "http" && scheme != "https" && scheme != SchemeUDP {
 			return Target{}, fmt.Errorf("proxy: invalid target %q: unsupported scheme %q", s, scheme)
 		}
 		u, err := url.Parse(s)

@@ -22,7 +22,7 @@ export function Topbar() {
     currentMembership?.org_name ?? memberships.find((m) => m.org_id === currentOrgId)?.org_name ?? "Organization";
 
   return (
-    <header className="flex h-14 items-center justify-between gap-3 border-b border-border bg-card/80 px-4 backdrop-blur md:px-6">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border bg-card/80 px-4 backdrop-blur md:px-6">
       <div className="flex items-center gap-3">
         {memberships.length > 0 ? (
           <DropdownMenu>

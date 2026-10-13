@@ -28,8 +28,15 @@ type StreamInit struct {
 	Meta       map[string]string `json:"meta,omitempty"`
 }
 
+const (
+	MetaConnect     = "connect"
+	MetaIdleTimeout = "idle_timeout"
+)
+
 type EndpointRequest struct {
 	Ref       string          `json:"ref"`
+	Name      string          `json:"name,omitempty"`
+	Private   bool            `json:"private,omitempty"`
 	Kind      string          `json:"kind"`
 	Lifecycle string          `json:"lifecycle"`
 	Subdomain string          `json:"subdomain,omitempty"`

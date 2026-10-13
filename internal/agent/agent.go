@@ -28,6 +28,7 @@ type EndpointSpec struct {
 	Subdomain      string
 	Domain         string
 	Port           int
+	Private        bool
 	LocalTarget    string
 	TargetTLS      bool
 	TargetInsecure bool
@@ -47,6 +48,7 @@ type Options struct {
 	Log        *slog.Logger
 	Endpoints  []EndpointSpec
 	Allowlist  []string
+	Connects   []ConnectSpec
 	Out        io.Writer
 }
 
@@ -58,6 +60,7 @@ type Agent struct {
 	mu      sync.RWMutex
 	targets map[string]localTarget
 	acked   atomic.Bool
+	sess    atomic.Pointer[tunnel.Session]
 }
 
 func New(opts Options) *Agent {
@@ -80,6 +83,11 @@ func (a *Agent) Run(parent context.Context) error {
 	a.opts.GatewayURL = gatewayURL
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
+	stopConnects, err := a.startConnects(ctx)
+	if err != nil {
+		return err
+	}
+	defer stopConnects()
 
 	backoff := initialBackoff
 	for {
@@ -139,6 +147,7 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 		return fmt.Errorf("session: %w", err)
 	}
 	defer sess.Close()
+	defer a.sess.CompareAndSwap(sess, nil)
 	go func() {
 		<-ctx.Done()
 		_ = sess.Close()
@@ -158,6 +167,8 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 		refSpec[ref] = sp
 		reg.Endpoints = append(reg.Endpoints, tunnel.EndpointRequest{
 			Ref:       ref,
+			Name:      sp.Name,
+			Private:   sp.Private,
 			Kind:      sp.Kind,
 			Lifecycle: sp.Lifecycle,
 			Subdomain: sp.Subdomain,
@@ -170,6 +181,7 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 		return fmt.Errorf("send register: %w", err)
 	}
 
+	a.sess.Store(sess)
 	go a.readControl(ctx, ctrl, refTarget, refSpec, fail)
 	go a.pingLoop(ctx, ctrl)
 
@@ -237,6 +249,10 @@ func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 	tgt, ok := a.resolveStreamTarget(init)
 	if !ok {
 		reportStreamFailure(stream, init, notServedReason(init))
+		return
+	}
+	if init.Kind == store.KindUDP {
+		a.relayUDP(stream, init, tgt)
 		return
 	}
 	protocol := ""

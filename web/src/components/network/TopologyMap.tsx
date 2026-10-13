@@ -208,9 +208,14 @@ function TopologyGraph({ topology }: { topology: Topology }) {
   );
 
   return (
-    <div className="space-y-4">
-      <div className="overflow-x-auto rounded-md border border-border bg-background/50">
-        <div ref={containerRef} className="relative flex min-w-max gap-24 p-6">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
+      <div
+        role="region"
+        aria-label="Network topology"
+        tabIndex={0}
+        className="min-h-0 min-w-0 flex-1 overflow-auto rounded-md border border-border bg-background/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <div ref={containerRef} className="relative flex min-h-full min-w-max justify-between gap-24 p-6">
           <svg
             className="pointer-events-none absolute left-0 top-0 z-0 text-muted-foreground/70"
             width={layout.width}
@@ -244,7 +249,7 @@ function TopologyGraph({ topology }: { topology: Topology }) {
           ))}
         </div>
       </div>
-      <div className="flex flex-wrap gap-x-6 gap-y-2 text-xs text-muted-foreground">
+      <div className="flex shrink-0 flex-wrap gap-x-6 gap-y-2 text-xs text-muted-foreground">
         {EDGE_LEGEND.map(({ kind, description }) => (
           <span key={kind} className="inline-flex items-center gap-2">
             <svg width="28" height="6" aria-hidden="true" className="text-muted-foreground/70">
@@ -266,8 +271,8 @@ export function TopologyMap() {
   const hasNodes = (topology.data?.nodes ?? []).length > 0;
 
   return (
-    <Card>
-      <CardContent className="pt-4">
+    <Card className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-4">
         {topology.isLoading ? (
           <LoadingState label="Loading topology" />
         ) : topology.isError ? (
