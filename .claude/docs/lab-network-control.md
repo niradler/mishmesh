@@ -20,3 +20,11 @@
 1. Nir creates a Cloudflare API token to move to the managed level → #28.
 2. Decide on the orphans (2fauth, docker, vaultwarden hostnames) — add endpoints or remove the routes.
 3. Notes: orc runs without compose labels + orphan `077fefaaf02f_orc` container; something polls hermes every minute (keeps it awake); idle stop also stops containers started outside mishmesh; wake is HTTP only (#27); `access_app_id` is not verified against Cloudflare.
+
+## Network layout fix (2026-10-13, local)
+
+- Root cause: AppShell capped Network at `max-w-6xl` inside a scrolling main; the page and map had no remaining-height flex layout.
+- Network now uses the full available width and height with page overflow hidden. The graph scrolls within its own bounded, keyboard-focusable region, with the legend outside it. Columns spread across available width. Other routes keep their existing width cap and scrolling; Topbar keeps its fixed height.
+- Validation: web lint/typecheck and production build passed. `.claude/scripts/check-network-layout.cjs` checks a 61-node/60-edge fixture at 1920x1080, 1440x900, 1024x768, 390x844, and 844x390, including document/main bounds, internal scrolling, keyboard link navigation, and restoration of the ordinary layout. Browser verification passed without page errors; screenshot at `output/playwright/network-desktop.png`.
+- Security review: only layout and accessibility changed; no auth, API, input, dependency, or data-storage changes. Validation uses synthetic local fixtures without credentials.
+- Not deployed. Live page inspection redirected to Cloudflare login. Next: ship through the normal release workflow and verify with an authenticated live session.
