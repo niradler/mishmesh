@@ -29,7 +29,7 @@ func main() {
 		err = startCmd(args[1:])
 	case "validate":
 		err = validateCmd(args[1:], os.Stdout)
-	case "http", "tcp", "tls":
+	case "http", "tcp", "tls", "udp":
 		err = oneShotCmd(args[0], args[1:])
 	case "service":
 		err = serviceCmd(args[1:], os.Stdout)
@@ -105,6 +105,7 @@ func usage(w io.Writer) {
   mishmesh-agent validate [--config path]
   mishmesh-agent http <port|host:port> [--subdomain x] [--reserved] [--target-https] [--insecure]
   mishmesh-agent tcp  <port|host:port> [--port N] [--reserved]
+  mishmesh-agent udp  <port|host:port> [--port N] [--reserved]
   mishmesh-agent tls  <port|host:port> --subdomain x | --domain d
   mishmesh-agent service install|uninstall|start|stop|status [--config path] [--user u] [--dry-run]
   mishmesh-agent version

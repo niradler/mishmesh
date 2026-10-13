@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -202,7 +203,7 @@ func TestParseConfigValidation(t *testing.T) {
 		{name: "bad gateway scheme", yaml: "gateway: ftp://x\ntunnels:\n  a: {proto: tcp, addr: 1}", want: []string{"unsupported scheme"}},
 		{name: "unknown root field", yaml: "gatway: ws://x\ntunnels:\n  a: {proto: tcp, addr: 1}", want: []string{`unknown field "gatway"`}},
 		{name: "unknown tunnel field", yaml: "tunnels:\n  a: {proto: tcp, addr: 1, prot: 2}", want: []string{`unknown field "prot" in tunnel "a"`}},
-		{name: "bad proto", yaml: "tunnels:\n  a: {proto: udp, addr: 1}", want: []string{`proto must be one of http, tcp, tls, got "udp"`}},
+		{name: "bad proto", yaml: "tunnels:\n  a: {proto: sctp, addr: 1}", want: []string{`proto must be one of http, tcp, tls, udp, got "sctp"`}},
 		{name: "missing addr", yaml: "tunnels:\n  a: {proto: http}", want: []string{"addr is required"}},
 		{name: "bad tunnel name", yaml: "tunnels:\n  \"bad name\": {proto: tcp, addr: 1}", want: []string{`tunnel name "bad name" is invalid`}},
 		{name: "duplicate tunnel", yaml: "tunnels:\n  a: {proto: tcp, addr: 1}\n  a: {proto: tcp, addr: 2}", want: []string{`tunnel "a" is defined twice`}},
@@ -218,7 +219,7 @@ func TestParseConfigValidation(t *testing.T) {
 		{name: "port not a number", yaml: "tunnels:\n  a: {proto: tcp, addr: 1, port: abc}", want: []string{`tunnel "a"`}},
 		{
 			name: "several problems reported together",
-			yaml: "tunnels:\n  a: {proto: udp, addr: 1}\n  b: {proto: http}",
+			yaml: "tunnels:\n  a: {proto: sctp, addr: 1}\n  b: {proto: http}",
 			want: []string{"proto must be one of", "addr is required"},
 		},
 	}
@@ -241,8 +242,77 @@ func TestParseConfigValidation(t *testing.T) {
 	}
 }
 
+func TestParseConfigConnectsAndPrivate(t *testing.T) {
+	src := `
+tunnels:
+  office-vpn: {proto: udp, addr: 51820, private: true, policy: {connect: {allow_agents: [laptop]}}}
+  dns: {proto: udp, addr: 53, port: 10200}
+connects:
+  vpn: {endpoint: office-vpn, proto: udp, listen: 51820, idle_timeout: 2m}
+  pg: {proto: tcp, listen: "0.0.0.0:5432"}
+`
+	cfg, err := ParseConfig("t.yml", []byte(src), mapLookup(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs, err := cfg.Specs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vpn, dns := specs[0], specs[1]
+	if vpn.Kind != store.KindUDP || !vpn.Private || vpn.Port != 0 || vpn.LocalTarget != "127.0.0.1:51820" {
+		t.Fatalf("office-vpn = %+v", vpn)
+	}
+	if !strings.Contains(string(vpn.Policy), `"allow_agents":["laptop"]`) {
+		t.Fatalf("office-vpn policy = %s", vpn.Policy)
+	}
+	if dns.Kind != store.KindUDP || dns.Private || dns.Port != 10200 {
+		t.Fatalf("dns = %+v", dns)
+	}
+	want := []ConnectSpec{
+		{Name: "vpn", Endpoint: "office-vpn", Kind: store.KindUDP, Listen: "127.0.0.1:51820", Idle: 2 * time.Minute},
+		{Name: "pg", Endpoint: "pg", Kind: store.KindTCP, Listen: "0.0.0.0:5432"},
+	}
+	if len(cfg.Connects) != len(want) {
+		t.Fatalf("connects = %+v", cfg.Connects)
+	}
+	for i := range want {
+		if cfg.Connects[i] != want[i] {
+			t.Errorf("connect %d = %+v, want %+v", i, cfg.Connects[i], want[i])
+		}
+	}
+}
+
+func TestParseConfigConnectsValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "connects as list", yaml: "connects: [a]", want: "connects must be a mapping"},
+		{name: "bad proto", yaml: "connects:\n  a: {proto: http, listen: 1}", want: `proto must be tcp or udp, got "http"`},
+		{name: "missing listen", yaml: "connects:\n  a: {proto: udp}", want: "listen is required"},
+		{name: "bad listen", yaml: "connects:\n  a: {proto: udp, listen: nope}", want: `listen "nope" must be a port or host:port`},
+		{name: "duplicate listen", yaml: "connects:\n  a: {proto: udp, listen: 9}\n  b: {proto: udp, listen: 127.0.0.1:9}", want: `already used by connect "a"`},
+		{name: "idle on tcp", yaml: "connects:\n  a: {proto: tcp, listen: 9, idle_timeout: 5s}", want: "idle_timeout only applies to udp"},
+		{name: "bad idle", yaml: "connects:\n  a: {proto: udp, listen: 9, idle_timeout: soon}", want: "must be a positive duration"},
+		{name: "unknown key", yaml: "connects:\n  a: {proto: udp, listen: 9, target: x}", want: `unknown field "target"`},
+		{name: "duplicate name", yaml: "connects:\n  a: {proto: udp, listen: 9}\n  a: {proto: udp, listen: 10}", want: `connect "a" is defined twice`},
+		{name: "private http", yaml: "tunnels:\n  a: {proto: http, addr: 1, private: true}", want: "private only applies to tcp and udp"},
+		{name: "private with port", yaml: "tunnels:\n  a: {proto: udp, addr: 1, private: true, port: 10200}", want: "private tunnels have no public port"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseConfig("t.yml", []byte(tt.yaml), mapLookup(nil))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseConfigErrorsCarryLineNumbers(t *testing.T) {
-	_, err := ParseConfig("t.yml", []byte("gateway: ws://x:1\ntunnels:\n  a:\n    proto: udp\n    addr: 1\n"), mapLookup(nil))
+	_, err := ParseConfig("t.yml", []byte("gateway: ws://x:1\ntunnels:\n  a:\n    proto: sctp\n    addr: 1\n"), mapLookup(nil))
 	if err == nil || !strings.Contains(err.Error(), "line 3:") {
 		t.Fatalf("err = %v, want line 3", err)
 	}

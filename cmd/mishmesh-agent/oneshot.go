@@ -18,7 +18,7 @@ func oneShotCmd(kind string, args []string) error {
 	token := fs.String("token", cfg.Token, "agent authtoken")
 	subdomain := fs.String("subdomain", "", "request a specific subdomain (http/tls; implies reserved)")
 	domain := fs.String("domain", "", "pre-registered custom domain (http/tls)")
-	port := fs.Int("port", 0, "request a specific public port (tcp only; implies reserved)")
+	port := fs.Int("port", 0, "request a specific public port (tcp/udp only; implies reserved)")
 	reserved := fs.Bool("reserved", false, "reserved (stable) endpoint instead of ephemeral")
 	targetHTTPS := fs.Bool("target-https", false, "local target speaks TLS (dial it over https)")
 	insecure := fs.Bool("insecure", false, "skip TLS verification of the local target (self-signed)")

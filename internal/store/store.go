@@ -25,6 +25,7 @@ const (
 	KindHTTP = "http"
 	KindTCP  = "tcp"
 	KindTLS  = "tls"
+	KindUDP  = "udp"
 
 	LifecycleEphemeral = "ephemeral"
 	LifecycleReserved  = "reserved"
@@ -103,6 +104,30 @@ type EndpointPolicy struct {
 	OriginTLS             *OriginTLS        `json:"origin_tls,omitempty"`
 	ServiceID             string            `json:"service_id,omitempty"`
 	PublicAccess          string            `json:"public_access,omitempty"`
+	Connect               *ConnectPolicy    `json:"connect,omitempty"`
+}
+
+const ConnectAnyAgent = "*"
+
+type ConnectPolicy struct {
+	Name        string   `json:"name,omitempty"`
+	AllowAgents []string `json:"allow_agents,omitempty"`
+}
+
+func (p *ConnectPolicy) Allows(agent *Agent) bool {
+	if p == nil || agent == nil {
+		return false
+	}
+	for _, allowed := range p.AllowAgents {
+		if allowed == ConnectAnyAgent || allowed == agent.ID || (agent.Name != "" && allowed == agent.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func PortKind(kind string) bool {
+	return kind == KindTCP || kind == KindUDP
 }
 
 const (
@@ -380,4 +405,25 @@ type ConnectionStore interface {
 
 	AddUsage(orgID string, bytes int64)
 	Usage(orgID string) int64
+}
+
+func FindConnectEndpoint(ctx context.Context, ds DataStore, orgID, ref string) (*Endpoint, error) {
+	if ep, err := ds.GetEndpoint(ctx, ref); err == nil {
+		if ep.OrgID != orgID {
+			return nil, ErrNotFound
+		}
+		return ep, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	eps, err := ds.ListEndpointsByOrg(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	for _, ep := range eps {
+		if ep.Policy != nil && ep.Policy.Connect != nil && ep.Policy.Connect.Name == ref {
+			return ep, nil
+		}
+	}
+	return nil, ErrNotFound
 }

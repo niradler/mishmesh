@@ -19,6 +19,10 @@ type PortOpener interface {
 	Close(endpointID string)
 }
 
+type ConnectHandler interface {
+	HandleConnect(ctx context.Context, agent *store.Agent, stream net.Conn, init tunnel.StreamInit)
+}
+
 type Metrics interface {
 	AgentConnected()
 	AgentDisconnected()
@@ -36,6 +40,8 @@ type Options struct {
 	DisablePathRouting bool
 	TLSPublicPort      int
 	Ports              PortOpener
+	UDPPorts           PortOpener
+	Connect            ConnectHandler
 	Metrics            Metrics
 
 	KindUnavailable map[string]string
@@ -50,6 +56,8 @@ type Gateway struct {
 	disablePathRouting bool
 	tlsPublicPort      int
 	ports              PortOpener
+	udpPorts           PortOpener
+	connect            ConnectHandler
 	metrics            Metrics
 	unavailable        map[string]string
 }
@@ -68,6 +76,8 @@ func New(opts Options) *Gateway {
 		disablePathRouting: opts.DisablePathRouting,
 		tlsPublicPort:      opts.TLSPublicPort,
 		ports:              opts.Ports,
+		udpPorts:           opts.UDPPorts,
+		connect:            opts.Connect,
 		metrics:            opts.Metrics,
 		unavailable:        opts.KindUnavailable,
 	}
@@ -155,6 +165,7 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 	if err != nil {
 		return
 	}
+	go g.acceptConnects(ctx, agent, ac)
 	for {
 		msg, err := ctrl.Recv()
 		if err != nil {
@@ -185,12 +196,32 @@ func (g *Gateway) cleanupEphemeral(ctx context.Context, agentID string) {
 		if g.agentHasLiveSession(agentID) {
 			return
 		}
-		if ep.Kind == store.KindTCP && g.ports != nil {
-			g.ports.Close(ep.ID)
+		if ports := g.portsFor(ep.Kind); store.PortKind(ep.Kind) && ep.Port > 0 && ports != nil {
+			ports.Close(ep.ID)
 		}
 		if ep.Lifecycle == store.LifecycleEphemeral {
 			_ = g.data.DeleteEndpoint(ctx, ep.ID)
 		}
+	}
+}
+
+func (g *Gateway) acceptConnects(ctx context.Context, agent *store.Agent, ac *agentConn) {
+	for {
+		stream, init, err := ac.sess.AcceptData()
+		if err != nil {
+			select {
+			case <-ac.sess.CloseChan():
+				return
+			default:
+				continue
+			}
+		}
+		if g.connect == nil || init.Meta[tunnel.MetaConnect] == "" {
+			g.log.Warn("rejecting agent-opened stream", "agent_id", agent.ID, "kind", init.Kind, "connect_enabled", g.connect != nil)
+			_ = stream.Close()
+			continue
+		}
+		go g.connect.HandleConnect(ctx, agent, stream, init)
 	}
 }
 

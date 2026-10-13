@@ -34,7 +34,7 @@ One Go module builds two binaries: `mishmesh-server` (gateway, public ingress, c
 
 Use mishmesh when tunnels are part of your product or platform: many customer sites, many tenants, or a control plane that must call into networks it cannot route to. If you only need to show one laptop service to a colleague, a hosted tunnel is less work.
 
-Not supported: UDP, peer-to-peer or WireGuard data paths, multi-region routing. mishmesh is in beta (see [Beta limitations](#beta-limitations)).
+Not supported: peer-to-peer or WireGuard data paths, multi-region routing. UDP is carried over the agent tunnel (see [UDP and agent-to-agent connects](#udp-and-agent-to-agent-connects)). mishmesh is in beta (see [Beta limitations](#beta-limitations)).
 
 ## Install
 
@@ -207,11 +207,12 @@ mishmesh-agent http 3000 --subdomain demo                 # http://demo.<base do
 mishmesh-agent http https://10.0.0.5:8443 --insecure      # local target speaks TLS (self-signed)
 mishmesh-agent tcp 5432 --port 10050                      # public TCP port 10050
 mishmesh-agent tcp 22                                     # random port from the server's range
+mishmesh-agent udp 51820                                  # public UDP port (server needs MISHMESH_UDP_ENABLED=true)
 mishmesh-agent tls 8443 --subdomain api                   # SNI passthrough, TLS ends at your service
 mishmesh-agent tls 8443 --domain api.example.com
 ```
 
-The target is a port (meaning `127.0.0.1:<port>`) or `host:port`. Flags: `--subdomain`, `--domain`, `--port` (tcp), `--reserved` (keep the endpoint after disconnect; implied by `--subdomain`, `--domain` and `--port`), `--target-https`, `--insecure`. Without `--reserved` the endpoint is ephemeral and is removed when the agent disconnects.
+The target is a port (meaning `127.0.0.1:<port>`) or `host:port`. Flags: `--subdomain`, `--domain`, `--port` (tcp, udp), `--reserved` (keep the endpoint after disconnect; implied by `--subdomain`, `--domain` and `--port`), `--target-https`, `--insecure`. Without `--reserved` the endpoint is ephemeral and is removed when the agent disconnects.
 
 ### Config file (many tunnels, one session)
 
@@ -241,11 +242,40 @@ tunnels:
     domain: api.example.com
 ```
 
-Tunnel keys: `proto` (`http`, `tcp`, `tls`), `addr`, `subdomain`, `domain`, `port`, `reserved`, `target_https`, `insecure`, `policy` (the [endpoint policy](#endpoint-policy) object). `${VAR}` and `${VAR:-default}` are expanded. Unknown keys and invalid tunnels are reported with line numbers. To check a file without connecting, run `mishmesh-agent validate --config path`.
+Tunnel keys: `proto` (`http`, `tcp`, `tls`, `udp`), `addr`, `subdomain`, `domain`, `port`, `reserved`, `private`, `target_https`, `insecure`, `policy` (the [endpoint policy](#endpoint-policy) object). `${VAR}` and `${VAR:-default}` are expanded. Unknown keys and invalid tunnels are reported with line numbers. To check a file without connecting, run `mishmesh-agent validate --config path`.
 
 `tunnels:` is optional. A config with `gateway`, `token` and `allow` only starts a reach-in-only agent.
 
 On connect the agent prints each tunnel's public URL and endpoint id. If the gateway refuses a tunnel (subdomain taken, quota exceeded, port in use, kind disabled on the server), the agent prints the reason and exits non-zero. A rejected token exits immediately with `token invalid or revoked` (401) or `agent disabled` (403). Any other connection failure is retried with jittered exponential backoff.
+
+### UDP and agent-to-agent connects
+
+A `udp` tunnel gets a public UDP port, just like `tcp`. Each client address becomes its own flow inside the tunnel, and a flow closes after `MISHMESH_UDP_IDLE_TIMEOUT` with no traffic.
+
+A tunnel marked `private: true` (tcp or udp) gets no public port. Other agents in the same org reach it through a `connects:` entry, which opens a local listener and carries traffic over the gateway to the origin agent. The origin decides who may connect through `policy.connect.allow_agents`: agent names, agent ids, or `"*"` for any agent in the org. An empty list denies everyone. The connect name defaults to the tunnel name.
+
+```yaml
+# office agent: hosts the VPN, nothing public
+tunnels:
+  office-vpn:
+    proto: udp
+    addr: 51820
+    private: true
+    policy:
+      connect: {allow_agents: [laptop]}
+
+# laptop agent: VPN clients point at 127.0.0.1:51820
+connects:
+  vpn:
+    endpoint: office-vpn
+    proto: udp
+    listen: 51820
+    idle_timeout: 2m
+```
+
+Connect keys: `endpoint` (connect name or endpoint id; defaults to the connect's own name), `proto` (`tcp`, `udp`), `listen` (a port, meaning `127.0.0.1:<port>`, or `host:port`), `idle_timeout` (udp only).
+
+When the service sits on the server's own network, skip the origin agent: create a `method=proxy` endpoint with `kind: udp`, `proxy_targets: ["udp://host:port"]` and a `connect` policy, and point a connect at it. The proxy guard settings (`PROXY_ALLOW_PRIVATE`, `PROXY_ALLOWED_CIDRS`) still apply.
 
 ### Run as a service
 
@@ -420,6 +450,9 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `WEBUI_ENABLED` / `WEBUI_DIR` | `false` / empty | serve the SPA (the image bundles it at `/webui`) |
 | `INGRESS_ENABLED` | `true` | public ingress (all kinds) |
 | `TCP_ENABLED` / `TCP_BIND_HOST` / `TCP_PORT_MIN` / `TCP_PORT_MAX` | `true` / `127.0.0.1` / `10000` / `10100` | public TCP ports |
+| `UDP_ENABLED` / `UDP_BIND_HOST` / `UDP_PORT_MIN` / `UDP_PORT_MAX` | `false` / `127.0.0.1` / `10200` / `10300` | public UDP ports (single pod only; off in cluster mode) |
+| `UDP_IDLE_TIMEOUT` / `UDP_MAX_FLOWS` | `60s` / `1024` | UDP flow idle timeout and concurrent flows per public port |
+| `CONNECT_ENABLED` | `true` | agent-to-agent connects to private endpoints |
 | `TLS_ENABLED`, `TLS_CERT_FILE` / `TLS_KEY_FILE`, `ACME_ENABLED` / `ACME_EMAIL` / `ACME_CACHE_DIR`, `SELF_SIGNED_TLS` | | HTTPS ingress |
 | `TLS_PASSTHROUGH_ENABLED` / `TLS_PASSTHROUGH_ADDR` | `false` / `127.0.0.1:8444` | SNI passthrough for `tls` endpoints |
 | `SSH_ENABLED` / `SSH_ADDR` / `SSH_HOST_KEY_FILE` | `false` / `127.0.0.1:2222` | clientless `ssh -R` entry point |
@@ -458,7 +491,8 @@ Restrict portal access to operators until the first owner has registered. In inv
 
 - HTTP reach-in buffers the response (8 MB cap). Use the stream route for large or long transfers.
 - ACME runs on a single pod only. Clusters use a wildcard certificate Secret.
-- TCP and TLS-passthrough endpoints have no rate limiting and no in-flight bandwidth metering. HTTP has both.
+- TCP, UDP and TLS-passthrough endpoints have no rate limiting and no in-flight bandwidth metering. HTTP has both.
+- Public UDP ports run on a single pod; cluster mode turns UDP ingress off. Agent-to-agent connects between agents on different pods go through the pod-to-pod relay, which is not yet covered by tests.
 - Custom domains are verified once and not re-verified periodically.
 - Quota usage is shared across pods within a couple of seconds, so a burst can briefly overshoot a bandwidth quota in cluster mode.
 - The pod-to-pod relay is authenticated but not encrypted, so keep it on a private network (see [Security model](#security-model)).
@@ -470,7 +504,7 @@ Restrict portal access to operators until the first owner has registered. In inv
 
 Version 0.1.0-beta.3. Built and tested:
 
-- HTTP/HTTPS (subdomain, path, custom domain), WebSocket/SSE streaming, public TCP ports, TLS passthrough, clientless SSH, agentless proxy endpoints
+- HTTP/HTTPS (subdomain, path, custom domain), WebSocket/SSE streaming, public TCP and UDP ports, agent-to-agent TCP/UDP connects, TLS passthrough, clientless SSH, agentless proxy endpoints
 - Native gRPC unary and bidirectional streaming through HTTP/2 ingress or an HTTP/1.1 reverse-proxy hop, with h2c or HTTPS upstreams; configurable long-poll response-header timeout
 - HTTPS with your own certificate, ACME, or self-signed; custom-domain ownership verification
 - endpoint policy, including OIDC, mTLS and rate limits
@@ -481,7 +515,7 @@ Version 0.1.0-beta.3. Built and tested:
 
 Known gaps are listed in [Beta limitations](#beta-limitations).
 
-Next: request inspector, webhook verification, endpoint pooling, HTTP reach-in streaming. Not planned for now: UDP, P2P or WireGuard data paths, SAML, multi-region, a Kubernetes operator, billing.
+Next: request inspector, webhook verification, endpoint pooling, HTTP reach-in streaming. Not planned for now: P2P or WireGuard data paths, SAML, multi-region, a Kubernetes operator, billing.
 
 ## Development
 

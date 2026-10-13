@@ -146,8 +146,8 @@ func TestRegisterReasons(t *testing.T) {
 		},
 		{
 			name:      "unknown kind",
-			req:       tunnel.EndpointRequest{Ref: "0", Kind: "udp"},
-			wantError: `unsupported endpoint kind "udp"`,
+			req:       tunnel.EndpointRequest{Ref: "0", Kind: "sctp"},
+			wantError: `unsupported endpoint kind "sctp"`,
 		},
 	}
 	for _, tt := range tests {

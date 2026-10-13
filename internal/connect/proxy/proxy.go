@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
 const (
@@ -90,7 +91,15 @@ func (c *Connector) orderTargets(endpointID string, pol *store.EndpointPolicy) [
 	return append(preferred, fallback...)
 }
 
-func (c *Connector) OpenStream(ctx context.Context, endpointID, _ string, _ map[string]string) (net.Conn, error) {
+func targetMatchesKind(target, kind string) bool {
+	t, err := ParseTarget(target)
+	if err != nil {
+		return false
+	}
+	return t.Datagram() == (kind == store.KindUDP)
+}
+
+func (c *Connector) OpenStream(ctx context.Context, endpointID, kind string, meta map[string]string) (net.Conn, error) {
 	ep, err := c.data.GetEndpoint(ctx, endpointID)
 	if err != nil {
 		return nil, err
@@ -100,8 +109,15 @@ func (c *Connector) OpenStream(ctx context.Context, endpointID, _ string, _ map[
 	}
 	var lastErr error
 	for _, target := range c.orderTargets(endpointID, ep.Policy) {
+		if !targetMatchesKind(target, kind) {
+			lastErr = fmt.Errorf("target %s does not carry %s traffic", target, kind)
+			continue
+		}
 		conn, err := c.guard.Dial(ctx, target, ep.Policy.OriginTLS, dialTimeout)
 		if err == nil {
+			if kind == store.KindUDP {
+				return datagramStream(conn, meta), nil
+			}
 			return conn, nil
 		}
 		lastErr = err
@@ -110,6 +126,12 @@ func (c *Connector) OpenStream(ctx context.Context, endpointID, _ string, _ map[
 		}
 	}
 	return nil, fmt.Errorf("proxy: endpoint %s: all targets failed: %w", endpointID, lastErr)
+}
+
+func datagramStream(socket net.Conn, meta map[string]string) net.Conn {
+	near, far := net.Pipe()
+	go tunnel.RelayDatagrams(far, socket, tunnel.DatagramIdleFromMeta(meta))
+	return near
 }
 
 func (c *Connector) Close() error { return nil }

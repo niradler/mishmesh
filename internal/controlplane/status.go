@@ -39,7 +39,7 @@ func (a *API) statusHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	eps, _ := a.data.ListEndpointsByOrg(r.Context(), orgID)
-	byKind := map[string]int{store.KindHTTP: 0, store.KindTCP: 0, store.KindTLS: 0}
+	byKind := map[string]int{store.KindHTTP: 0, store.KindTCP: 0, store.KindTLS: 0, store.KindUDP: 0}
 	online := 0
 	for _, ep := range eps {
 		byKind[ep.Kind]++
