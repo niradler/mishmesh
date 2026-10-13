@@ -207,7 +207,7 @@ mishmesh-agent http 3000 --subdomain demo                 # http://demo.<base do
 mishmesh-agent http https://10.0.0.5:8443 --insecure      # local target speaks TLS (self-signed)
 mishmesh-agent tcp 5432 --port 10050                      # public TCP port 10050
 mishmesh-agent tcp 22                                     # random port from the server's range
-mishmesh-agent udp 51820                                  # public UDP port (server needs MISHMESH_UDP_ENABLED=true)
+mishmesh-agent udp 51820                                  # public UDP port
 mishmesh-agent tls 8443 --subdomain api                   # SNI passthrough, TLS ends at your service
 mishmesh-agent tls 8443 --domain api.example.com
 ```
@@ -450,9 +450,8 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `WEBUI_ENABLED` / `WEBUI_DIR` | `false` / empty | serve the SPA (the image bundles it at `/webui`) |
 | `INGRESS_ENABLED` | `true` | public ingress (all kinds) |
 | `TCP_ENABLED` / `TCP_BIND_HOST` / `TCP_PORT_MIN` / `TCP_PORT_MAX` | `true` / `127.0.0.1` / `10000` / `10100` | public TCP ports |
-| `UDP_ENABLED` / `UDP_BIND_HOST` / `UDP_PORT_MIN` / `UDP_PORT_MAX` | `false` / `127.0.0.1` / `10200` / `10300` | public UDP ports (single pod only; off in cluster mode) |
+| `UDP_BIND_HOST` / `UDP_PORT_MIN` / `UDP_PORT_MAX` | `127.0.0.1` / `10200` / `10300` | public UDP ports (single pod only; off in cluster mode) |
 | `UDP_IDLE_TIMEOUT` / `UDP_MAX_FLOWS` | `60s` / `1024` | UDP flow idle timeout and concurrent flows per public port |
-| `CONNECT_ENABLED` | `true` | agent-to-agent connects to private endpoints |
 | `TLS_ENABLED`, `TLS_CERT_FILE` / `TLS_KEY_FILE`, `ACME_ENABLED` / `ACME_EMAIL` / `ACME_CACHE_DIR`, `SELF_SIGNED_TLS` | | HTTPS ingress |
 | `TLS_PASSTHROUGH_ENABLED` / `TLS_PASSTHROUGH_ADDR` | `false` / `127.0.0.1:8444` | SNI passthrough for `tls` endpoints |
 | `SSH_ENABLED` / `SSH_ADDR` / `SSH_HOST_KEY_FILE` | `false` / `127.0.0.1:2222` | clientless `ssh -R` entry point |

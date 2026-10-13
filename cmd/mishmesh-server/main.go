@@ -154,7 +154,7 @@ func serve() error {
 	}
 
 	var udpIngress *ingress.UDP
-	if cfg.IngressEnabled && cfg.UDPEnabled {
+	if cfg.IngressEnabled {
 		if clusterRT != nil {
 			log.Warn("udp ingress is not supported in cluster mode yet; public udp ports are disabled")
 		} else {
@@ -190,9 +190,7 @@ func serve() error {
 	if udpIngress != nil {
 		gwOpts.UDPPorts = udpIngress
 	}
-	if cfg.ConnectEnabled {
-		gwOpts.Connect = bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Meter: mx})
-	}
+	gwOpts.Connect = bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Meter: mx})
 	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)
 	gw := gateway.New(gwOpts)
 	if swept, err := gw.SweepOrphanedEphemeral(context.Background()); err != nil {
@@ -591,7 +589,7 @@ func unavailableKinds(cfg config.Server, tcpActive, udpActive bool) map[string]s
 		out[store.KindTCP] = "tcp ingress is disabled on this server (MISHMESH_TCP_ENABLED=false)"
 	}
 	if !udpActive {
-		out[store.KindUDP] = "udp ingress is disabled on this server (MISHMESH_UDP_ENABLED=false or cluster mode)"
+		out[store.KindUDP] = "udp ingress is disabled on this server (cluster mode)"
 	}
 	return out
 }
