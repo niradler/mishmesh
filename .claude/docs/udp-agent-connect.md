@@ -9,7 +9,7 @@ Implemented and green under `make check` (race). The e2e tests passed 5 times in
 
 ### Flow 1: VPN → agent → public UDP port
 - `internal/tunnel/datagram.go`: uint16 length-prefixed framing, `RelayDatagrams`, `DatagramListener` (a flow per client address, idle timeout, max flows), idle passed in `Meta["idle_timeout"]`
-- `internal/ingress/udp.go`: public UDP port range, gated by `MISHMESH_UDP_ENABLED` (default off), disabled in cluster mode
+- `internal/ingress/udp.go`: public UDP port range, disabled in cluster mode
 - gateway `registerPort` handles tcp and udp; `portsFor(kind)`
 - agent `relayUDP` for `KindUDP` streams; CLI `mishmesh-agent udp <port>`
 
@@ -19,7 +19,6 @@ Implemented and green under `make check` (race). The e2e tests passed 5 times in
 - Agent `connects:` in the config opens local listeners; each stream carries `Meta["connect"]`
 - Gateway `acceptConnects` loop → `internal/connect/bridge` checks org, kind and allow list, then calls origin `OpenStream` and splices
 - Direct origin: a `method=proxy` endpoint with `udp://` targets plus a connect policy (proxy connector relays datagrams)
-- Gated by `MISHMESH_CONNECT_ENABLED` (default on)
 
 ### Tests
 - `internal/e2e/udp_connect_test.go`: public UDP port (4 concurrent clients), connect UDP, connect TCP, denied cases (not on list, other org, no policy, unknown), direct proxy origin
