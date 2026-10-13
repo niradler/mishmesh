@@ -29,3 +29,6 @@
 /dist-web/
 /dist-charts/
 __pycache__/
+
+# Private, machine-local notes and scripts
+/.claude/local/

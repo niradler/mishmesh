@@ -173,7 +173,7 @@ Dashboard · Network · Endpoints · Services · Cloudflare · Agents · Members
 The header is the request path, one card per stage. Each card shows its state, links to its resource, and holds its own actions:
 
 ```
-[Cloudflare lab] → [portainer.niradler.com] → [Endpoint] → [Targets] → [Service portainer]
+[Cloudflare lab] → [portainer.example.com] → [Endpoint] → [Targets] → [Service portainer]
 ```
 
 - An empty stage is a slot with an action: **Turn on public access** or **Wake a service**. Wake a service lets you pick a service or create one in a dialog, which links it on save.

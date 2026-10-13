@@ -110,7 +110,7 @@ python3 .claude/scripts/import-services.py <services.yml> [api] [--dry-run]
 ```
 
 - `api` is the server base URL (default `http://127.0.0.1:8091`). When `MISHMESH_API_AUTH_TOKEN` is set, the script sends it as `Authorization: Bearer <token>`. Without it, run against a server with `MISHMESH_API_AUTH_DISABLED=true`. Services land in the org the credential resolves to.
-- It only imports services. It creates or updates them by name (`POST /services`, `PUT /services/{id}`) and is safe to re-run. It does not touch endpoints; link them with `.claude/scripts/lab-endpoints.py`, which sets `policy.service_id` by service name.
+- It only imports services. It creates or updates them by name (`POST /services`, `PUT /services/{id}`) and is safe to re-run. It does not touch endpoints; link them by setting `policy.service_id` on each endpoint.
 - `exec.env` values are printed as `<redacted>`. `ready.tcp` becomes `spec.ready_tcp`, and durations such as `90s`, `30m` or `2h` become seconds, with `defaults` applied.
 - The file's `orgs` and `docker.host` keys are ignored. Set `MISHMESH_DOCKER_HOST` instead.
 - It requires PyYAML.

@@ -115,7 +115,7 @@ def import_services(base, want, dry_run):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Import a legacy MISHMESH_SERVICES_FILE into the services API (idempotent by name). Link endpoints with lab-endpoints.py. Set MISHMESH_API_AUTH_TOKEN when the API requires auth.")
+    parser = argparse.ArgumentParser(description="Import a legacy MISHMESH_SERVICES_FILE into the services API (idempotent by name). Link endpoints by setting policy.service_id. Set MISHMESH_API_AUTH_TOKEN when the API requires auth.")
     parser.add_argument("file", help="path to the legacy services.yml")
     parser.add_argument("api", nargs="?", default="http://127.0.0.1:8091")
     parser.add_argument("--dry-run", action="store_true")
