@@ -6,7 +6,7 @@
 
 ## 1. Problem
 
-On the reference homelab (`lab-z170mx`) traffic is:
+On the reference homelab traffic is:
 
 ```
 browser → Cloudflare Access → tunnel "lab" → cloudflared (user systemd)
@@ -213,7 +213,7 @@ Validation:
 ## 11. Testing
 
 - **Unit:** guard plus multi-target selection, the TLS verify modes against an `httptest` TLS server (good chain, pin match and mismatch, CA, insecure), docker driver against a fake Engine API over a unix socket or `httptest`, the exec driver, manager wake collapsing and idle stop with a fake clock, Cloudflare reconcile against a fake API (rule ownership and order, conflict, prune off and on, no-op PUT skipped), and the ingress waking page and hold path.
-- **Live on `lab-z170mx`:** deploy the branch build, point the 12 endpoints at services and the front door, then:
+- **Live on the lab:** deploy the branch build, point the 12 endpoints at services and the front door, then:
   - stop portainer and see `down`
   - set a 1m idle on syncthing, watch it go to `sleeping`, open the URL, and see the waking page, then the app
   - see per-target health on a two-target endpoint with one target dead

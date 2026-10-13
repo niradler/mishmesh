@@ -103,10 +103,10 @@ type AccessRef struct {
 ```
 
 - Cloudflare: `hostname` defaults to the endpoint domain.
-- Tailscale: `hostname` defaults to the endpoint's first domain label (`notes.niradler.com` → `svc:notes` → `notes.<tailnet>.ts.net`).
+- Tailscale: `hostname` defaults to the endpoint's first domain label (`notes.example.com` → `svc:notes` → `notes.<tailnet>.ts.net`).
 - An endpoint can have several refs (public through Cloudflare and tailnet through Tailscale at once).
 - Validation: the connection exists in the org, has role `access`, and the hostname is unique per connection. The "connection required only when newly turned on" rule from the previous spec applies per ref.
-- Ingress learns access hostnames as aliases of the endpoint, so a request with `Host: notes.<tailnet>.ts.net` routes to the same endpoint as `notes.niradler.com`.
+- Ingress learns access hostnames as aliases of the endpoint, so a request with `Host: notes.<tailnet>.ts.net` routes to the same endpoint as `notes.example.com`.
 - `gateway.dropControlPlaneFields` strips `access` like it stripped `public_access`.
 - The migration rewrites `public_access: "cloudflare"` to an `access` ref to the migrated Cloudflare connection.
 
@@ -221,7 +221,7 @@ For Kubernetes the endpoint's proxy target must be reachable from mishmesh (clus
 - **Sidebar:** Dashboard · Network · Endpoints · Services · Connections · Agents · Members · Audit · Settings. "Cloudflare" is removed.
 - **Connections page:** table (name, type badge, role, level, health, served hostnames). "Add connection" opens a type picker (cards from descriptors), then a form rendered from fields, with Detect where the type supports it.
 - **Connection detail:** generic header (type, level, health, last sync, Sync now), the hostnames table (today's `HostnamesTable`, generalised), then a type panel. Cloudflare keeps its management section as its type panel; Tailscale and Kubernetes get small panels for node or cluster facts.
-- **Endpoint detail, Access section:** one row per access ref ("Public access · Cloudflare lab · niradler.com hostname", "Tailnet access · Tailscale home · notes.tail1234.ts.net") with add/remove; adding picks from access connections.
+- **Endpoint detail, Access section:** one row per access ref ("Public access · Cloudflare lab · example.com hostname", "Tailnet access · Tailscale home · notes.tail1234.ts.net") with add/remove; adding picks from access connections.
 - **Add service:** driver picker, then the form from fields; generic sections below (Readiness, Requires, Idle timeout, Start timeout).
 - **Service detail:** generic header, a "Driver: Compose" card rendered from fields, a Requires card (requires and required-by, both linked), linked endpoints.
 - **Map:** connection nodes per connection (linked to their pages), `requires` edges.
