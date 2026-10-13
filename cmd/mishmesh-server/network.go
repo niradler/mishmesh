@@ -67,6 +67,9 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 		CloudflaredBin: cfg.CloudflaredBin,
 	})
 	connectionRegistry := connections.NewRegistry()
+	if err := connectionRegistry.Register(cloudflare.NewProvider(cloudflare.ProviderOptions{CloudflaredBin: cfg.CloudflaredBin})); err != nil {
+		return nil, fmt.Errorf("register cloudflare connection provider: %w", err)
+	}
 	nc.connectionHub = connections.NewHub(connections.HubOptions{
 		Registry: connectionRegistry,
 		Deps:     connections.Deps{Data: data, Box: nc.box, Log: log, Origin: cloudflare.OriginForListenAddr(cfg.IngressAddr), HostCommands: cfg.HostCommands},

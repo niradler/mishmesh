@@ -213,6 +213,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
 		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS method TEXT`,
 		`ALTER TABLE services ADD COLUMN IF NOT EXISTS config TEXT`,
 		`ALTER TABLE services ADD COLUMN IF NOT EXISTS ready TEXT`,
+		`ALTER TABLE connections ADD COLUMN IF NOT EXISTS state TEXT`,
 	} {
 		if _, err := conn.ExecContext(ctx, alter); err != nil {
 			return fmt.Errorf("postgres migrate alter: %w", err)

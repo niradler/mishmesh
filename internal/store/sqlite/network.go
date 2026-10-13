@@ -305,13 +305,16 @@ func scanService(row interface{ Scan(...any) error }) (*store.Service, error) {
 	return &svc, nil
 }
 
-const connectionCols = `id, org_id, type, name, config, secrets_enc, created_at, updated_at`
+const connectionCols = `id, org_id, type, name, config, secrets_enc, created_at, updated_at, state`
 
 func (s *Store) CreateConnection(ctx context.Context, c *store.Connection) error {
 	if !json.Valid(c.Config) {
 		return fmt.Errorf("connection config must be valid JSON")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO connections (`+connectionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, c.ID, c.OrgID, c.Type, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.CreatedAt), ns(c.UpdatedAt))
+	if len(c.State) > 0 && !json.Valid(c.State) {
+		return fmt.Errorf("connection state must be valid JSON")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO connections (`+connectionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, c.ID, c.OrgID, c.Type, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.CreatedAt), ns(c.UpdatedAt), nullableJSON(c.State))
 	return uniqueErr("create connection", err)
 }
 
@@ -389,14 +392,29 @@ func (s *Store) DeleteConnection(ctx context.Context, id string) error {
 	return wrap("delete connection", tx.Commit())
 }
 
+func (s *Store) UpdateConnectionState(ctx context.Context, orgID, connectionID string, state json.RawMessage) error {
+	if len(state) > 0 && !json.Valid(state) {
+		return fmt.Errorf("connection state must be valid JSON")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE connections SET state = ? WHERE org_id = ? AND id = ?`, nullableJSON(state), orgID, connectionID)
+	if err != nil {
+		return wrap("update connection state", err)
+	}
+	return affected("update connection state", result)
+}
+
 func scanConnection(row interface{ Scan(...any) error }) (*store.Connection, error) {
 	var c store.Connection
 	var config string
+	var state sql.NullString
 	var created, updated int64
-	if err := row.Scan(&c.ID, &c.OrgID, &c.Type, &c.Name, &config, &c.SecretsEnc, &created, &updated); err != nil {
+	if err := row.Scan(&c.ID, &c.OrgID, &c.Type, &c.Name, &config, &c.SecretsEnc, &created, &updated, &state); err != nil {
 		return nil, scanErr("scan connection", err)
 	}
 	c.Config = json.RawMessage(config)
+	if state.Valid {
+		c.State = json.RawMessage(state.String)
+	}
 	c.CreatedAt, c.UpdatedAt = fromNS(created), fromNS(updated)
 	return &c, nil
 }

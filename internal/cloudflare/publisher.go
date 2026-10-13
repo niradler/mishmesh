@@ -80,6 +80,8 @@ type Publisher struct {
 	client     *Client
 	local      *LocalReader
 	supervisor *Supervisor
+	ownership  *routeOwnership
+	locks      *providerLocks
 	debounce   time.Duration
 	trigger    chan struct{}
 
@@ -171,12 +173,46 @@ func (p *Publisher) syncLogged(ctx context.Context) {
 func (p *Publisher) Sync(ctx context.Context) (Status, error) {
 	p.syncMu.Lock()
 	defer p.syncMu.Unlock()
+	if p.locks != nil {
+		release, err := p.locks.acquire(ctx, p.cfg)
+		if err != nil {
+			return p.Status(), errors.New("cloudflare sync canceled")
+		}
+		defer release()
+	}
 	var st Status
 	var err error
+	var previousOwnership ownershipState
+	if p.ownership != nil {
+		previousOwnership = p.ownership.snapshot()
+	}
 	if p.client != nil {
 		st, err = p.reconcile(ctx)
 	} else {
 		st, err = p.inspect(ctx)
+	}
+	if p.ownership != nil {
+		if stateErr := p.ownership.save(ctx); stateErr != nil {
+			p.ownership.state = previousOwnership
+			err = errors.Join(err, stateErr)
+			st.LastError = stateErr.Error()
+		}
+	}
+	if p.cfg.ConnectionID != "" {
+		if err != nil {
+			err = errors.New("cloudflare sync failed")
+		}
+		if st.LastError != "" {
+			st.LastError = "cloudflare sync failed"
+		}
+		if st.Connector.Error != "" {
+			st.Connector.Error = "cloudflared observation failed"
+		}
+		for index := range st.Hostnames {
+			if st.Hostnames[index].State == StateError {
+				st.Hostnames[index].Detail = "cloudflare hostname reconciliation failed"
+			}
+		}
 	}
 	p.mu.Lock()
 	p.status = st
@@ -317,6 +353,9 @@ func unclaimedRoutes(routes map[string]string, wanted map[string]bool, private m
 			continue
 		}
 		hs := HostStatus{Host: h, Ingress: true, Service: service, DNS: dns, Access: access, State: StateUnclaimed, Detail: unclaimedOwned}
+		if endpointID, known := private[h]; known {
+			hs.EndpointID = endpointID
+		}
 		switch endpointID, known := private[h]; {
 		case normalizeService(service) != originKey:
 			hs.Detail = "routed to " + service + ", not through mishmesh"
@@ -331,9 +370,10 @@ func unclaimedRoutes(routes map[string]string, wanted map[string]bool, private m
 
 type hostEntry struct {
 	HostStatus
-	orphan   bool
-	conflict bool
-	failed   bool
+	orphan        bool
+	conflict      bool
+	failed        bool
+	accessApplied bool
 }
 
 func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
@@ -373,13 +413,33 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 		wanted[h.Host] = true
 	}
 	routes := ingressRoutes(tcfg.Ingress)
-	plan := planIngress(tcfg.Ingress, p.cfg.Origin, names, private, p.cfg.Prune)
+	protected := private
+	if p.ownership != nil {
+		protected, err = p.ownership.protect(ctx, tcfg.Ingress, private)
+		if err != nil {
+			st.LastError = err.Error()
+			return st, err
+		}
+	}
+	plan := planIngress(tcfg.Ingress, p.cfg.Origin, names, protected, p.cfg.Prune)
+	if p.ownership != nil {
+		p.ownership.includeResiduals(&plan, routes, wanted, protected)
+	}
 	var putErr error
+	observedRules := tcfg.Ingress
 	if plan.changed {
 		tcfg.Ingress = plan.rules
 		putErr = p.client.PutTunnelConfig(ctx, p.cfg.AccountID, p.cfg.TunnelID, tcfg)
 		if putErr != nil {
 			errs = append(errs, putErr)
+		} else if p.ownership != nil {
+			observed, readErr := p.client.GetTunnelConfig(ctx, p.cfg.AccountID, p.cfg.TunnelID)
+			if readErr != nil {
+				errs = append(errs, readErr)
+				observedRules = nil
+			} else {
+				observedRules = observed.Ingress
+			}
 		}
 	}
 
@@ -402,6 +462,9 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 			e.Ingress = true
 			e.Detail = plan.conflicts[h.Host]
 			e.Fix = fmt.Sprintf("Remove the public hostname %s from tunnel %s or point it at %s; mishmesh does not overwrite routes it did not create.", h.Host, p.tunnelLabel(), p.cfg.Origin)
+		}
+		if p.ownership != nil && e.Ingress && !e.conflict && !e.failed {
+			p.ownership.recordIngress(h.Host, observedRules, plan.added[h.Host] && putErr == nil)
 		}
 		entries = append(entries, e)
 	}
@@ -437,8 +500,17 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 		e.State = entryState(e)
 		st.Hostnames = append(st.Hostnames, e.HostStatus)
 		wanted[e.Host] = true
+		if p.ownership != nil && e.orphan && !e.Ingress && !e.failed {
+			owned := p.ownership.state.Routes[e.Host]
+			owned.Ingress = ""
+			p.ownership.state.Routes[e.Host] = owned
+		}
 		if e.State == StateError {
-			p.log.Warn("cloudflare hostname error", "host", e.Host, "dns", e.DNS, "dns_detail", e.DNSDetail, "access", e.Access, "detail", e.Detail)
+			if p.cfg.ConnectionID != "" {
+				p.log.Warn("cloudflare hostname error", "host", e.Host, "dns", e.DNS, "access", e.Access)
+			} else {
+				p.log.Warn("cloudflare hostname error", "host", e.Host, "dns", e.DNS, "dns_detail", e.DNSDetail, "access", e.Access, "detail", e.Detail)
+			}
 		}
 	}
 	st.Hostnames = append(st.Hostnames, unclaimedRoutes(routes, wanted, private, normalizeService(p.cfg.Origin), DNSUnchecked, AccessNA)...)
@@ -543,15 +615,32 @@ func (p *Publisher) reconcileDNS(ctx context.Context, zones *zoneResolver, e *ho
 	pruneThis := e.orphan && p.cfg.Prune && plan.removed[e.Host] && !e.failed
 	switch {
 	case pruneThis && len(ours) > 0:
+		preserved := false
 		for _, r := range ours {
+			if p.ownership != nil && !p.ownership.ownsDNS(e.Host, r) {
+				preserved = true
+				continue
+			}
 			if err := p.client.DeleteDNSRecord(ctx, zone.ID, r.ID); err != nil {
 				e.DNS, e.DNSDetail = DNSError, err.Error()
 				return
 			}
 		}
-		e.DNS, e.DNSDetail = DNSMissing, "deleted by prune"
+		if preserved {
+			e.DNS, e.DNSDetail = DNSOK, "changed DNS record preserved"
+		} else {
+			e.DNS, e.DNSDetail = DNSMissing, "deleted by prune"
+			if p.ownership != nil {
+				owned := p.ownership.state.Routes[e.Host]
+				owned.DNS = nil
+				p.ownership.state.Routes[e.Host] = owned
+			}
+		}
 	case len(ours) > 0:
 		e.DNS = DNSOK
+		if p.ownership != nil && !e.orphan && !e.conflict {
+			p.ownership.recordDNS(e.Host, ours, false)
+		}
 	case len(recs) > 0:
 		e.DNS = DNSConflict
 		e.DNSDetail = fmt.Sprintf("existing %s record %s is not managed by this tunnel", recs[0].Type, recs[0].Content)
@@ -562,11 +651,15 @@ func (p *Publisher) reconcileDNS(ctx context.Context, zones *zoneResolver, e *ho
 		e.DNS = DNSMissing
 	default:
 		rec := DNSRecord{Type: "CNAME", Name: e.Host, Content: p.tunnelTarget(), Proxied: true, Comment: dnsComment}
-		if err := p.client.CreateDNSRecord(ctx, zone.ID, rec); err != nil {
+		created, err := p.client.createDNSRecord(ctx, zone.ID, rec)
+		if err != nil {
 			e.DNS, e.DNSDetail = DNSError, err.Error()
 			return
 		}
 		e.DNS, e.DNSDetail = DNSOK, "created"
+		if p.ownership != nil {
+			p.ownership.recordDNS(e.Host, []DNSRecord{created}, true)
+		}
 	}
 }
 
@@ -585,6 +678,10 @@ func (p *Publisher) reconcileAccess(ctx context.Context, entries []*hostEntry) e
 	for _, e := range entries {
 		switch {
 		case e.orphan && p.cfg.Prune && !e.Ingress && !e.failed:
+			if p.ownership != nil && p.ownership.state.Routes[e.Host].Access != accessFingerprint(app, e.Host) {
+				e.Access = accessLabel(accessHasHost(app, e.Host))
+				continue
+			}
 			if accessRemoveHost(app, e.Host) {
 				touched = append(touched, e)
 			}
@@ -595,12 +692,14 @@ func (p *Publisher) reconcileAccess(ctx context.Context, entries []*hostEntry) e
 			e.Access = accessLabel(accessHasHost(app, e.Host))
 		default:
 			if accessAddHost(app, e.Host) {
+				e.accessApplied = true
 				touched = append(touched, e)
 			}
 			e.Access = AccessOK
 		}
 	}
 	if len(touched) == 0 {
+		p.recordAccess(entries, app)
 		return nil
 	}
 	if err := p.client.PutAccessApp(ctx, p.cfg.AccountID, p.cfg.AccessAppID, app); err != nil {
@@ -609,7 +708,36 @@ func (p *Publisher) reconcileAccess(ctx context.Context, entries []*hostEntry) e
 		}
 		return err
 	}
+	if p.ownership != nil {
+		observed, err := p.client.GetAccessApp(ctx, p.cfg.AccountID, p.cfg.AccessAppID)
+		if err != nil {
+			for _, entry := range touched {
+				entry.Access = AccessError
+			}
+			return err
+		}
+		app = observed
+	}
+	p.recordAccess(entries, app)
 	return nil
+}
+
+func (p *Publisher) recordAccess(entries []*hostEntry, app AccessApp) {
+	if p.ownership == nil {
+		return
+	}
+	for _, entry := range entries {
+		owned := p.ownership.state.Routes[entry.Host]
+		if !entry.orphan && !entry.conflict && !entry.failed && entry.Access == AccessOK && (owned.Access == "" || entry.accessApplied) {
+			owned.Access = accessFingerprint(app, entry.Host)
+		} else if entry.orphan && entry.Access == AccessMissing && !entry.Ingress && !entry.failed {
+			owned.Access = ""
+		}
+		p.ownership.state.Routes[entry.Host] = owned
+		if owned.Ingress == "" && len(owned.DNS) == 0 && owned.Access == "" {
+			delete(p.ownership.state.Routes, entry.Host)
+		}
+	}
 }
 
 func accessLabel(present bool) string {

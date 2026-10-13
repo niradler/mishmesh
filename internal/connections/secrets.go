@@ -51,12 +51,14 @@ func openConfig(record store.Connection, box *secrets.Box, hostCommands bool) (C
 		}
 	}
 	record.Config = append(json.RawMessage(nil), record.Config...)
+	record.State = append(json.RawMessage(nil), record.State...)
 	record.SecretsEnc = nil
 	return Config{Record: record, Secrets: values, HostCommands: hostCommands}, nil
 }
 
 func cloneConfig(cfg Config) Config {
 	cfg.Record.Config = append(json.RawMessage(nil), cfg.Record.Config...)
+	cfg.Record.State = append(json.RawMessage(nil), cfg.Record.State...)
 	cfg.Record.SecretsEnc = append([]byte(nil), cfg.Record.SecretsEnc...)
 	values := make(map[string]string, len(cfg.Secrets))
 	for key, value := range cfg.Secrets {

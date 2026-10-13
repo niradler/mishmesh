@@ -266,7 +266,8 @@ type Connection struct {
 	Type       string
 	Name       string
 	Config     json.RawMessage
-	SecretsEnc []byte `json:"-"`
+	State      json.RawMessage `json:"-"`
+	SecretsEnc []byte          `json:"-"`
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -373,6 +374,7 @@ type DataStore interface {
 	ListConnections(ctx context.Context, orgID string) ([]*Connection, error)
 	ListAllConnections(ctx context.Context) ([]*Connection, error)
 	UpdateConnection(ctx context.Context, c *Connection) error
+	UpdateConnectionState(ctx context.Context, orgID, connectionID string, state json.RawMessage) error
 	DeleteConnection(ctx context.Context, id string) error
 
 	GetCloudflareConnection(ctx context.Context, orgID string) (*CloudflareConnection, error)

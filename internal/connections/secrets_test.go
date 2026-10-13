@@ -1,9 +1,11 @@
 package connections
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/mishmesh/mishmesh/internal/secrets"
+	"github.com/mishmesh/mishmesh/internal/store"
 )
 
 func TestShouldBindSecretsToConnectionAndOrg(t *testing.T) {
@@ -22,5 +24,22 @@ func TestShouldBindSecretsToConnectionAndOrg(t *testing.T) {
 		if _, err := box.Open(sealed, context); err == nil {
 			t.Fatal("foreign context decrypted")
 		}
+	}
+}
+
+func TestShouldClonePrivateStateAtConnectionConfigBoundaries(t *testing.T) {
+	record := store.Connection{Config: json.RawMessage(`{}`), State: json.RawMessage(`{"private":true}`)}
+	opened, err := openConfig(record, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.State[0] = '['
+	if string(opened.Record.State) != `{"private":true}` {
+		t.Fatal("stored state shares its buffer with provider config")
+	}
+	cloned := cloneConfig(opened)
+	cloned.Record.State[0] = '['
+	if string(opened.Record.State) != `{"private":true}` {
+		t.Fatal("provider config copies share private state")
 	}
 }

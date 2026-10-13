@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
 		`ALTER TABLE endpoints ADD COLUMN method TEXT`,
 		`ALTER TABLE services ADD COLUMN config TEXT`,
 		`ALTER TABLE services ADD COLUMN ready TEXT`,
+		`ALTER TABLE connections ADD COLUMN state TEXT`,
 	} {
 		if _, err := s.db.ExecContext(ctx, alter); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("migrate alter: %w", err)

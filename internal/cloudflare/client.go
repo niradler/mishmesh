@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -310,12 +311,15 @@ func (c *Client) ListZones(ctx context.Context, accountID string) ([]Zone, error
 }
 
 type DNSRecord struct {
-	ID      string `json:"id,omitempty"`
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	Proxied bool   `json:"proxied"`
-	Comment string `json:"comment,omitempty"`
+	ID       string         `json:"id,omitempty"`
+	Type     string         `json:"type"`
+	Name     string         `json:"name"`
+	Content  string         `json:"content"`
+	Proxied  bool           `json:"proxied"`
+	Comment  string         `json:"comment,omitempty"`
+	TTL      int            `json:"ttl,omitempty"`
+	Tags     []string       `json:"tags,omitempty"`
+	Settings map[string]any `json:"settings,omitempty"`
 }
 
 func (c *Client) ListDNSRecords(ctx context.Context, zoneID, name string) ([]DNSRecord, error) {
@@ -333,10 +337,20 @@ func (c *Client) ListDNSRecords(ctx context.Context, zoneID, name string) ([]DNS
 }
 
 func (c *Client) CreateDNSRecord(ctx context.Context, zoneID string, rec DNSRecord) error {
-	if _, err := c.do(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records", nil, rec); err != nil {
-		return fmt.Errorf("create dns record: %w", err)
+	_, err := c.createDNSRecord(ctx, zoneID, rec)
+	return err
+}
+
+func (c *Client) createDNSRecord(ctx context.Context, zoneID string, rec DNSRecord) (DNSRecord, error) {
+	envelope, err := c.do(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records", nil, rec)
+	if err != nil {
+		return DNSRecord{}, fmt.Errorf("create dns record: %w", err)
 	}
-	return nil
+	var created DNSRecord
+	if err := json.Unmarshal(envelope.Result, &created); err != nil {
+		return DNSRecord{}, errors.New("invalid created DNS record")
+	}
+	return created, nil
 }
 
 func (c *Client) DeleteDNSRecord(ctx context.Context, zoneID, recordID string) error {
