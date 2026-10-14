@@ -52,6 +52,9 @@ func (s *streamAgent) OpenStream(_ context.Context, endpointID, kind string, met
 		defer c.Close()
 		if s.failWith != "" {
 			_ = tunnel.WriteStreamError(c, s.failWith)
+			_ = tunnel.CloseWrite(c)
+			_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, _ = io.Copy(io.Discard, c)
 			return
 		}
 		if s.greeting != "" {

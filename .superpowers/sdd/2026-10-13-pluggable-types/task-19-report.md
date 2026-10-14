@@ -1,0 +1,29 @@
+# Task19: validation and security evidence
+
+Source checkpoints: backend199e67a; key/E2E follow-up308e04e; UId9a562e; operational docs817dd10. Product Go source in release checks matches the308e04e tree. Subsequent edits add only validation fixtures/reports/helpers/docs. No production data/account, main push, publication or deployment.
+
+## Executed evidence
+
+| Check | Outcome / retained evidence |
+| --- | --- |
+| Go full race, native Windows + Linux Docker | Every tested package passes using original full-package corpus plus corrected affected E2E reruns. Full command logs initially fail only E2E's old transport-host fixtures; do not label those commands PASS. Full controlplane passes101.568s/95.548s including reach-in correction. `output/pluggable-access-go-validation-1791990392812/{windows-race,linux-race}.log` |
+| E2E canonical/private-host contract | Original fixture used127.0.0.1 transport Host while configured apex waslocalhost. Corrected fixture Host only; production fail-closed routing retained. Added HTTP/WebSocket unknown/private404 assertions. Full affected suite passes Windows7.353s and Linux6.354s, same evidence directory |
+| Fresh key publication | Reproduced partial-file decode race beforefix2/3runs. Write/sync/close private same-directory staging file, then atomic no-overwrite hard-link publication. Deterministic competing winner, no partial final key, unsupported filesystem fail-closed, malformed existing key preserved,64constructors×8rounds pass. Full secrets/cmd races3.227s/3.044s. task-19-key-race-{red,green}.log |
+| Reach-in dial-error fixture | Full-close with unread request bytes caused TCP RST and lost error frame. Fake agent now half-closes and drains request with5second read bound. Original assertions unchanged.100combined races pass25.503s; full controlplane Windows/Linux passes above. task-12-task19-reachin-green.log |
+| Go vet / profiling harnesses / cmd builds | PASS; vet/loadtest logs in release-check directory |
+| Release crossbuilds |12binaries PASS: server+agent × Linux/Darwin/Windows × amd64/arm64, CGO0. Actual binaries/logs retained in release-check directory |
+| govulncheck | Pinnedv1.8.0 scanner PASS on Windows and Linux;0reachable/0imported-package findings. GO-2026-5932 remains module-only for unused unmaintained x/crypto/openpgp, no fixed version. Not suppressed and no absolute zero-advisory claim |
+| PostgreSQL | Fresh retained isolated postgres17 container, no published ports. Full live race suite PASS3.787s, no skips; includes CRUD, cancellation, graph/alias/CAS races and literal beta4 migration. Latest semantic guard rechecked in focused final matrix PASS2.735s:8concurrent opens/reopen, wrong current key,6precommit rollback causes, readonly ciphertext probe and authenticated null/number/duplicate secret rejection without row mutation. `output/mishmesh-pluggable-pg-1791989680173929300/{test,release-final}.log` |
+| SQLite migration | Literal beta4 SQL preserved in trackedfixtures.8service configs/12HTTPrefs+UDP+Connect, sealed secrets/AAD and parsed custom Cedar verified; reopen/stableIDs, wrong/missing key and malformed schema/data failure rollback pass. Task3 report contains exact affected runs |
+| Real browser/API | NativeWindows binary with retained isolatedSQLite/key, loopback8081/5189. All3driver forms, HTTP readiness/-1, explicit restart409/success/saved-start502, secret retained/clear, twoAccessrefs+Connect, HTTP/UDP reservation, roles/twoorg/transitivehost403/Requires409 explicitcascade pass. Browser fully closed; server terminated at30minute deadline; finalbinary sameDB/key reopened with newbrowser/login and preserved all identities/config/graph/secrets. `output/browser-real/check-real-*.log`, screenshotsoutput/playwright |
+| Synthetic descriptor/UI | Fourthdriver+8kinds, argvwhitespace/runtimefilter/secretpreservation pass; Detect typeABA/neweredit/freshresult matrix pass. Dense20service topology4viewports, samecolumn19Requirescurves/expandESC/link/canvas bounds pass |
+| Web lint/format/build/audit | Prettier3.9.10, tsc and productionbuild PASS. Tailwind4.3.3 replaces unpatched vulnerable3.x buildchain. Finalnpm audit0vulnerabilities, task-19-npm-final.log |
+| Operational fixtures | In-memory Python compile and5fakeHTTP/regression tests PASS. PowerShell AST parse + new timedDockerwrapper actualrace invocation PASS1.152s; task-19-script-check.log |
+
+## Security review
+
+Verified route permissions and same-org resource404; imported/managed host gates; old/proposed transitive host graphs; strict typed inputs/duplicate keys and body caps; redacted config/errors/provider status/name; sealed connection secrets and authenticated namespace; generation-fenced aliases/ownership; auth-before-wake/accounting; missing/wrong-key refusal and atomic schema/Cedar migration. Generic browser commands use synthetic credentials only, fixture metadata is ignored and operator token is not injected into pages. No literal production credential or private machine-specific runbook staged.
+
+Fixtures and logs are retained. PostgreSQL fixture env file contains a generated test-only password and remains ignored. No database/container cleanup ran. New Docker outer deadline stops only its owned runner, retaining it. Unsupported hard-link filesystems fail closed; NTFS/Linux publication tested. Endpointcreate lifecycle mismatch fixed in UI rather than relaxing API validation. E2E/reach-in fixes preserve assertions and production auth/routing.
+
+Live Cloudflare/Tailscale account traffic is not claimed. Imported browser fixtures point at unavailable local providers; deterministic fakeAPI/LocalAPI integration covers remote contracts/ownership/routing. Second-client tailnet HTTPS requires joined/tagged node, approvals and grants. Kubernetes/kind cancelled. Final independent whole-branch review and release preparation are Task20.

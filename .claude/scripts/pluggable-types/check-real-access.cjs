@@ -1,0 +1,76 @@
+async (page) => {
+  const fixture = await page.evaluate(() => window.__mishmeshFixture);
+  const runId = Date.now();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  function assert(condition, message) { if (!condition) throw new Error(message); }
+  async function api(method, path, body) {
+    return page.evaluate(async ({ method, path, body }) => {
+      const response = await fetch("/api/v1" + path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+      const text = await response.text();
+      return { status: response.status, body: text ? JSON.parse(text) : null };
+    }, { method, path, body });
+  }
+  await page.goto(fixture.api + "/connections");
+  await page.getByRole("button", { name: "Add connection", exact: true }).waitFor();
+  const descriptors = await api("GET", "/connection-types");
+  assert(descriptors.status === 200 && descriptors.body.length === 2 && descriptors.body.every((row) => row.role === "access" && row.protocols.join() === "http"), "Shipping connection descriptors mismatch");
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  await page.getByRole("button", { name: "Cloudflare Tunnel", exact: true }).click();
+  await page.getByLabel("Name", { exact: true }).fill(`browser-public-${runId}`);
+  await page.getByLabel("Metrics address", { exact: true }).fill("127.0.0.1:39980");
+  const token = await page.evaluate(() => btoa(JSON.stringify({ a: "synthetic-browser-account", t: "00000000-0000-0000-0000-000000000019", s: "synthetic-only" })));
+  await page.getByLabel("Tunnel token", { exact: true }).fill(token);
+  const publicResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/connections") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Create connection", exact: true }).click();
+  const publicResult = await publicResponse;
+  const publicConnection = await publicResult.json();
+  assert(publicResult.status() === 201 && publicConnection.has_tunnel_token && !JSON.stringify(publicConnection).includes(token), "Real Cloudflare import or secret redaction failed");
+  await page.waitForURL("**/connections/" + publicConnection.id);
+  await page.goto(fixture.api + "/connections");
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  await page.getByRole("button", { name: "Tailscale Services", exact: true }).click();
+  await page.getByLabel("Name", { exact: true }).fill(`browser-private-${runId}`);
+  await page.getByLabel("Tailnet", { exact: true }).fill("synthetic-browser.example.test");
+  await page.getByLabel("LocalAPI socket", { exact: true }).fill(fixture.directory + "/absent-localapi.sock");
+  await page.getByLabel("OAuth client secret", { exact: true }).fill("synthetic-oauth-secret");
+  const privateResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/connections") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Create connection", exact: true }).click();
+  const privateResult = await privateResponse;
+  const privateConnection = await privateResult.json();
+  assert(privateResult.status() === 201 && privateConnection.has_oauth_client_secret && !JSON.stringify(privateConnection).includes("synthetic-oauth-secret"), "Real imported Tailscale save or secret redaction failed");
+  await page.waitForURL("**/connections/" + privateConnection.id);
+  await page.getByRole("button", { name: "Edit connection", exact: true }).click();
+  assert(await page.getByLabel("OAuth client secret", { exact: true }).inputValue() === "", "Secret fetched into edit control");
+  await page.getByRole("button", { name: "Save connection", exact: true }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert((await api("GET", "/connections/" + privateConnection.id)).body.has_oauth_client_secret, "Unchanged secret was cleared");
+  await page.getByRole("button", { name: "Edit connection", exact: true }).click();
+  await page.getByRole("button", { name: "Clear oauth client secret", exact: true }).click();
+  await page.getByRole("button", { name: "Save connection", exact: true }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert(!(await api("GET", "/connections/" + privateConnection.id)).body.has_oauth_client_secret, "Explicit secret clear did not persist");
+  const domain = `browser-${runId}.example.test`;
+  const endpointResult = await api("POST", "/endpoints", { kind: "http", method: "proxy", domain, policy: { proxy_targets: ["127.0.0.1:8081"], connect: { name: "browser-notes", allow_agents: ["*"] }, access: [{ connection_id: publicConnection.id, hostname: domain }] } });
+  assert(endpointResult.status === 201, "Fixture endpoint create failed: " + JSON.stringify(endpointResult));
+  const endpoint = endpointResult.body;
+  await page.goto(fixture.api + "/endpoints/" + endpoint.id);
+  await page.getByRole("button", { name: "Add access", exact: true }).click();
+  await page.getByLabel("Connection 2", { exact: true }).selectOption(privateConnection.id);
+  await page.getByLabel("Hostname 2", { exact: true }).fill("browser-notes");
+  const savedResponse = page.waitForResponse((response) => response.url().endsWith("/endpoints/" + endpoint.id) && response.request().method() === "PATCH");
+  await page.getByRole("button", { name: "Save access", exact: true }).click();
+  assert((await savedResponse).status() === 200, "Real multi-network Access save failed");
+  await page.reload();
+  await page.getByLabel("Hostname 2", { exact: true }).waitFor();
+  const reopened = (await api("GET", "/endpoints/" + endpoint.id)).body;
+  assert(reopened.policy.access.length === 2 && reopened.policy.access[0].connection_id === publicConnection.id && reopened.policy.access[1].connection_id === privateConnection.id && reopened.policy.connect.allow_agents[0] === "*", "Access save/reopen lost another network or Connect policy");
+  const deleteGuard = await api("DELETE", "/connections/" + publicConnection.id);
+  assert(deleteGuard.status === 409, "Referenced connection delete was not guarded");
+  const topology = (await api("GET", "/topology")).body;
+  assert(topology.nodes.some((node) => node.id === "connection:" + publicConnection.id) && topology.nodes.some((node) => node.id === "connection:" + privateConnection.id), "Real topology lost a connection");
+  assert(topology.nodes.some((node) => node.id.startsWith("hostname:" + privateConnection.id + ":")), "Private hostname chain missing");
+  assert(errors.length === 0, "Browser errors: " + errors.join("; "));
+  await page.screenshot({ path: "output/playwright/real-access.png", fullPage: true });
+  return { result: "PASS", evidence: "real SQLite connection/Access APIs; unavailable remote providers", publicConnectionId: publicConnection.id, privateConnectionId: privateConnection.id, endpointId: endpoint.id, secretRetainedAndCleared: true, preservedConnect: true, deleteGuard: true };
+}

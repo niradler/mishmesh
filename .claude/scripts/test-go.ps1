@@ -1,5 +1,6 @@
 param(
     [switch] $Short,
+    [ValidateRange(1, 86400)] [int] $DockerDeadlineSeconds = 600,
     [string[]] $GoTestArgs = @('-race', '-count=1', '-timeout=180s', './...')
 )
 
@@ -24,5 +25,25 @@ $dockerArguments = @(
     "golang:$goVersion", 'go', 'test'
 ) + $GoTestArgs
 Write-Host "Running Go tests in $containerName with no published ports"
-& docker @dockerArguments
-exit $LASTEXITCODE
+$start = [System.Diagnostics.ProcessStartInfo]::new()
+$start.FileName = 'docker'
+$start.UseShellExecute = $false
+foreach ($argument in $dockerArguments) {
+    $start.ArgumentList.Add($argument)
+}
+$process = [System.Diagnostics.Process]::Start($start)
+if (-not $process.WaitForExit($DockerDeadlineSeconds * 1000)) {
+    $process.Kill($true)
+    $stop = [System.Diagnostics.ProcessStartInfo]::new()
+    $stop.FileName = 'docker'
+    $stop.UseShellExecute = $false
+    foreach ($argument in @('stop', '--time', '5', $containerName)) {
+        $stop.ArgumentList.Add($argument)
+    }
+    $stopProcess = [System.Diagnostics.Process]::Start($stop)
+    if (-not $stopProcess.WaitForExit(30000)) {
+        $stopProcess.Kill($true)
+    }
+    throw "Docker deadline exceeded ($DockerDeadlineSeconds seconds); fixture $containerName retained for inspection"
+}
+exit $process.ExitCode
