@@ -265,7 +265,6 @@ func (h *Hub) reload(ctx context.Context, connectionID string, expected *store.C
 		h.retire(run)
 		return ErrHubStopped
 	}
-	h.epochs[connectionID]++
 	if failure, exists := h.reloadFailures[connectionID]; exists && store.SameConnectionInput(failure.expected, run.record) {
 		delete(h.reloadFailures, connectionID)
 	}
@@ -295,6 +294,10 @@ func (h *Hub) recordAdmissionFailure(expected store.Connection, epoch uint64, ca
 	ctx, cancel := context.WithTimeout(context.Background(), h.opts.DrainTimeout)
 	defer cancel()
 	current, err := h.opts.Deps.Data.GetConnection(ctx, expected.ID)
+	if err != nil || current == nil || !store.SameConnectionInput(*current, expected) {
+		return
+	}
+	current, err = h.opts.Deps.Data.GetConnection(ctx, expected.ID)
 	if err != nil || current == nil || !store.SameConnectionInput(*current, expected) {
 		return
 	}
