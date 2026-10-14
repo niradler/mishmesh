@@ -1,6 +1,10 @@
 # SDD ledger — plan: docs/superpowers/plans/2026-10-13-pluggable-types.md
 
-## Active continuation 2026-10-14
+## Published release and lab rollout 2026-10-15
+
+Beta7 released at33e0ee557cdfcf80fb0c8925633e177b39ba2346 via PR35, exact reviewed tree. AllPR/main CI and release jobsPASS,14asset digests/checksums plus2multiarch images/2chart versions verified. Authorizedlab runs publishedserver/agent/UI with freshDB/key,7services12HTTP recreatedtyped,12CFpublished3orphans untouched. Browseractualedit/reopen/networkPASS0exceptions, fullE2E+Portainerwake1.1sPASS, nativeUDP4clients/privateConnect/denialPASS. Olddata/key/UI/env/binary backup retained; no cleanup/route/host-policy change. Known nonblockingCFhealthy-to-Unknown maplabel recorded; keptbeta7. Tailscale absent/livegatepending. /run/user inode andCIactiondeprecation warnings surfaced, not hidden. ORC taskp21to3 completed.
+
+## Historical continuation 2026-10-14
 
 LATEST COMPLETE SCOPE: Nir explicitly requires clean slate, no legacy/backward compatibility. Base635a7ad; amendment eaa41ce, final product5b559d939e278b8af7775c3cb8b17392dbcd132a independently APPROVED, ORC manual task tojef4 complete. Converters/schema ALTER upgrades/ciphertext-Cedar rewrite/old import formats/Cloudflare redirect removed. Initialize/reopen current typed schema only; old/incomplete schemas fail unchanged before journal/DDL or replacement-key creation. All17known-table guards covered. Preserve retained fixtures/private data. SQLite fullrace3.776s/cmd3.103s/fresh full livePG3.083s no skips, current wrong/missingkey/malformedsecret guards, controlplane25.833s/sixscripts/web/vet/build and final nativebrowserDBkeyreopen/oldAPI404/page404-no-redirect PASS. Scoped reviewer exactnewguard test PASS1.403s, no blockers. clean-slate-report/review/rereview supersede historical Task3 migration acceptance and earlier FINAL declarations below. No publication/deployment or destructive data cleanup.
 

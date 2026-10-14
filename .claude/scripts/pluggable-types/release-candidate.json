@@ -1,6 +1,6 @@
 {
   "candidate": "v0.1.0-beta.7",
-  "state": "prepared-unpublished",
+  "state": "published-lab-verified",
   "branch": "feat/pluggable-access",
   "base": "124e5b10738587c2114a533fb43088a1c377f903",
   "code_validation_commit": "5b559d939e278b8af7775c3cb8b17392dbcd132a",
@@ -17,13 +17,19 @@
     "windows/arm64"
   ],
   "requires": [
-    "authorized-branch-publication-and-PR",
-    "passing-remote-CI",
-    "authorized-tag-publication",
-    "authorized-production-rollout"
+    "tailscale-installed-joined-tagged-host-approval-grants-and-second-client"
   ],
   "live_tailscale": "external-joined-tagged-host-approval-grants-and-second-client-required",
   "kubernetes": "cancelled",
   "helm_metadata": "existing-workflow-stamps-tag-version-and-appVersion",
-  "database": "fresh-current-typed-only-no-backward-compatibility"
+  "database": "fresh-current-typed-only-no-backward-compatibility",
+  "release_commit": "33e0ee557cdfcf80fb0c8925633e177b39ba2346",
+  "published_date": "2026-10-15",
+  "pr": "https://github.com/niradler/mishmesh/pull/35",
+  "release_url": "https://github.com/niradler/mishmesh/releases/tag/v0.1.0-beta.7",
+  "release_run": 38640328000,
+  "main_ci_run": 38640318959,
+  "assets_verified": 14,
+  "lab_rollout": "verified-published-binary-agent-ui-fresh-typed-data",
+  "known_display_issue": "healthy Cloudflare topology node is Unknown; detailed health and routing correct"
 }
