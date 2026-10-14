@@ -138,7 +138,7 @@ func (o *routeOwnership) protect(ctx context.Context, rules []IngressRule, obser
 }
 
 func (o *routeOwnership) recordIngress(host string, rules []IngressRule, applied bool) {
-	if o.state.Routes[host].Ingress != "" && !applied {
+	if !applied {
 		return
 	}
 	var matched *IngressRule
@@ -160,7 +160,7 @@ func (o *routeOwnership) recordIngress(host string, rules []IngressRule, applied
 
 func (o *routeOwnership) recordDNS(host string, records []DNSRecord, applied bool) {
 	owned := o.state.Routes[host]
-	if len(owned.DNS) > 0 && !applied {
+	if !applied {
 		return
 	}
 	owned.DNS = make([]string, 0, len(records))

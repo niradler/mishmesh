@@ -168,6 +168,23 @@ func (h *Hub) Reload(ctx context.Context, connectionID string) error {
 	if record.ID != connectionID || record.ID == "" || record.OrgID == "" {
 		return h.failLoad(connectionID, "invalid connection identity")
 	}
+	old := h.replace(connectionID, nil, Status{Health: "unknown"})
+	if err := h.waitRetired(loadCtx, old); err != nil {
+		return err
+	}
+	if old != nil {
+		fresh, loadError := h.opts.Deps.Data.GetConnection(loadCtx, connectionID)
+		if errors.Is(loadError, store.ErrNotFound) || loadError == nil && fresh == nil {
+			return h.failLoad(connectionID, ErrNotConnected.Error())
+		}
+		if loadError != nil {
+			return h.failLoad(connectionID, "load connection failed")
+		}
+		if fresh.ID != record.ID || fresh.OrgID != record.OrgID || fresh.Type != record.Type {
+			return h.failLoad(connectionID, "connection identity changed during reload")
+		}
+		record = fresh
+	}
 	entry, ok := h.opts.Registry.lookup(record.Type)
 	if !ok {
 		return h.failLoad(connectionID, "unknown connection type")
@@ -180,8 +197,6 @@ func (h *Hub) Reload(ctx context.Context, connectionID string) error {
 	if err := entry.provider.Validate(cloneConfig(cfg)); err != nil {
 		return h.failLoad(connectionID, "invalid connection configuration")
 	}
-	old := h.replace(connectionID, nil, Status{Health: "unknown"})
-	h.waitClosed(loadCtx, old)
 	if err := loadCtx.Err(); err != nil {
 		return err
 	}
@@ -291,6 +306,22 @@ func (h *Hub) waitClosed(ctx context.Context, run *instanceRun) {
 	case <-run.closeDone:
 	case <-timer.C:
 	case <-ctx.Done():
+	}
+}
+
+func (h *Hub) waitRetired(ctx context.Context, run *instanceRun) error {
+	if run == nil {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(2 * h.opts.DrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-run.done:
+		return ctx.Err()
+	case <-timer.C:
+		return ErrDrainPending
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

@@ -209,7 +209,10 @@ func TestShouldCancelAndRetireOldGenerationDuringSync(t *testing.T) {
 	result := make(chan error, 1)
 	go func() { _, err := hub.Sync(context.Background(), "one"); result <- err }()
 	waitSignal(t, entered)
-	if err := hub.Reload(context.Background(), "one"); err != nil {
+	hub.mu.RLock()
+	oldRun := hub.runs["one"]
+	hub.mu.RUnlock()
+	if err := hub.Reload(context.Background(), "one"); !errors.Is(err, ErrDrainPending) {
 		t.Fatal(err)
 	}
 	select {
@@ -224,6 +227,10 @@ func TestShouldCancelAndRetireOldGenerationDuringSync(t *testing.T) {
 		t.Fatal("old instance not closed")
 	}
 	close(release)
+	waitSignal(t, oldRun.done)
+	if err := hub.Reload(context.Background(), "one"); err != nil {
+		t.Fatal(err)
+	}
 	status, err := hub.Sync(context.Background(), "one")
 	if err != nil || status.Level != "new" || hub.Status("one").Level != "new" {
 		t.Fatalf("stale completion: %+v %v", status, err)
@@ -376,7 +383,7 @@ func TestShouldLimitStalledRetiredGenerationsAndAllowOtherConnections(t *testing
 	}), nil)
 	hub.Trigger("one")
 	waitSignal(t, entered)
-	if err := hub.Reload(context.Background(), "one"); err != nil {
+	if err := hub.Reload(context.Background(), "one"); !errors.Is(err, ErrDrainPending) {
 		t.Fatal(err)
 	}
 	if err := hub.Reload(context.Background(), "one"); !errors.Is(err, ErrDrainPending) {
@@ -385,7 +392,7 @@ func TestShouldLimitStalledRetiredGenerationsAndAllowOtherConnections(t *testing
 	if _, err := hub.Sync(context.Background(), "two"); err != nil {
 		t.Fatal(err)
 	}
-	if opens.Load() != 2 {
+	if opens.Load() != 1 {
 		t.Fatalf("repeated reload opened %d generations", opens.Load())
 	}
 	close(release)
@@ -402,44 +409,27 @@ func TestShouldLimitStalledRetiredGenerationsAndAllowOtherConnections(t *testing
 	}
 }
 
-func TestShouldRemoveCurrentGenerationWhileOlderRetirementIsStalled(t *testing.T) {
+func TestShouldRemoveConnectionWhileRetirementIsStalled(t *testing.T) {
 	data := connectionStore(t, "one")
 	firstEntered, firstRelease := make(chan struct{}), make(chan struct{})
-	secondEntered, secondRelease, secondCanceled := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	defer close(firstRelease)
-	defer close(secondRelease)
 	first := &fakeInstance{sync: func(context.Context) (Status, error) {
 		close(firstEntered)
 		<-firstRelease
 		return Status{Health: "healthy", Level: "first"}, nil
 	}}
-	second := &fakeInstance{
-		status: Status{Health: "healthy", Level: "second"},
-		run:    func(ctx context.Context) { <-ctx.Done(); close(secondCanceled) },
-		sync: func(context.Context) (Status, error) {
-			close(secondEntered)
-			<-secondRelease
-			return Status{Health: "healthy", Level: "second"}, nil
-		},
-	}
 	var opens atomic.Int32
 	hub := testHub(t, data, testProvider(func(Config, Deps) (Instance, error) {
 		if opens.Add(1) == 1 {
 			return first, nil
 		}
-		return second, nil
+		return &fakeInstance{status: Status{Health: "healthy"}}, nil
 	}), nil)
 	hub.Trigger("one")
 	waitSignal(t, firstEntered)
-	if err := hub.Reload(context.Background(), "one"); err != nil {
+	if err := hub.Reload(context.Background(), "one"); !errors.Is(err, ErrDrainPending) {
 		t.Fatal(err)
 	}
-	hub.mu.RLock()
-	secondRun := hub.runs["one"]
-	hub.mu.RUnlock()
-	secondResult := make(chan error, 1)
-	go func() { _, err := hub.Sync(context.Background(), "one"); secondResult <- err }()
-	waitSignal(t, secondEntered)
 	record, err := data.GetConnection(context.Background(), "one")
 	if err != nil {
 		t.Fatal(err)
@@ -454,16 +444,7 @@ func TestShouldRemoveCurrentGenerationWhileOlderRetirementIsStalled(t *testing.T
 	if time.Since(start) > 300*time.Millisecond {
 		t.Fatal("deletion exceeded reload drain bound")
 	}
-	waitSignal(t, secondCanceled)
-	select {
-	case err := <-secondResult:
-		if !errors.Is(err, ErrNotConnected) {
-			t.Fatalf("removed sync error=%v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("removed sync caller did not cancel")
-	}
-	if second.closed.Load() != 1 || first.closed.Load() != 1 || hub.Status("one").Health != "down" {
+	if first.closed.Load() != 1 || hub.Status("one").Health != "down" {
 		t.Fatal("deletion did not close and detach current generation")
 	}
 	if _, err := hub.Sync(context.Background(), "one"); !errors.Is(err, ErrNotConnected) {
@@ -482,18 +463,13 @@ func TestShouldRemoveCurrentGenerationWhileOlderRetirementIsStalled(t *testing.T
 			t.Fatalf("replacement error=%v", err)
 		}
 	}
-	secondRelease <- struct{}{}
-	waitSignal(t, secondRun.done)
-	if err := hub.Reload(context.Background(), "one"); !errors.Is(err, ErrDrainPending) {
-		t.Fatalf("older retirement was lost: %v", err)
-	}
-	if opens.Load() != 2 || second.closed.Load() != 1 || hub.Status("one").Health != "down" {
+	if opens.Load() != 1 || hub.Status("one").Health != "down" {
 		t.Fatal("replacement accumulated or removed status was republished")
 	}
 	start = time.Now()
 	hub.Close()
 	hub.Close()
-	if time.Since(start) > 300*time.Millisecond || first.closed.Load() != 1 || second.closed.Load() != 1 {
+	if time.Since(start) > 300*time.Millisecond || first.closed.Load() != 1 {
 		t.Fatal("close lost its bound or repeated a lifecycle close")
 	}
 }

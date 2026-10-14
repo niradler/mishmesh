@@ -728,7 +728,7 @@ func (p *Publisher) recordAccess(entries []*hostEntry, app AccessApp) {
 	}
 	for _, entry := range entries {
 		owned := p.ownership.state.Routes[entry.Host]
-		if !entry.orphan && !entry.conflict && !entry.failed && entry.Access == AccessOK && (owned.Access == "" || entry.accessApplied) {
+		if !entry.orphan && !entry.conflict && !entry.failed && entry.Access == AccessOK && entry.accessApplied {
 			owned.Access = accessFingerprint(app, entry.Host)
 		} else if entry.orphan && entry.Access == AccessMissing && !entry.Ingress && !entry.failed {
 			owned.Access = ""
