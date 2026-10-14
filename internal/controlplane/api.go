@@ -14,8 +14,10 @@ import (
 
 	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
+	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/secrets"
+	"github.com/mishmesh/mishmesh/internal/services"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -41,10 +43,12 @@ type API struct {
 	maxOrgsPerUser     int
 	services           ServiceControl
 	servicesMu         sync.Mutex
+	serviceRegistry    *services.Registry
+	invalidateIngress  func()
 	endpointHealth     HealthSource
-	cloudflare         CloudflareControl
+	connections        ConnectionControl
+	connectionRegistry *connections.Registry
 	secretBox          *secrets.Box
-	detectCloudflare   cloudflareDetector
 	hostCommands       bool
 
 	defaultAuthz *authz.Authorizer
@@ -209,6 +213,7 @@ func (a *API) routes() []route {
 		{"GET /api/v1/capabilities", a.guard(a.capabilitiesHandler)},
 
 		{"GET /api/v1/services", a.require(authz.ActionServiceRead, a.listServicesHandler)},
+		{"GET /api/v1/service-drivers", a.require(authz.ActionServiceRead, a.serviceDriversHandler)},
 		{"POST /api/v1/services", a.require(authz.ActionServiceWrite, a.createServiceHandler)},
 		{"GET /api/v1/services/{id}", a.require(authz.ActionServiceRead, a.getServiceHandler)},
 		{"PUT /api/v1/services/{id}", a.require(authz.ActionServiceWrite, a.updateServiceHandler)},
@@ -216,11 +221,14 @@ func (a *API) routes() []route {
 		{"POST /api/v1/services/{id}/start", a.require(authz.ActionServiceWrite, a.startServiceHandler)},
 		{"POST /api/v1/services/{id}/stop", a.require(authz.ActionServiceWrite, a.stopServiceHandler)},
 
-		{"GET /api/v1/cloudflare", a.require(authz.ActionEndpointRead, a.getCloudflareHandler)},
-		{"PUT /api/v1/cloudflare", a.require(authz.ActionCloudflare, a.putCloudflareHandler)},
-		{"DELETE /api/v1/cloudflare", a.require(authz.ActionCloudflare, a.deleteCloudflareHandler)},
-		{"POST /api/v1/cloudflare/detect", a.require(authz.ActionCloudflare, a.detectCloudflareHandler)},
-		{"POST /api/v1/cloudflare/sync", a.require(authz.ActionCloudflare, a.syncCloudflareHandler)},
+		{"GET /api/v1/connection-types", a.require(authz.ActionEndpointRead, a.connectionTypesHandler)},
+		{"GET /api/v1/connections", a.require(authz.ActionEndpointRead, a.listConnectionsHandler)},
+		{"POST /api/v1/connections", a.require(authz.ActionConnectionManage, a.createConnectionHandler)},
+		{"GET /api/v1/connections/{id}", a.require(authz.ActionEndpointRead, a.getConnectionHandler)},
+		{"PUT /api/v1/connections/{id}", a.require(authz.ActionConnectionManage, a.updateConnectionHandler)},
+		{"DELETE /api/v1/connections/{id}", a.require(authz.ActionConnectionManage, a.deleteConnectionHandler)},
+		{"POST /api/v1/connections/detect", a.require(authz.ActionConnectionManage, a.detectConnectionHandler)},
+		{"POST /api/v1/connections/{id}/sync", a.require(authz.ActionConnectionManage, a.syncConnectionHandler)},
 		{"GET /api/v1/topology", a.require(authz.ActionEndpointRead, a.topologyHandler)},
 
 		{"GET /api/v1/quota", a.require(authz.ActionQuotaRead, a.getQuotaHandler)},

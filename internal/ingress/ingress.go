@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
@@ -102,6 +103,10 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		i.writeResolveError(w, err)
 		return
 	}
+	if ep.Kind != "" && ep.Kind != store.KindHTTP {
+		i.writeResolveError(w, errTunnelNotFound)
+		return
+	}
 	limit, exceeded := i.bandwidthLimit(r, ep)
 	if exceeded {
 		http.Error(w, "bandwidth quota exceeded", http.StatusTooManyRequests)
@@ -158,6 +163,25 @@ func (i *Ingress) lookupFailed(op string, err error) error {
 
 func (i *Ingress) resolve(r *http.Request) (ep *store.Endpoint, outPath string, err error) {
 	host := hostOnly(r.Host)
+	if host != "" && host != i.apexHost {
+		if _, err := connections.NormalizeAccessHostname(host); err != nil {
+			return nil, "", errTunnelNotFound
+		}
+		endpoint, err := i.endpointByDomain(r.Context(), host)
+		if err == nil {
+			return endpoint, r.URL.Path, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return nil, "", i.lookupFailed("domain", err)
+		}
+		endpoint, err = i.endpointByAccessHostname(r.Context(), host)
+		if err == nil {
+			return endpoint, r.URL.Path, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return nil, "", i.lookupFailed("access hostname", err)
+		}
+	}
 	if sub, isSub := i.subdomain(host); isSub {
 		e, err := i.endpointBySubdomain(r.Context(), sub)
 		if err != nil {
@@ -166,13 +190,7 @@ func (i *Ingress) resolve(r *http.Request) (ep *store.Endpoint, outPath string, 
 		return e, r.URL.Path, nil
 	}
 	if host != "" && host != i.apexHost {
-		e, err := i.endpointByDomain(r.Context(), host)
-		if err == nil {
-			return e, r.URL.Path, nil
-		}
-		if !errors.Is(err, store.ErrNotFound) {
-			return nil, "", i.lookupFailed("domain", err)
-		}
+		return nil, "", errTunnelNotFound
 	}
 	if id, rest, isPath := pathEndpoint(r.URL.Path); isPath && i.pathRouting {
 		e, err := i.endpointByID(r.Context(), id)
@@ -342,9 +360,9 @@ func (i *Ingress) recordCode(code int) {
 
 func hostOnly(hostport string) string {
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		return strings.ToLower(h)
+		return strings.TrimSuffix(strings.ToLower(h), ".")
 	}
-	return strings.ToLower(hostport)
+	return strings.TrimSuffix(strings.ToLower(hostport), ".")
 }
 
 var hopHeaders = []string{

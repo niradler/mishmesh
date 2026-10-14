@@ -4,29 +4,65 @@ import { Plus, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
-import { EmptyState, ErrorState, LoadingState } from "@/components/common/States";
-import { HelpedStateDot, KindBadge, MethodBadge } from "@/components/common/TermBadges";
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+} from "@/components/common/States";
+import {
+  HelpedStateDot,
+  KindBadge,
+  MethodBadge,
+} from "@/components/common/TermBadges";
 import { EndpointPath } from "@/components/endpoints/EndpointPath";
-import { CreateEndpointDialog, type CreateMethod, type EndpointPrefill } from "@/components/endpoints/CreateEndpointDialog";
-import { useAgents, useDeleteEndpoint, useEndpoints, useServices } from "@/api/hooks";
+import {
+  CreateEndpointDialog,
+  type CreateMethod,
+  type EndpointPrefill,
+} from "@/components/endpoints/CreateEndpointDialog";
+import {
+  useAgents,
+  useDeleteEndpoint,
+  useEndpoints,
+  useServices,
+} from "@/api/hooks";
 import { errorMessage } from "@/api/client";
 import { useSession } from "@/context/SessionContext";
 import { toast } from "@/hooks/use-toast";
 import { endpointDisplayName, endpointHealthState } from "@/lib/health";
 import type { Agent, Endpoint, Service } from "@/api/types";
 
-const PREFILL_PARAMS = ["new", "method", "domain", "target", "service_id", "public_access"];
+const PREFILL_PARAMS = [
+  "new",
+  "method",
+  "domain",
+  "target",
+  "service_id",
+  "connection_id",
+  "hostname",
+];
 
 function prefillFromSearch(search: URLSearchParams): EndpointPrefill {
   const method = search.get("method");
   return {
-    method: method === "native" || method === "proxy" ? (method as CreateMethod) : undefined,
+    method:
+      method === "native" || method === "proxy"
+        ? (method as CreateMethod)
+        : undefined,
     domain: search.get("domain") ?? undefined,
     target: search.get("target") ?? undefined,
     serviceId: search.get("service_id") ?? undefined,
-    publicAccess: search.get("public_access") === "cloudflare",
+    connectionId: search.get("connection_id") ?? undefined,
+    hostname: search.get("hostname") ?? undefined,
   };
 }
 
@@ -42,10 +78,19 @@ export function Endpoints() {
 
   const requestedFromLink = search.get("new") === "1";
   const createOpen = canWrite && (manualOpen || requestedFromLink);
-  const prefill = useMemo(() => (requestedFromLink ? prefillFromSearch(search) : undefined), [requestedFromLink, search]);
+  const prefill = useMemo(
+    () => (requestedFromLink ? prefillFromSearch(search) : undefined),
+    [requestedFromLink, search],
+  );
 
-  const agentsById = useMemo(() => new Map<string, Agent>((agents.data ?? []).map((a) => [a.id, a])), [agents.data]);
-  const servicesById = useMemo(() => new Map<string, Service>((services.data ?? []).map((s) => [s.id, s])), [services.data]);
+  const agentsById = useMemo(
+    () => new Map<string, Agent>((agents.data ?? []).map((a) => [a.id, a])),
+    [agents.data],
+  );
+  const servicesById = useMemo(
+    () => new Map<string, Service>((services.data ?? []).map((s) => [s.id, s])),
+    [services.data],
+  );
 
   const setCreateOpen = (open: boolean) => {
     setManualOpen(open);
@@ -107,12 +152,19 @@ export function Endpoints() {
                 {endpoints.data.map((ep) => (
                   <TableRow key={ep.id}>
                     <TableCell>
-                      <Link to={`/endpoints/${ep.id}`} className="font-mono text-xs hover:underline">
+                      <Link
+                        to={`/endpoints/${ep.id}`}
+                        className="font-mono text-xs hover:underline"
+                      >
                         {endpointDisplayName(ep)}
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <EndpointPath endpoint={ep} agents={agentsById} services={servicesById} />
+                      <EndpointPath
+                        endpoint={ep}
+                        agents={agentsById}
+                        services={servicesById}
+                      />
                     </TableCell>
                     <TableCell>
                       <KindBadge kind={ep.kind} />
@@ -121,7 +173,10 @@ export function Endpoints() {
                       <MethodBadge method={ep.method} />
                     </TableCell>
                     <TableCell title={ep.health?.detail}>
-                      <HelpedStateDot scope="endpoint" state={endpointHealthState(ep)} />
+                      <HelpedStateDot
+                        scope="endpoint"
+                        state={endpointHealthState(ep)}
+                      />
                     </TableCell>
                     {canWrite && (
                       <TableCell className="text-right">
@@ -146,7 +201,11 @@ export function Endpoints() {
         </CardContent>
       </Card>
 
-      <CreateEndpointDialog open={createOpen} onOpenChange={setCreateOpen} prefill={prefill} />
+      <CreateEndpointDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        prefill={prefill}
+      />
       <ConfirmDialog
         open={pendingDelete !== null}
         onOpenChange={(open) => !open && setPendingDelete(null)}
@@ -154,10 +213,13 @@ export function Endpoints() {
         description={
           pendingDelete && (
             <>
-              <span className="font-mono">{endpointDisplayName(pendingDelete)}</span> stops accepting traffic and its address is
-              released.
-              {pendingDelete.policy?.public_access === "cloudflare" && " It is also unpublished from Cloudflare."} This cannot be
-              undone.
+              <span className="font-mono">
+                {endpointDisplayName(pendingDelete)}
+              </span>{" "}
+              stops accepting traffic and its address is released.
+              {Boolean(pendingDelete.policy?.access?.length) &&
+                " Its Access refs are also removed."}{" "}
+              This cannot be undone.
             </>
           )
         }

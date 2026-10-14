@@ -84,9 +84,21 @@ func TestEndToEndWebSocketTunnel(t *testing.T) {
 	defer dialCancel()
 
 	var conn *websocket.Conn
+	for _, host := range []string{"unknown.example.org", "ws.foreign-tailnet.ts.net"} {
+		candidate, response, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{Host: host})
+		if candidate != nil {
+			candidate.CloseNow()
+		}
+		if response != nil && response.Body != nil {
+			response.Body.Close()
+		}
+		if err == nil || response == nil || response.StatusCode != http.StatusNotFound {
+			t.Fatalf("unknown websocket host reached endpoint: %s %v", host, err)
+		}
+	}
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		c, _, err := websocket.Dial(dialCtx, wsURL, nil)
+		c, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{Host: "localhost"})
 		if err == nil {
 			conn = c
 			break

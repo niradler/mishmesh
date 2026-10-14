@@ -29,9 +29,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
-	"github.com/mishmesh/mishmesh/internal/store/postgres"
 	"github.com/mishmesh/mishmesh/internal/store/redis"
-	"github.com/mishmesh/mishmesh/internal/store/sqlite"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
@@ -89,7 +87,7 @@ func serve() error {
 	}
 	log := newLogger(cfg.LogLevel)
 
-	data, err := openDataStore(cfg)
+	data, box, err := openDataStoreWithBox(cfg)
 	if err != nil {
 		return err
 	}
@@ -113,7 +111,7 @@ func serve() error {
 		return err
 	}
 	connector := proxy.Register(context.Background(), data, conns, log, proxyGuard)
-	network, err := newNetworkControl(cfg, data, conns, proxyGuard, connector, log)
+	network, err := newNetworkControlWithBox(cfg, data, conns, proxyGuard, connector, log, box)
 	if err != nil {
 		return err
 	}
@@ -269,6 +267,8 @@ func serve() error {
 			UpstreamResponseTimeout: cfg.UpstreamResponseTimeout,
 			Services:                network.ingressWaker(),
 		})
+		cp.SetIngressInvalidator(ing.InvalidateCaches)
+		network.invalidateIngress = ing.InvalidateCaches
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg, data)
 			if err != nil {
@@ -351,21 +351,8 @@ func serve() error {
 }
 
 func openDataStore(cfg config.Server) (store.DataStore, error) {
-	backend := cfg.EffectiveDataBackend()
-	switch backend {
-	case "postgres":
-		return postgres.Open(cfg.DataDSN, postgres.PoolConfig{
-			MaxOpenConns:    cfg.DataMaxConns,
-			MaxIdleConns:    cfg.DataMaxIdleConns,
-			ConnMaxLifetime: cfg.DataConnMaxLifetime,
-			ConnMaxIdleTime: cfg.DataConnMaxIdleTime,
-			QueryTimeout:    cfg.DataQueryTimeout,
-		})
-	case "sqlite":
-		return sqlite.Open(cfg.DataDSN)
-	default:
-		return nil, fmt.Errorf("unknown DATA_BACKEND %q (want sqlite or postgres)", backend)
-	}
+	data, _, err := openDataStoreWithBox(cfg)
+	return data, err
 }
 
 type clusterRuntime struct {

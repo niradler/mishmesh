@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: mishmesh
+      POSTGRES_PASSWORD: ${MISHMESH_TEST_PG_PASSWORD:?Set a synthetic isolated fixture password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d mishmesh"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [validation]
+networks:
+  validation:
+    internal: true
+volumes:
+  postgres-data:

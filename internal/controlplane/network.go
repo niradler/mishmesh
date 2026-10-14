@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
-	"github.com/mishmesh/mishmesh/internal/cloudflare"
+	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/services"
@@ -18,8 +19,10 @@ import (
 type ServiceControl interface {
 	Apply(defs []services.Definition)
 	Status(id string) (services.Status, bool)
+	RunningDependents(id string) []services.Status
 	EnsureRunning(ctx context.Context, id, readyAddr string) error
 	Stop(ctx context.Context, id string) error
+	Reserve(context.Context, []services.Definition, func(services.LifecycleReservation) error) error
 }
 
 type HealthSource interface {
@@ -28,28 +31,46 @@ type HealthSource interface {
 	Forget(endpointID string)
 }
 
-type CloudflareControl interface {
-	DefaultOrigin() string
-	Status(orgID string) cloudflare.Status
-	Reload(ctx context.Context, orgID string) error
-	Sync(ctx context.Context, orgID string) (cloudflare.Status, error)
-	Trigger(orgID string)
+type ConnectionControl interface {
+	Status(connectionID string) connections.Status
+	Reload(ctx context.Context, connectionID string) error
+	ReloadIfCurrent(ctx context.Context, expected store.Connection) error
+	Sync(ctx context.Context, connectionID string) (connections.Status, error)
+	SyncIfCurrent(ctx context.Context, expected store.Connection) (connections.Status, error)
+	Trigger(connectionID string)
 }
 
-type cloudflareDetector func(ctx context.Context, metricsAddr, tunnelToken string) (cloudflare.DetectResult, error)
+type ConnectionSnapshotStatus interface {
+	StatusIfCurrent(expected store.Connection) connections.Status
+}
 
 func (a *API) SetServices(s ServiceControl) {
 	a.services = s
+	if a.serviceRegistry == nil {
+		a.serviceRegistry = services.NewBuiltinRegistry()
+	}
+}
+
+func (a *API) SetServiceRegistry(registry *services.Registry) {
+	a.serviceRegistry = registry
+}
+
+func (a *API) SetIngressInvalidator(invalidate func()) { a.invalidateIngress = invalidate }
+
+func (a *API) invalidateIngressCaches() {
+	if a.invalidateIngress != nil {
+		a.invalidateIngress()
+	}
 }
 
 func (a *API) SetHealth(h HealthSource) {
 	a.endpointHealth = h
 }
 
-func (a *API) SetCloudflare(c CloudflareControl, box *secrets.Box) {
-	a.cloudflare = c
+func (a *API) SetConnections(hub ConnectionControl, registry *connections.Registry, box *secrets.Box) {
+	a.connections = hub
+	a.connectionRegistry = registry
 	a.secretBox = box
-	a.detectCloudflare = cloudflare.Detect
 }
 
 func (a *API) SetHostCommands(enabled bool) {
@@ -75,9 +96,8 @@ func (a *API) capabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 const healthProbeTimeout = 10 * time.Second
 
 func (a *API) endpointChanged(ep *store.Endpoint) {
-	if a.cloudflare != nil {
-		a.cloudflare.Trigger(ep.OrgID)
-	}
+	a.invalidateIngressCaches()
+	a.triggerConnections(ep.OrgID)
 	if a.endpointHealth == nil {
 		return
 	}
@@ -91,15 +111,14 @@ func (a *API) endpointChanged(ep *store.Endpoint) {
 }
 
 func (a *API) endpointRemoved(ep *store.Endpoint) {
+	a.invalidateIngressCaches()
 	if a.endpointHealth != nil {
 		a.endpointHealth.Forget(ep.ID)
 	}
-	if a.cloudflare != nil {
-		a.cloudflare.Trigger(ep.OrgID)
-	}
+	a.triggerConnections(ep.OrgID)
 }
 
-func (a *API) validateNetworkPolicy(ctx context.Context, orgID, domain string, pol *store.EndpointPolicy, wasPublic bool) error {
+func (a *API) validateNetworkPolicy(ctx context.Context, orgID, endpointID, domain, kind string, pol *store.EndpointPolicy, previous []store.AccessRef, snapshots *[]*store.Connection) error {
 	if pol == nil {
 		return nil
 	}
@@ -112,23 +131,68 @@ func (a *API) validateNetworkPolicy(ctx context.Context, orgID, domain string, p
 			return fmt.Errorf("service_id: %w", err)
 		}
 	}
-	switch pol.PublicAccess {
-	case "":
-	case store.PublicAccessCloudflare:
-		if !wasPublic {
-			if _, err := a.data.GetCloudflareConnection(ctx, orgID); errors.Is(err, store.ErrNotFound) {
-				return errors.New("public_access cloudflare needs a Cloudflare connection for this org (PUT /cloudflare)")
-			} else if err != nil {
-				return fmt.Errorf("public_access: %w", err)
+	seenConnections, seenHosts := map[string]bool{}, map[string]bool{}
+	for index, ref := range pol.Access {
+		if a.connectionRegistry == nil {
+			return errors.New("access needs a registered connection provider")
+		}
+		record, err := a.data.GetConnection(ctx, ref.ConnectionID)
+		if err != nil || record.OrgID != orgID {
+			return errors.New("access must reference a connection in this organization")
+		}
+		*snapshots = append(*snapshots, record)
+		provider, found := a.connectionRegistry.Lookup(record.Type)
+		if !found {
+			return errors.New("access needs a registered connection provider")
+		}
+		hostname, err := a.connectionRegistry.AccessHostname(record.Type, domain, ref.Hostname, kind)
+		if err != nil {
+			return err
+		}
+		if seenConnections[record.ID] || seenHosts[hostname] {
+			return errors.New("access connections and hostnames must be unique")
+		}
+		seenConnections[record.ID], seenHosts[hostname] = true, true
+		ref.Hostname = hostname
+		pol.Access[index] = ref
+		unchanged := slices.ContainsFunc(previous, func(before store.AccessRef) bool {
+			return before.ConnectionID == ref.ConnectionID && before.Hostname == hostname
+		})
+		if !unchanged {
+			cfg, err := connections.OpenConfig(*record, a.secretBox, a.hostCommands)
+			if err != nil || provider.Validate(cfg) != nil {
+				return errors.New("new or changed access needs a valid connection configuration")
 			}
 		}
-		if domain == "" {
-			return errors.New("public_access cloudflare requires a custom domain on the endpoint")
+		for _, descriptor := range a.connectionRegistry.Descriptors() {
+			if descriptor.Type == record.Type && descriptor.Scope == "public" {
+				if _, status, message := a.authorizeDomainBinding(ctx, orgID, hostname); status != 0 {
+					return errors.New(message)
+				}
+			}
 		}
-	default:
-		return fmt.Errorf("public_access must be empty or %q", store.PublicAccessCloudflare)
 	}
 	return nil
+}
+
+func (a *API) previousAccess(ctx context.Context, endpoint *store.Endpoint) []store.AccessRef {
+	if endpoint.Policy == nil {
+		return nil
+	}
+	previous := append([]store.AccessRef(nil), endpoint.Policy.Access...)
+	for index, ref := range previous {
+		if a.connectionRegistry == nil {
+			continue
+		}
+		record, err := a.data.GetConnection(ctx, ref.ConnectionID)
+		if err != nil || record.OrgID != endpoint.OrgID {
+			continue
+		}
+		if hostname, err := a.connectionRegistry.AccessHostname(record.Type, endpoint.Domain, ref.Hostname, endpoint.Kind); err == nil {
+			previous[index].Hostname = hostname
+		}
+	}
+	return previous
 }
 
 func endpointServiceID(ep *store.Endpoint) string {
@@ -138,6 +202,18 @@ func endpointServiceID(ep *store.Endpoint) string {
 	return ep.Policy.ServiceID
 }
 
-func endpointPublic(ep *store.Endpoint) bool {
-	return ep.Policy != nil && ep.Policy.PublicAccess == store.PublicAccessCloudflare && ep.Domain != ""
+func (a *API) triggerConnections(orgID string) {
+	if a.connections == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), healthProbeTimeout)
+	defer cancel()
+	records, err := a.data.ListConnections(ctx, orgID)
+	if err != nil {
+		a.log.Warn("list connections for endpoint change failed", "org", orgID)
+		return
+	}
+	for _, record := range records {
+		a.connections.Trigger(record.ID)
+	}
 }

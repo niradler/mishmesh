@@ -32,3 +32,5 @@ __pycache__/
 
 # Private, machine-local notes and scripts
 /.claude/local/
+/output/
+/.playwright-cli/

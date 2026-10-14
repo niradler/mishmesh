@@ -4,12 +4,23 @@ import { Plus } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, ErrorState, LoadingState } from "@/components/common/States";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+} from "@/components/common/States";
 import { DriverBadge, HelpedStateBadge } from "@/components/common/TermBadges";
 import { EndpointLinks } from "@/components/services/EndpointLinks";
 import { ServiceFormDialog } from "@/components/services/ServiceFormDialog";
-import { useEndpoints, useServices } from "@/api/hooks";
+import { useEndpoints, useServiceDrivers, useServices } from "@/api/hooks";
 import { useSession } from "@/context/SessionContext";
 import { formatDurationSeconds } from "@/lib/health";
 import { serviceSelectorSummary } from "@/lib/services";
@@ -20,9 +31,13 @@ export function Services() {
   const navigate = useNavigate();
   const services = useServices(currentOrgId);
   const endpoints = useEndpoints(currentOrgId);
+  const drivers = useServiceDrivers(currentOrgId);
   const [creating, setCreating] = useState(false);
   const endpointsById = useMemo(
-    () => new Map<string, Endpoint>((endpoints.data ?? []).map((ep) => [ep.id, ep])),
+    () =>
+      new Map<string, Endpoint>(
+        (endpoints.data ?? []).map((ep) => [ep.id, ep]),
+      ),
     [endpoints.data],
   );
 
@@ -66,24 +81,50 @@ export function Services() {
                 {services.data.map((service) => (
                   <TableRow key={service.id}>
                     <TableCell>
-                      <Link to={`/services/${service.id}`} className="font-medium hover:underline">
+                      <Link
+                        to={`/services/${service.id}`}
+                        className="font-medium hover:underline"
+                      >
                         {service.name}
                       </Link>
-                      <p className="max-w-xs truncate text-xs text-muted-foreground" title={serviceSelectorSummary(service)}>
-                        {serviceSelectorSummary(service)}
+                      <p
+                        className="max-w-xs truncate text-xs text-muted-foreground"
+                        title={serviceSelectorSummary(
+                          service,
+                          drivers.data?.find(
+                            (driver) => driver.type === service.driver,
+                          ),
+                        )}
+                      >
+                        {serviceSelectorSummary(
+                          service,
+                          drivers.data?.find(
+                            (driver) => driver.type === service.driver,
+                          ),
+                        )}
                       </p>
                     </TableCell>
                     <TableCell>
                       <DriverBadge driver={service.driver} />
                     </TableCell>
                     <TableCell>
-                      <HelpedStateBadge scope="service" state={service.status.state} />
+                      <HelpedStateBadge
+                        scope="service"
+                        state={service.status.state}
+                      />
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {service.idle_timeout_seconds ? formatDurationSeconds(service.idle_timeout_seconds) : "never"}
+                      {service.idle_timeout_seconds === -1
+                        ? "While dependents run"
+                        : service.idle_timeout_seconds
+                          ? formatDurationSeconds(service.idle_timeout_seconds)
+                          : "never"}
                     </TableCell>
                     <TableCell>
-                      <EndpointLinks ids={service.endpoints ?? []} endpointsById={endpointsById} />
+                      <EndpointLinks
+                        ids={service.endpoints ?? []}
+                        endpointsById={endpointsById}
+                      />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -92,7 +133,11 @@ export function Services() {
           )}
         </CardContent>
       </Card>
-      <ServiceFormDialog open={creating} onOpenChange={setCreating} onSaved={(saved) => navigate(`/services/${saved.id}`)} />
+      <ServiceFormDialog
+        open={creating}
+        onOpenChange={setCreating}
+        onSaved={(saved) => navigate(`/services/${saved.id}`)}
+      />
     </div>
   );
 }

@@ -105,6 +105,10 @@ func (i *Ingress) endpointByDomain(ctx context.Context, domain string) (*store.E
 	return cached(i.endpoints, "d:"+domain, func() (*store.Endpoint, error) { return i.data.GetEndpointByDomain(ctx, domain) })
 }
 
+func (i *Ingress) endpointByAccessHostname(ctx context.Context, hostname string) (*store.Endpoint, error) {
+	return cached(i.endpoints, "a:"+hostname, func() (*store.Endpoint, error) { return i.data.GetEndpointByAccessHostname(ctx, hostname) })
+}
+
 func (i *Ingress) endpointByID(ctx context.Context, id string) (*store.Endpoint, error) {
 	return cached(i.endpoints, "i:"+id, func() (*store.Endpoint, error) { return i.data.GetEndpoint(ctx, id) })
 }

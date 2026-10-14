@@ -21,22 +21,24 @@ const (
 )
 
 type fakeCF struct {
-	mu            sync.Mutex
-	config        map[string]any
-	configPuts    int
-	lastConfigPut map[string]any
-	tunnelGets    int
-	zones         []Zone
-	records       map[string][]DNSRecord
-	dnsPosts      int
-	dnsDeletes    int
-	failPostHosts map[string]bool
-	app           map[string]any
-	appPuts       int
-	limit429      int
-	nextID        int
-	server        *httptest.Server
-	local         *fakeLocal
+	mu               sync.Mutex
+	config           map[string]any
+	configPuts       int
+	lastConfigPut    map[string]any
+	tunnelGets       int
+	zones            []Zone
+	records          map[string][]DNSRecord
+	dnsPosts         int
+	dnsDeletes       int
+	failPostHosts    map[string]bool
+	app              map[string]any
+	appPuts          int
+	limit429         int
+	nextID           int
+	server           *httptest.Server
+	local            *fakeLocal
+	normalizeIngress bool
+	normalizeAccess  bool
 }
 
 func newFakeCF(t *testing.T) *fakeCF {
@@ -123,6 +125,16 @@ func (f *fakeCF) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.configPuts++
+	if f.normalizeIngress {
+		for _, raw := range body.Config["ingress"].([]any) {
+			if rule := raw.(map[string]any); rule["hostname"] != nil {
+				rule["path"] = nil
+				if _, exists := rule["originRequest"]; !exists {
+					rule["originRequest"] = map[string]any{"connectTimeout": 30}
+				}
+			}
+		}
+	}
 	f.config = body.Config
 	f.lastConfigPut = body.Config
 	reply(w, 200, true, map[string]any{"config": body.Config}, 0, "")
@@ -201,6 +213,13 @@ func (f *fakeCF) handlePutApp(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.appPuts++
+	if f.normalizeAccess {
+		for _, raw := range app["destinations"].([]any) {
+			if destination := raw.(map[string]any); destination["port"] == nil {
+				destination["port"] = 443
+			}
+		}
+	}
 	f.app = app
 	reply(w, 200, true, app, 0, "")
 }

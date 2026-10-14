@@ -18,7 +18,7 @@ const NAV = [
   { to: "/network", label: "Network", icon: Network },
   { to: "/endpoints", label: "Endpoints", icon: ListTree },
   { to: "/services", label: "Services", icon: Moon },
-  { to: "/cloudflare", label: "Cloudflare", icon: Cloud },
+  { to: "/connections", label: "Connections", icon: Cloud },
   { to: "/agents", label: "Agents", icon: KeyRound },
   { to: "/members", label: "Members", icon: Users },
   { to: "/audit", label: "Audit", icon: ScrollText },

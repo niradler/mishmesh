@@ -1,13 +1,44 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+} from "react";
 import { Link } from "react-router-dom";
-import { Cloud, Globe, KeyRound, Network, Power, Server, Target } from "lucide-react";
+import {
+  Cloud,
+  Globe,
+  KeyRound,
+  Network,
+  Power,
+  Server,
+  Target,
+} from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { StateDot, TONE_SURFACE, toneForState } from "@/components/common/StatusDot";
-import { EmptyState, ErrorState, LoadingState } from "@/components/common/States";
+import {
+  StateDot,
+  TONE_SURFACE,
+  toneForState,
+} from "@/components/common/StatusDot";
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+} from "@/components/common/States";
 import { useTopology } from "@/api/hooks";
 import { useSession } from "@/context/SessionContext";
 import { cn } from "@/lib/utils";
-import type { Topology, TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind, TopologyRef } from "@/api/types";
+import type {
+  Topology,
+  TopologyEdge,
+  TopologyEdgeKind,
+  TopologyNode,
+  TopologyNodeKind,
+  TopologyRef,
+} from "@/api/types";
 
 interface NodeBox {
   x: number;
@@ -28,14 +59,17 @@ interface ColumnSpec {
 }
 
 const COLUMNS: ColumnSpec[] = [
-  { title: "Tunnel", kinds: ["tunnel"] },
+  { title: "Connections", kinds: ["connection"] },
   { title: "Hostnames", kinds: ["hostname"] },
   { title: "Endpoints", kinds: ["endpoint"] },
   { title: "Upstreams", kinds: ["target", "service", "agent"] },
 ];
 
-const KIND_ICONS: Record<TopologyNodeKind, ComponentType<{ className?: string }>> = {
-  tunnel: Cloud,
+const KIND_ICONS: Record<
+  TopologyNodeKind,
+  ComponentType<{ className?: string }>
+> = {
+  connection: Cloud,
   hostname: Globe,
   endpoint: Network,
   target: Target,
@@ -49,19 +83,29 @@ const EDGE_DASH: Record<TopologyEdgeKind, string | undefined> = {
   proxies: undefined,
   tunnels: "7 4",
   wakes: "2 4",
+  requires: "10 3 2 3",
 };
 
 const EDGE_LEGEND: { kind: TopologyEdgeKind; description: string }[] = [
-  { kind: "routes", description: "tunnel routes to hostname" },
+  { kind: "routes", description: "connection routes to hostname" },
   { kind: "serves", description: "hostname serves endpoint" },
   { kind: "proxies", description: "endpoint proxies to target" },
   { kind: "tunnels", description: "endpoint tunnels to agent" },
   { kind: "wakes", description: "endpoint wakes service" },
+  { kind: "requires", description: "service requires another service" },
 ];
 
 const EMPTY_LAYOUT: MeasuredLayout = { boxes: {}, width: 0, height: 0 };
 
 function edgePath(from: NodeBox, to: NodeBox): string {
+  if (Math.abs(from.x - to.x) < 1) {
+    const startX = from.x + from.width;
+    const endX = to.x + to.width;
+    const startY = from.y + from.height / 2;
+    const endY = to.y + to.height / 2;
+    const side = Math.max(startX, endX) + 32;
+    return `M ${startX} ${startY} C ${side} ${startY}, ${side} ${endY}, ${endX} ${endY}`;
+  }
   const startX = from.x + from.width;
   const startY = from.y + from.height / 2;
   const endX = to.x;
@@ -71,7 +115,7 @@ function edgePath(from: NodeBox, to: NodeBox): string {
 }
 
 const REF_LABELS: Record<TopologyRef["kind"], string> = {
-  cloudflare: "Open Cloudflare",
+  connection: "Open connection",
   endpoint: "Open endpoint",
   service: "Open service",
   agent: "Open agent",
@@ -79,7 +123,6 @@ const REF_LABELS: Record<TopologyRef["kind"], string> = {
 
 function refPath(ref?: TopologyRef): string | null {
   if (!ref) return null;
-  if (ref.kind === "cloudflare") return "/cloudflare";
   if (!ref.id) return null;
   return `/${ref.kind}s/${encodeURIComponent(ref.id)}`;
 }
@@ -94,25 +137,84 @@ function NodeBody({ node }: { node: TopologyNode }) {
       </div>
       <div className="mt-1.5 flex items-center justify-between gap-2">
         <StateDot state={node.state} label={node.state} className="text-xs" />
-        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{node.kind}</span>
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          {node.kind}
+        </span>
       </div>
-      {node.detail && <p className="mt-1.5 line-clamp-2 break-words text-xs text-muted-foreground">{node.detail}</p>}
+      {node.detail && (
+        <p className="mt-1.5 line-clamp-2 break-words text-xs text-muted-foreground">
+          {node.detail}
+        </p>
+      )}
     </>
   );
 }
 
-function NodeHoverDetail({ node, action }: { node: TopologyNode; action?: string }) {
+function NodeHoverDetail({
+  node,
+  action,
+}: {
+  node: TopologyNode;
+  action?: string;
+}) {
+  const tooltip = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({
+    left: 0,
+    top: 0,
+    width: 288,
+    maxHeight: 240,
+  });
+  useLayoutEffect(() => {
+    function place(): void {
+      const element = tooltip.current;
+      const parent = element?.parentElement;
+      const region = parent?.closest('[aria-label="Network topology"]');
+      if (!element || !parent || !region) return;
+      const bounds = region.getBoundingClientRect();
+      const anchor = parent.getBoundingClientRect();
+      const width = Math.max(120, Math.min(288, bounds.width - 16));
+      const maxHeight = Math.max(40, bounds.height - 16);
+      const height = Math.min(
+        element.getBoundingClientRect().height,
+        maxHeight,
+      );
+      let top = anchor.bottom + 8;
+      if (top + height > bounds.bottom - 8) top = anchor.top - height - 8;
+      top = Math.max(bounds.top + 8, Math.min(top, bounds.bottom - height - 8));
+      const left = Math.max(
+        bounds.left + 8,
+        Math.min(anchor.left, bounds.right - width - 8),
+      );
+      setPosition({ left, top, width, maxHeight });
+    }
+    place();
+    const observer = new ResizeObserver(place);
+    if (tooltip.current) observer.observe(tooltip.current);
+    window.addEventListener("resize", place);
+    document.addEventListener("scroll", place, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+      document.removeEventListener("scroll", place, true);
+    };
+  }, [node.label, node.detail]);
   return (
     <div
+      ref={tooltip}
       role="tooltip"
-      className="pointer-events-none invisible absolute left-0 top-full z-30 mt-2 w-72 rounded-md border border-border bg-popover p-3 text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+      style={position}
+      className="pointer-events-none invisible fixed z-30 overflow-hidden rounded-md border border-border bg-popover p-3 text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
     >
       <p className="break-all font-mono text-xs">{node.label}</p>
       <p className="mt-1 text-xs">
         <span className="text-muted-foreground">State </span>
         {node.state}
       </p>
-      {node.detail && <p className="mt-1 whitespace-pre-wrap break-words text-xs text-muted-foreground">{node.detail}</p>}
+      {node.detail && (
+        <p className="mt-1 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+          {node.detail}
+        </p>
+      )}
       {action && <p className="mt-2 text-xs font-medium">{action} →</p>}
     </div>
   );
@@ -128,7 +230,10 @@ function NodeCard({
   const tone = toneForState(node.state);
   const path = refPath(node.ref);
   const action = node.ref ? REF_LABELS[node.ref.kind] : undefined;
-  const surface = cn("block rounded-lg border p-3 shadow-sm", TONE_SURFACE[tone]);
+  const surface = cn(
+    "block rounded-lg border p-3 shadow-sm",
+    TONE_SURFACE[tone],
+  );
   return (
     <div
       ref={(element) => {
@@ -171,7 +276,11 @@ function TopologyGraph({ topology }: { topology: Topology }) {
         title: spec.title,
         nodes: nodes
           .filter((node) => spec.kinds.includes(node.kind))
-          .sort((a, b) => spec.kinds.indexOf(a.kind) - spec.kinds.indexOf(b.kind) || a.label.localeCompare(b.label)),
+          .sort(
+            (a, b) =>
+              spec.kinds.indexOf(a.kind) - spec.kinds.indexOf(b.kind) ||
+              a.label.localeCompare(b.label),
+          ),
       })).filter((column) => column.nodes.length > 0),
     [nodes],
   );
@@ -188,7 +297,12 @@ function TopologyGraph({ topology }: { topology: Topology }) {
     const boxes: Record<string, NodeBox> = {};
     nodeElements.current.forEach((element, id) => {
       const rect = element.getBoundingClientRect();
-      boxes[id] = { x: rect.left - origin.left, y: rect.top - origin.top, width: rect.width, height: rect.height };
+      boxes[id] = {
+        x: rect.left - origin.left,
+        y: rect.top - origin.top,
+        width: rect.width,
+        height: rect.height,
+      };
     });
     setLayout({ boxes, width: origin.width, height: origin.height });
   }, []);
@@ -204,7 +318,9 @@ function TopologyGraph({ topology }: { topology: Topology }) {
   }, [measure]);
 
   const drawableEdges = edges.filter(
-    (edge: TopologyEdge) => layout.boxes[edge.from] !== undefined && layout.boxes[edge.to] !== undefined,
+    (edge: TopologyEdge) =>
+      layout.boxes[edge.from] !== undefined &&
+      layout.boxes[edge.to] !== undefined,
   );
 
   return (
@@ -215,7 +331,10 @@ function TopologyGraph({ topology }: { topology: Topology }) {
         tabIndex={0}
         className="min-h-0 min-w-0 flex-1 overflow-auto rounded-md border border-border bg-background/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <div ref={containerRef} className="relative flex min-h-full min-w-max justify-between gap-24 p-6">
+        <div
+          ref={containerRef}
+          className="relative flex min-h-full min-w-max justify-between gap-24 py-6 pl-6 pr-16"
+        >
           <svg
             className="pointer-events-none absolute left-0 top-0 z-0 text-muted-foreground/70"
             width={layout.width}
@@ -223,7 +342,15 @@ function TopologyGraph({ topology }: { topology: Topology }) {
             aria-hidden="true"
           >
             <defs>
-              <marker id="topology-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+              <marker
+                id="topology-arrow"
+                viewBox="0 0 8 8"
+                refX="7"
+                refY="4"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto"
+              >
                 <path d="M 0 0 L 8 4 L 0 8 z" fill="currentColor" />
               </marker>
             </defs>
@@ -241,7 +368,9 @@ function TopologyGraph({ topology }: { topology: Topology }) {
           </svg>
           {columns.map((column) => (
             <div key={column.title} className="flex shrink-0 flex-col gap-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{column.title}</p>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {column.title}
+              </p>
               {column.nodes.map((node) => (
                 <NodeCard key={node.id} node={node} register={register} />
               ))}
@@ -252,11 +381,25 @@ function TopologyGraph({ topology }: { topology: Topology }) {
       <div className="flex shrink-0 flex-wrap gap-x-6 gap-y-2 text-xs text-muted-foreground">
         {EDGE_LEGEND.map(({ kind, description }) => (
           <span key={kind} className="inline-flex items-center gap-2">
-            <svg width="28" height="6" aria-hidden="true" className="text-muted-foreground/70">
-              <line x1="0" y1="3" x2="28" y2="3" stroke="currentColor" strokeWidth={1.5} strokeDasharray={EDGE_DASH[kind]} />
+            <svg
+              width="28"
+              height="6"
+              aria-hidden="true"
+              className="text-muted-foreground/70"
+            >
+              <line
+                x1="0"
+                y1="3"
+                x2="28"
+                y2="3"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                strokeDasharray={EDGE_DASH[kind]}
+              />
             </svg>
             <span>
-              <span className="font-medium text-foreground">{kind}</span> {description}
+              <span className="font-medium text-foreground">{kind}</span>{" "}
+              {description}
             </span>
           </span>
         ))}

@@ -26,7 +26,11 @@ func freshDatabaseDSN(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = admin.Exec(`DROP DATABASE IF EXISTS ` + name + ` WITH (FORCE)`)
+		if os.Getenv("MISHMESH_TEST_RETAIN_FIXTURES") != "true" {
+			_, _ = admin.Exec(`DROP DATABASE IF EXISTS ` + name + ` WITH (FORCE)`)
+		} else {
+			t.Logf("retained isolated migration fixture %s", name)
+		}
 		_ = admin.Close()
 	})
 	u, err := url.Parse(adminDSN)

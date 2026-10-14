@@ -9,6 +9,8 @@ import (
 	"github.com/mishmesh/mishmesh/internal/cloudflare"
 	"github.com/mishmesh/mishmesh/internal/config"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
+	"github.com/mishmesh/mishmesh/internal/connections"
+	tailscaleconnection "github.com/mishmesh/mishmesh/internal/connections/tailscale"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
 	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/ingress"
@@ -18,28 +20,43 @@ import (
 )
 
 type networkControl struct {
-	log          *slog.Logger
-	services     *services.Manager
-	prober       *health.Prober
-	hub          *cloudflare.Hub
-	box          *secrets.Box
-	hostCommands bool
-	cp           *controlplane.API
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
+	log                *slog.Logger
+	services           *services.Manager
+	serviceRegistry    *services.Registry
+	invalidateIngress  func()
+	prober             *health.Prober
+	connectionHub      *connections.Hub
+	connectionRegistry *connections.Registry
+	box                *secrets.Box
+	hostCommands       bool
+	cp                 *controlplane.API
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
 }
 
 func newNetworkControl(cfg config.Server, data store.DataStore, conns store.ConnectionStore, guard *proxy.Guard, connector *proxy.Connector, log *slog.Logger) (*networkControl, error) {
-	nc := &networkControl{log: log, hostCommands: cfg.HostCommands}
-	keyFile := cfg.EffectiveSecretKeyFile()
-	key, err := secrets.LoadOrCreateKey(keyFile)
+	box, err := loadDataBox(cfg)
 	if err != nil {
 		return nil, err
 	}
-	if nc.box, err = secrets.New(key); err != nil {
-		return nil, err
+	return newNetworkControlWithBox(cfg, data, conns, guard, connector, log, box)
+}
+
+func newNetworkControlWithBox(cfg config.Server, data store.DataStore, conns store.ConnectionStore, guard *proxy.Guard, connector *proxy.Connector, log *slog.Logger, box *secrets.Box) (*networkControl, error) {
+	if box == nil {
+		return nil, fmt.Errorf("network control requires the data migration secret box")
 	}
+	nc := &networkControl{log: log, hostCommands: cfg.HostCommands, box: box}
+	keyFile := cfg.EffectiveSecretKeyFile()
+	driverRegistry := services.NewRegistry()
+	for _, driver := range []services.DriverType{services.DockerType{}, services.ComposeType{}, services.CommandType{}} {
+		if err := driverRegistry.Register(driver); err != nil {
+			return nil, fmt.Errorf("register service driver: %w", err)
+		}
+	}
+	nc.serviceRegistry = driverRegistry
 	nc.services = services.NewManager(services.Options{
+		Registry:     driverRegistry,
 		Log:          log,
 		OnChange:     nc.serviceChanged,
 		DockerHost:   cfg.DockerHost,
@@ -50,12 +67,17 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 		Interval: cfg.HealthInterval, Timeout: cfg.HealthTimeout, Log: log,
 	})
 	connector.SetTargetHealth(nc.prober)
-	nc.hub = cloudflare.NewHub(cloudflare.HubOptions{
-		Data:           data,
-		Box:            nc.box,
-		Log:            log,
-		Origin:         cloudflare.OriginForListenAddr(cfg.IngressAddr),
-		CloudflaredBin: cfg.CloudflaredBin,
+	connectionRegistry := connections.NewRegistry()
+	if err := connectionRegistry.Register(cloudflare.NewProvider(cloudflare.ProviderOptions{CloudflaredBin: cfg.CloudflaredBin})); err != nil {
+		return nil, fmt.Errorf("register cloudflare connection provider: %w", err)
+	}
+	if err := connectionRegistry.Register(tailscaleconnection.NewProvider(tailscaleconnection.Options{})); err != nil {
+		return nil, fmt.Errorf("register tailscale connection provider: %w", err)
+	}
+	nc.connectionRegistry = connectionRegistry
+	nc.connectionHub = connections.NewHub(connections.HubOptions{
+		Registry: connectionRegistry,
+		Deps:     connections.Deps{Data: data, Box: nc.box, Log: log, Origin: cloudflare.OriginForListenAddr(cfg.IngressAddr), HostCommands: cfg.HostCommands, OnAliasesChanged: nc.aliasesChanged},
 	})
 	log.Info("network control ready", "secret_key_file", keyFile, "host_commands", cfg.HostCommands)
 	return nc, nil
@@ -65,11 +87,18 @@ func (nc *networkControl) serviceChanged() {
 	nc.prober.Trigger()
 }
 
+func (nc *networkControl) aliasesChanged() {
+	if nc.invalidateIngress != nil {
+		nc.invalidateIngress()
+	}
+}
+
 func (nc *networkControl) attach(cp *controlplane.API) {
 	nc.cp = cp
 	cp.SetHealth(nc.prober)
 	cp.SetServices(nc.services)
-	cp.SetCloudflare(nc.hub, nc.box)
+	cp.SetServiceRegistry(nc.serviceRegistry)
+	cp.SetConnections(nc.connectionHub, nc.connectionRegistry, nc.box)
 	cp.SetHostCommands(nc.hostCommands)
 }
 
@@ -86,9 +115,9 @@ func (nc *networkControl) start() error {
 			return fmt.Errorf("load services: %w", err)
 		}
 	}
-	if err := nc.hub.Start(ctx); err != nil {
+	if err := nc.connectionHub.Start(ctx); err != nil {
 		cancel()
-		return fmt.Errorf("cloudflare: %w", err)
+		return fmt.Errorf("connections: %w", err)
 	}
 	nc.spawn(ctx, func(ctx context.Context) {
 		nc.services.Refresh(ctx)
@@ -111,7 +140,7 @@ func (nc *networkControl) stop(ctx context.Context, log *slog.Logger) {
 		return
 	}
 	nc.cancel()
-	nc.hub.Close()
+	nc.connectionHub.Close()
 	done := make(chan struct{})
 	go func() {
 		nc.wg.Wait()

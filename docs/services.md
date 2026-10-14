@@ -1,82 +1,52 @@
 # Services: wake on demand, sleep when idle
 
-A service is something mishmesh can start and stop on the server host: existing Docker containers, a Compose project, or a command pair. An endpoint linked to a service wakes it on the first request, and the manager stops it again after it has been idle.
+Services are stored per organization and use typed Docker, Compose or Command configurations. HTTP ingress wakes a linked service after endpoint authentication, IP rules and rate limits pass. Dependencies start before the dependent, share keep-awake holds and are released when it stops. TCP/UDP/TLS traffic keeps its existing transport behavior and does not implicitly wake HTTP services.
 
-Services are stored in the database, one set per org, and managed through the API (`/api/v1/services`, see [api.md](api.md#services-scale-to-zero)) or the web UI. Every server process loads all services at startup and reloads them on every change.
-
-## Defining a service
+## Define a service
 
 ```json
 {
-  "name": "affine",
+  "name": "app",
   "driver": "compose",
-  "spec": { "compose": { "project": "affine", "file": "/opt/homelab/stacks/affine/compose.yaml" }, "ready_tcp": "127.0.0.1:3010" },
+  "config": {"project": "app", "file": "/srv/app/compose.yaml"},
+  "ready": {"http": {"url": "http://127.0.0.1:8080/health", "status": 200}},
+  "requires": ["svc_database"],
   "idle_timeout_seconds": 1800,
-  "start_timeout_seconds": 180
+  "start_timeout_seconds": 120
 }
 ```
 
-| Field | Default | Meaning |
+`GET /api/v1/service-drivers` provides labels, help and field descriptors. `config` is a flat object owned by the selected driver; the old `spec` wrapper and `exec` driver name are rejected by the live API. `name` is unique in the org and uses1–63 lowercase letters, digits, hyphen, underscore or dot, starting with a letter or digit.
+
+| Driver | Config | Behavior |
 | --- | --- | --- |
-| `name` | required | Unique in the org. `^[a-z0-9][a-z0-9-_.]{0,62}$` |
-| `driver` | required | `docker`, `compose` or `exec` |
-| `spec` | required | Exactly one block matching the driver, plus optional `ready_tcp`. Unknown fields are rejected |
-| `spec.ready_tcp` | none | `host:port` that must be listening before the service counts as ready |
-| `idle_timeout_seconds` | `0` (never) | Idle time before the service is stopped |
-| `start_timeout_seconds` | `0` = 120 | How long a wake may take. Both timeouts allow 0 to 604800 |
+| `docker` | `containers` or `label` | Controls matching existing containers through the Docker Engine API. Missing selected containers fail start. |
+| `compose` | required `project`; optional `services`, `file`, `bin` | Uses Compose labels to find existing containers. An optional file creates missing containers with explicit Compose argv. Stop preserves networks and volumes. |
+| `command` | required `start`/`stop` argv; optional `status`, `dir`, `env` | Runs programs without a shell. Argument whitespace is preserved. Status exit0 means running; without status configure explicit readiness. |
 
-## Drivers
+Sensitive configuration is redacted for every reader, including owners. An unchanged `<redacted>` placeholder preserves the old sensitive value. Review process environment and inherited credentials before enabling host execution.
 
-| Driver | Spec | Behavior |
-| --- | --- | --- |
-| `docker` | `{containers?: [name], label?: "key" or "key=value"}`, one of them required | Start starts every stopped match, stop stops every running match. State is `running` when all matches run, `stopped` when none do, `partial` otherwise. Start fails when a named container is missing |
-| `compose` | `{project, services?: [name], file?, bin?}` | Containers are found by the label `com.docker.compose.project` (and `com.docker.compose.service` when `services` is set) and started through the Engine API. If none exist and `file` is set, mishmesh runs `<bin> compose -f <file> -p <project> up -d [services]`; `bin` defaults to `docker`. Stop only stops containers, never `down`, so volumes and networks stay |
-| `exec` | `{start: [argv], stop: [argv], status?: [argv], dir?, env?: {}}` | Commands run without a shell. `dir` sets the working directory and `env` is merged over mishmesh's environment. The first 2 KB of output appears in errors. `status` exit 0 means running, any other exit means stopped; without it the state is `unknown` and readiness decides |
+## Readiness and Requires
 
-Docker and Compose talk to the Engine API at `MISHMESH_DOCKER_HOST` (default `unix:///var/run/docker.sock`; `unix://`, `tcp://` and `http://` work), with no SDK. The client negotiates the API version on first use.
+`ready` is empty, `{"tcp":"host:port"}` or `{"http":{"url":"http(s)://host/path","status":200}}`. TCP connections must remain usable through the readiness hold; HTTP checks require the configured status and do not follow redirects. Checks and service startup are bounded by `start_timeout_seconds` (0 defaults to120seconds, maximum604800).
 
-`exec.env` values are shown as `<redacted>` to callers without the `host:exec` permission.
+`requires` contains same-org service IDs. Missing services, cycles and foreign-org edges are rejected atomically. A shared requirement stays up while any dependent uses it. Independent requests join a shared start. Manual stop returns409 with running dependents; the UI offers a separate, explicit action to stop dependent services in order, then the requirement. The backend checks permission for each operation and never silently cascades.
 
-## Host commands
+`idle_timeout_seconds` accepts-1 through604800. Zero means no automatic idle stop. Positive values stop an inactive service after that timeout. Minus one keeps a requirement alive only while dependents hold it. `required_by` in service responses lists reverse graph links.
 
-`exec` services and Compose services with a `file` run commands on the server host. They are gated twice:
+## Save and restart
 
-| Gate | Effect |
-| --- | --- |
-| `MISHMESH_HOST_COMMANDS` (default `true` when `MISHMESH_SIGNUP_MODE=invite`, else `false`) | When off, the API refuses to create, update or delete such services (403), and any stored ones load in the `error` state |
-| `host:exec` permission (owners only in the default policy) | Needed to create such a service, to update or delete one that already uses host commands, or to turn an existing service into one |
+Normal Save changes metadata/Requires without stopping an unchanged runtime. Driver or runtime-config changes on a running service return409. **Save and restart** sends one `PUT /services/{id}?restart=true`: reserve lifecycle admission, check old/proposed transitive permissions and stop guards, stop, commit the new row, apply it, then start. Ingress cannot wake an old definition during this sequence.
 
-`GET /api/v1/capabilities` returns `{host_commands}` for the caller, and the UI hides the `exec` driver and the Compose file field when it is false. Plain `docker` services and Compose services without a `file` need neither gate.
+Failures report `phase` and `saved`. A stop/save failure leaves the previous saved config; a start failure after commit keeps the new config saved and visible when reopened. A canceled authoritative apply invalidates the old runtime until a successful reload restores the saved definition. The UI shows the phase and saved state. Restart can interrupt traffic and running dependents must be dealt with explicitly first.
 
-## Linking endpoints
+Deleting a service is blocked while an endpoint or service requires it. A permitted unreferenced delete stops it before removing its definition. See [API details](api.md#services-scale-to-zero).
 
-An endpoint links to a service with `policy.service_id`:
+## Host execution
 
-```bash
-curl -X PATCH $API/api/v1/endpoints/$EP -H 'content-type: application/json' \
-  -d '{"policy": {"service_id": "svc_..."}}'
-```
+Command services and Compose files need both `MISHMESH_HOST_COMMANDS=true` and `host:exec` (owner by default). The check includes the current and proposed transitive requirement graph for create/update/start/stop/delete. An admin's generic service-write permission does not grant host execution. Broken stored configurations fail closed.
 
-The service must belong to the endpoint's org. A service with linked endpoints cannot be deleted: `DELETE` returns 409 with the linked endpoint IDs in `endpoints`. `GET /services/{id}` lists them too.
-
-Only HTTP(S) ingress wakes a service, after IP rules, rate limits and authentication pass:
-
-- A browser navigation (GET or HEAD accepting `text/html`) gets a 503 "starting" page that refreshes every 2 seconds while the service starts in the background.
-- Other requests wait until the service is ready and are then proxied, or get 503 with `Retry-After: 2` if the start fails.
-
-TCP and TLS endpoints do not wake services. The endpoint `health` reports `sleeping` or `waking` from the service state, and `health.service` carries the service ID.
-
-## Lifecycle
-
-**Wake.** Concurrent wakes of one service share a single start. If the driver reports running and the readiness address answers, nothing is started. Otherwise the driver starts the service and mishmesh polls the readiness address every 500ms until it is ready or the start timeout passes. The readiness address is `spec.ready_tcp`, else the endpoint's first proxy target. A connection that is accepted and closed within 300ms does not count as ready. A failure marks the service `error` with the reason in `last_error`. The wake continues even if the caller disconnects. `POST /services/{id}/start` does the same wake and uses the first linked endpoint's first target.
-
-**Track.** Ingress counts in-flight requests and upgraded connections per service and records the last activity time.
-
-**Idle stop.** Every 30 seconds, a running or partial service with `idle_timeout_seconds > 0`, nothing in flight and no activity for longer than the timeout is stopped (60 second limit) and marked `sleeping`. This includes services that were started outside mishmesh (`started_by: external`); they get one full idle period from when mishmesh first saw them running.
-
-**Refresh.** Every 15 seconds, driver states are re-read. A service stopped outside mishmesh shows `stopped`; one stopped by mishmesh shows `sleeping`. Both wake on request.
-
-States: `running`, `stopped`, `sleeping`, `starting`, `partial`, `unknown`, `error`.
+`GET /capabilities` returns caller-specific `{host_commands}`. The UI filters prohibited driver choices and disables host fields. Default host execution is enabled in invite mode and disabled in org mode. Docker and label-only Compose do not require this capability.
 
 ## Docker socket guidance
 
@@ -101,17 +71,13 @@ services:
 
 The proxy only exposes container list, start and stop. Compose `up -d` for a stack with no containers yet needs the Docker CLI and the real socket, so with a proxy create the stack once beforehand and let mishmesh start and stop the existing containers.
 
-## Migrating from `MISHMESH_SERVICES_FILE`
+## Importing typed services YAML
 
-Earlier builds read services from a host-local YAML file. That variable is gone and the server ignores it. Import the file once:
-
-```bash
-python3 .claude/scripts/import-services.py <services.yml> [api] [--dry-run]
+```text
+python .claude/scripts/import-services.py <private-services.yml> http://127.0.0.1:8081 --dry-run
+python .claude/scripts/import-services.py <private-services.yml> http://127.0.0.1:8081
 ```
 
-- `api` is the server base URL (default `http://127.0.0.1:8091`). When `MISHMESH_API_AUTH_TOKEN` is set, the script sends it as `Authorization: Bearer <token>`. Without it, run against a server with `MISHMESH_API_AUTH_DISABLED=true`. Services land in the org the credential resolves to.
-- It only imports services. It creates or updates them by name (`POST /services`, `PUT /services/{id}`) and is safe to re-run. It does not touch endpoints; link them by setting `policy.service_id` on each endpoint.
-- `exec.env` values are printed as `<redacted>`. `ready.tcp` becomes `spec.ready_tcp`, and durations such as `90s`, `30m` or `2h` become seconds, with `defaults` applied.
-- The file's `orgs` and `docker.host` keys are ignored. Set `MISHMESH_DOCKER_HOST` instead.
-- It requires PyYAML.
-- `--dry-run` prints the changes without making them.
+PyYAML is needed only for reading YAML. The helper accepts typed driver/config/ready/requires fields and integer `_seconds` timers only. Nested driver blocks, `spec`, `exec` and old timer fields are rejected. It uses names for idempotency, masks configuration values in output and never silently restarts a running service. Omit `--dry-run` only after reviewing its desired rows. Set `MISHMESH_API_AUTH_TOKEN` privately when bearer authentication is needed.
+
+For fresh initialization and current database/key persistence see [Connections](connections.md#clean-slate-initialization-and-validation).

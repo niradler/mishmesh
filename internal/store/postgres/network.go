@@ -1,7 +1,12 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -15,38 +20,108 @@ CREATE TABLE IF NOT EXISTS services (
   org_id                TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   name                  TEXT NOT NULL,
   driver                TEXT NOT NULL,
-  spec                  TEXT NOT NULL,
+  config                TEXT,
+  ready                 TEXT,
   idle_timeout_seconds  INTEGER NOT NULL DEFAULT 0,
   start_timeout_seconds INTEGER NOT NULL DEFAULT 0,
   created_at            BIGINT NOT NULL,
   updated_at            BIGINT NOT NULL,
   UNIQUE (org_id, name)
 );
-CREATE TABLE IF NOT EXISTS cloudflare_connections (
-  org_id           TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
-  name             TEXT NOT NULL,
-  account_id       TEXT NOT NULL,
-  tunnel_id        TEXT NOT NULL,
-  tunnel_token_enc BYTEA,
-  api_token_enc    BYTEA,
-  access_app_id    TEXT NOT NULL DEFAULT '',
-  origin           TEXT NOT NULL DEFAULT '',
-  connector        TEXT NOT NULL,
-  metrics_addr     TEXT NOT NULL DEFAULT '',
-  prune            BOOLEAN NOT NULL DEFAULT FALSE,
-  updated_at       BIGINT NOT NULL
+
+CREATE TABLE IF NOT EXISTS connections (
+ id TEXT PRIMARY KEY,
+ org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+ type TEXT NOT NULL,
+ name TEXT NOT NULL,
+ config TEXT NOT NULL,
+ secrets_enc BYTEA,
+ state TEXT,
+ created_at BIGINT NOT NULL,
+ updated_at BIGINT NOT NULL,
+ UNIQUE (org_id, name),
+ UNIQUE (org_id, id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS services_org_id ON services (org_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS endpoints_org_id ON endpoints (org_id, id);
+CREATE TABLE IF NOT EXISTS service_requires (
+ org_id TEXT NOT NULL,
+ service_id TEXT NOT NULL,
+ requires_id TEXT NOT NULL,
+ PRIMARY KEY (service_id, requires_id),
+ CHECK (service_id <> requires_id),
+ FOREIGN KEY (org_id, service_id) REFERENCES services (org_id, id) ON DELETE CASCADE,
+ FOREIGN KEY (org_id, requires_id) REFERENCES services (org_id, id) ON DELETE RESTRICT
+);
+CREATE TABLE IF NOT EXISTS service_connections (
+ org_id TEXT NOT NULL,
+ service_id TEXT NOT NULL,
+ connection_id TEXT NOT NULL,
+ PRIMARY KEY (service_id, connection_id),
+ FOREIGN KEY (org_id, service_id) REFERENCES services (org_id, id) ON DELETE CASCADE,
+ FOREIGN KEY (org_id, connection_id) REFERENCES connections (org_id, id) ON DELETE RESTRICT
+);
+CREATE TABLE IF NOT EXISTS endpoint_aliases (
+ hostname TEXT PRIMARY KEY,
+ org_id TEXT NOT NULL,
+ endpoint_id TEXT NOT NULL,
+ connection_id TEXT NOT NULL,
+ FOREIGN KEY (org_id, endpoint_id) REFERENCES endpoints (org_id, id) ON DELETE CASCADE,
+ FOREIGN KEY (org_id, connection_id) REFERENCES connections (org_id, id) ON DELETE RESTRICT
 );
 `
 
-const serviceCols = `id, org_id, name, driver, spec, idle_timeout_seconds, start_timeout_seconds, created_at, updated_at`
+const serviceCols = `id, org_id, name, driver, config, ready, idle_timeout_seconds, start_timeout_seconds, created_at, updated_at,
+ (SELECT json_agg(requires_id ORDER BY requires_id)::text FROM service_requires WHERE service_id = services.id),
+ (SELECT json_agg(connection_id ORDER BY connection_id)::text FROM service_connections WHERE service_id = services.id)`
 
 func (s *Store) CreateService(ctx context.Context, svc *store.Service) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO services (`+serviceCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		svc.ID, svc.OrgID, svc.Name, svc.Driver, string(svc.Spec), svc.IdleTimeoutSeconds, svc.StartTimeoutSeconds, ns(svc.CreatedAt), ns(svc.UpdatedAt))
-	return uniqueErr("create service", err)
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := createServiceTx(ctx, tx, svc); err != nil {
+		return err
+	}
+	return wrap("create service", tx.Commit())
+}
+
+func createServiceTx(ctx context.Context, tx *sql.Tx, svc *store.Service) error {
+	config, ready, err := serviceDocuments(svc)
+	if err != nil {
+		return err
+	}
+	if err := validateServiceRequirements(ctx, tx, svc, false); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO services (id, org_id, name, driver, config, ready, idle_timeout_seconds, start_timeout_seconds, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, svc.ID, svc.OrgID, svc.Name, svc.Driver, config, ready, svc.IdleTimeoutSeconds, svc.StartTimeoutSeconds, ns(svc.CreatedAt), ns(svc.UpdatedAt))
+	if err != nil {
+		return uniqueErr("create service", err)
+	}
+	if err := replaceServiceReferences(ctx, tx, svc); err != nil {
+		return err
+	}
+	return nil
+}
+
+func serviceDocuments(svc *store.Service) (any, any, error) {
+	if !json.Valid(svc.Config) {
+		return nil, nil, fmt.Errorf("service config must be valid JSON")
+	}
+	if svc.Ready != nil && !json.Valid(svc.Ready) {
+		return nil, nil, fmt.Errorf("service readiness must be valid JSON")
+	}
+	return string(svc.Config), nullableJSON(svc.Ready), nil
+}
+
+func nullableJSON(value json.RawMessage) any {
+	if value == nil {
+		return nil
+	}
+	return string(value)
 }
 
 func (s *Store) GetService(ctx context.Context, id string) (*store.Service, error) {
@@ -65,6 +140,12 @@ func (s *Store) ListAllServices(ctx context.Context) ([]*store.Service, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 	return s.queryServices(ctx, `SELECT `+serviceCols+` FROM services ORDER BY org_id, name`)
+}
+
+func (s *Store) ListServiceDependents(ctx context.Context, orgID, serviceID string) ([]*store.Service, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	return s.queryServices(ctx, `SELECT `+serviceCols+` FROM services WHERE org_id = $1 AND id IN (SELECT service_id FROM service_requires WHERE org_id = $1 AND requires_id = $2) ORDER BY name, id`, orgID, serviceID)
 }
 
 func (s *Store) queryServices(ctx context.Context, query string, args ...any) ([]*store.Service, error) {
@@ -87,99 +168,452 @@ func (s *Store) queryServices(ctx context.Context, query string, args ...any) ([
 func (s *Store) UpdateService(ctx context.Context, svc *store.Service) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE services SET name = $1, driver = $2, spec = $3, idle_timeout_seconds = $4, start_timeout_seconds = $5, updated_at = $6 WHERE id = $7`,
-		svc.Name, svc.Driver, string(svc.Spec), svc.IdleTimeoutSeconds, svc.StartTimeoutSeconds, ns(svc.UpdatedAt), svc.ID)
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := updateServiceTx(ctx, tx, svc); err != nil {
+		return err
+	}
+	return wrap("update service", tx.Commit())
+}
+
+func updateServiceTx(ctx context.Context, tx *sql.Tx, svc *store.Service) error {
+	config, ready, err := serviceDocuments(svc)
+	if err != nil {
+		return err
+	}
+	if err := validateServiceRequirements(ctx, tx, svc, true); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE services SET name = $1, driver = $2, config = $3, ready = $4, idle_timeout_seconds = $5, start_timeout_seconds = $6, updated_at = $7 WHERE id = $8 AND org_id = $9`, svc.Name, svc.Driver, config, ready, svc.IdleTimeoutSeconds, svc.StartTimeoutSeconds, ns(svc.UpdatedAt), svc.ID, svc.OrgID)
 	if err != nil {
 		return uniqueErr("update service", err)
 	}
-	return affected("update service", res)
+	if err := affected("update service", res); err != nil {
+		return err
+	}
+	if err := replaceServiceReferences(ctx, tx, svc); err != nil {
+		return err
+	}
+	return nil
+}
+
+func replaceServiceReferences(ctx context.Context, tx *sql.Tx, svc *store.Service) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM service_requires WHERE service_id = $1`, svc.ID); err != nil {
+		return wrap("replace requirements", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM service_connections WHERE service_id = $1`, svc.ID); err != nil {
+		return wrap("replace service connections", err)
+	}
+	seen := make(map[string]bool)
+	for _, id := range svc.Requires {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if _, err := tx.ExecContext(ctx, `INSERT INTO service_requires (org_id, service_id, requires_id) VALUES ($1, $2, $3)`, svc.OrgID, svc.ID, id); err != nil {
+			return wrap("replace requirements", err)
+		}
+	}
+	seen = make(map[string]bool)
+	for _, id := range svc.ConnectionIDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if _, err := tx.ExecContext(ctx, `INSERT INTO service_connections (org_id, service_id, connection_id) VALUES ($1, $2, $3)`, svc.OrgID, svc.ID, id); err != nil {
+			return wrap("replace service connections", err)
+		}
+	}
+	return nil
+}
+
+func validateServiceRequirements(ctx context.Context, tx *sql.Tx, svc *store.Service, requireExisting bool) error {
+	rows, err := tx.QueryContext(ctx, `SELECT `+serviceCols+` FROM services WHERE org_id = $1 ORDER BY name, id`, svc.OrgID)
+	if err != nil {
+		return wrap("read requirement graph", err)
+	}
+	defer rows.Close()
+	var services []*store.Service
+	exists := false
+	for rows.Next() {
+		service, err := scanService(rows)
+		if err != nil {
+			return err
+		}
+		services = append(services, service)
+		if service.ID == svc.ID {
+			exists = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return wrap("read requirement graph", err)
+	}
+	if requireExisting && !exists {
+		return store.ErrNotFound
+	}
+	return store.ValidateRequirements(svc.OrgID, svc.ID, svc.Requires, append(services, svc))
 }
 
 func (s *Store) DeleteService(ctx context.Context, id string) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	res, err := s.db.ExecContext(ctx, `DELETE FROM services WHERE id = $1`, id)
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := deleteServiceTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return wrap("delete service", tx.Commit())
+}
+
+func checkServiceDeleteTx(ctx context.Context, tx *sql.Tx, id string) error {
+	var references int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM service_requires WHERE requires_id = $1`, id).Scan(&references); err != nil {
+		return wrap("check required service", err)
+	}
+	if references > 0 {
+		return store.ErrConflict
+	}
+	policies, err := endpointPolicies(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, policy := range policies {
+		if policy.ServiceID == id {
+			return store.ErrConflict
+		}
+	}
+	return nil
+}
+
+func deleteServiceTx(ctx context.Context, tx *sql.Tx, id string) error {
+	if err := checkServiceDeleteTx(ctx, tx, id); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM services WHERE id = $1`, id)
 	if err != nil {
 		return wrap("delete service", err)
 	}
-	return affected("delete service", res)
+	if err := affected("delete service", res); err != nil {
+		return err
+	}
+	return nil
 }
 
 func scanService(row interface{ Scan(...any) error }) (*store.Service, error) {
 	var svc store.Service
-	var spec string
+	var config, ready, requires, connections sql.NullString
 	var created, updated int64
-	if err := row.Scan(&svc.ID, &svc.OrgID, &svc.Name, &svc.Driver, &spec, &svc.IdleTimeoutSeconds, &svc.StartTimeoutSeconds, &created, &updated); err != nil {
+	if err := row.Scan(&svc.ID, &svc.OrgID, &svc.Name, &svc.Driver, &config, &ready, &svc.IdleTimeoutSeconds, &svc.StartTimeoutSeconds, &created, &updated, &requires, &connections); err != nil {
 		return nil, scanErr("scan service", err)
 	}
-	svc.Spec = []byte(spec)
-	svc.CreatedAt = fromNS(created)
-	svc.UpdatedAt = fromNS(updated)
+	if config.Valid {
+		svc.Config = json.RawMessage(config.String)
+	}
+	if ready.Valid {
+		svc.Ready = json.RawMessage(ready.String)
+	}
+	if requires.Valid {
+		if err := json.Unmarshal([]byte(requires.String), &svc.Requires); err != nil {
+			return nil, wrap("scan requirements", err)
+		}
+	}
+	if connections.Valid {
+		if err := json.Unmarshal([]byte(connections.String), &svc.ConnectionIDs); err != nil {
+			return nil, wrap("scan service connections", err)
+		}
+	}
+	svc.CreatedAt, svc.UpdatedAt = fromNS(created), fromNS(updated)
 	return &svc, nil
 }
 
-const cloudflareCols = `org_id, name, account_id, tunnel_id, tunnel_token_enc, api_token_enc, access_app_id, origin, connector, metrics_addr, prune, updated_at`
+const connectionCols = `id, org_id, type, name, config, secrets_enc, created_at, updated_at, state`
 
-func (s *Store) GetCloudflareConnection(ctx context.Context, orgID string) (*store.CloudflareConnection, error) {
+func (s *Store) CreateConnection(ctx context.Context, c *store.Connection) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	return scanCloudflare(s.db.QueryRowContext(ctx, `SELECT `+cloudflareCols+` FROM cloudflare_connections WHERE org_id = $1`, orgID))
+	if !json.Valid(c.Config) {
+		return fmt.Errorf("connection config must be valid JSON")
+	}
+	if len(c.State) > 0 && !json.Valid(c.State) {
+		return fmt.Errorf("connection state must be valid JSON")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO connections (`+connectionCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, c.ID, c.OrgID, c.Type, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.CreatedAt), ns(c.UpdatedAt), nullableJSON(c.State))
+	return uniqueErr("create connection", err)
 }
 
-func (s *Store) ListCloudflareConnections(ctx context.Context) ([]*store.CloudflareConnection, error) {
+func (s *Store) GetConnection(ctx context.Context, id string) (*store.Connection, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, `SELECT `+cloudflareCols+` FROM cloudflare_connections ORDER BY org_id`)
+	return scanConnection(s.db.QueryRowContext(ctx, `SELECT `+connectionCols+` FROM connections WHERE id = $1`, id))
+}
+
+func (s *Store) ListConnections(ctx context.Context, orgID string) ([]*store.Connection, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	return s.queryConnections(ctx, `SELECT `+connectionCols+` FROM connections WHERE org_id = $1 ORDER BY name`, orgID)
+}
+
+func (s *Store) ListAllConnections(ctx context.Context) ([]*store.Connection, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	return s.queryConnections(ctx, `SELECT `+connectionCols+` FROM connections ORDER BY org_id, name`)
+}
+
+func (s *Store) queryConnections(ctx context.Context, query string, args ...any) ([]*store.Connection, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, wrap("list cloudflare connections", err)
+		return nil, wrap("list connections", err)
 	}
 	defer rows.Close()
-	var out []*store.CloudflareConnection
+	var out []*store.Connection
 	for rows.Next() {
-		c, err := scanCloudflare(rows)
+		c, err := scanConnection(rows)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, c)
 	}
-	return out, wrap("list cloudflare connections", rows.Err())
+	return out, wrap("list connections", rows.Err())
 }
 
-func (s *Store) SetCloudflareConnection(ctx context.Context, c *store.CloudflareConnection) error {
+func (s *Store) UpdateConnection(ctx context.Context, c *store.Connection) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO cloudflare_connections (`+cloudflareCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		 ON CONFLICT (org_id) DO UPDATE SET name = EXCLUDED.name, account_id = EXCLUDED.account_id, tunnel_id = EXCLUDED.tunnel_id,
-		   tunnel_token_enc = EXCLUDED.tunnel_token_enc, api_token_enc = EXCLUDED.api_token_enc, access_app_id = EXCLUDED.access_app_id,
-		   origin = EXCLUDED.origin, connector = EXCLUDED.connector, metrics_addr = EXCLUDED.metrics_addr, prune = EXCLUDED.prune,
-		   updated_at = EXCLUDED.updated_at`,
-		c.OrgID, c.Name, c.AccountID, c.TunnelID, nullBytes(c.TunnelTokenEnc), nullBytes(c.APITokenEnc), c.AccessAppID, c.Origin,
-		c.Connector, c.MetricsAddr, c.Prune, ns(c.UpdatedAt))
-	return wrap("set cloudflare connection", err)
-}
-
-func (s *Store) DeleteCloudflareConnection(ctx context.Context, orgID string) error {
-	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
-	defer cancel()
-	res, err := s.db.ExecContext(ctx, `DELETE FROM cloudflare_connections WHERE org_id = $1`, orgID)
+	if !json.Valid(c.Config) {
+		return fmt.Errorf("connection config must be valid JSON")
+	}
+	tx, previous, err := s.beginConnectionInputWrite(ctx, c, nil)
 	if err != nil {
-		return wrap("delete cloudflare connection", err)
+		return err
 	}
-	return affected("delete cloudflare connection", res)
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE connections SET type = $1, name = $2, config = $3, secrets_enc = $4, updated_at = $5 WHERE id = $6 AND org_id = $7`, c.Type, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), c.ID, c.OrgID)
+	if err != nil {
+		return uniqueErr("update connection", err)
+	}
+	if err := affected("update connection", res); err != nil {
+		return err
+	}
+	return commitConnectionInput(ctx, tx, previous, c)
 }
 
-func scanCloudflare(row interface{ Scan(...any) error }) (*store.CloudflareConnection, error) {
-	var c store.CloudflareConnection
-	var updated int64
-	if err := row.Scan(&c.OrgID, &c.Name, &c.AccountID, &c.TunnelID, &c.TunnelTokenEnc, &c.APITokenEnc, &c.AccessAppID, &c.Origin,
-		&c.Connector, &c.MetricsAddr, &c.Prune, &updated); err != nil {
-		return nil, scanErr("scan cloudflare connection", err)
+func (s *Store) UpdateConnectionIfCurrent(ctx context.Context, c, expected *store.Connection) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	if c.ID != expected.ID || c.OrgID != expected.OrgID || c.Type != expected.Type || !json.Valid(c.Config) {
+		return store.ErrConflict
 	}
-	c.UpdatedAt = fromNS(updated)
+	tx, previous, err := s.beginConnectionInputWrite(ctx, c, expected)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE connections SET name = $1, config = $2, secrets_enc = $3, updated_at = $4 WHERE id = $5 AND org_id = $6 AND type = $7 AND name = $8 AND config = $9 AND secrets_enc IS NOT DISTINCT FROM $10 AND updated_at = $11`, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), expected.ID, expected.OrgID, expected.Type, expected.Name, string(expected.Config), nullBytes(expected.SecretsEnc), ns(expected.UpdatedAt))
+	if err != nil {
+		return uniqueErr("update connection", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return wrap("update connection", err)
+	}
+	if count == 0 {
+		return store.ErrConflict
+	}
+	return commitConnectionInput(ctx, tx, previous, c)
+}
+
+func (s *Store) DeleteConnectionIfCurrent(ctx context.Context, expected *store.Connection) error {
+	return s.deleteConnection(ctx, expected.ID, expected)
+}
+
+func (s *Store) DeleteConnection(ctx context.Context, id string) error {
+	return s.deleteConnection(ctx, id, nil)
+}
+
+func (s *Store) deleteConnection(ctx context.Context, id string, expected *store.Connection) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if expected != nil {
+		current, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionCols+` FROM connections WHERE id = $1`, id))
+		if err != nil {
+			return err
+		}
+		if current.OrgID != expected.OrgID || current.Type != expected.Type || current.Name != expected.Name || !bytes.Equal(current.Config, expected.Config) || !bytes.Equal(current.SecretsEnc, expected.SecretsEnc) || !current.UpdatedAt.Equal(expected.UpdatedAt) {
+			return store.ErrConflict
+		}
+	}
+	var references int
+	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM service_connections WHERE connection_id = $1) + (SELECT COUNT(*) FROM endpoint_aliases WHERE connection_id = $2)`, id, id).Scan(&references); err != nil {
+		return wrap("check connection references", err)
+	}
+	if references > 0 {
+		return connectionInUse(ctx, tx, id)
+	}
+	policies, err := endpointPolicies(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, policy := range policies {
+		for _, ref := range policy.Access {
+			if ref.ConnectionID == id {
+				return connectionInUse(ctx, tx, id)
+			}
+		}
+	}
+	query := `DELETE FROM connections WHERE id = $1`
+	arguments := []any{id}
+	if expected != nil {
+		query = `DELETE FROM connections WHERE id = $1 AND org_id = $2 AND type = $3 AND name = $4 AND config = $5 AND secrets_enc IS NOT DISTINCT FROM $6 AND updated_at = $7`
+		arguments = []any{expected.ID, expected.OrgID, expected.Type, expected.Name, string(expected.Config), nullBytes(expected.SecretsEnc), ns(expected.UpdatedAt)}
+	}
+	res, err := tx.ExecContext(ctx, query, arguments...)
+	if err != nil {
+		return wrap("delete connection", err)
+	}
+	if expected != nil {
+		count, err := res.RowsAffected()
+		if err != nil {
+			return wrap("delete connection", err)
+		}
+		if count == 0 {
+			return store.ErrConflict
+		}
+	} else if err := affected("delete connection", res); err != nil {
+		return err
+	}
+	return wrap("delete connection", tx.Commit())
+}
+
+func connectionInUse(ctx context.Context, tx *sql.Tx, id string) error {
+	references := []store.ConnectionReference{}
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT 'service', s.id, s.name FROM services s JOIN service_connections sc ON sc.service_id = s.id WHERE sc.connection_id = $1 AND s.org_id = (SELECT org_id FROM connections WHERE id = $2) UNION SELECT DISTINCT 'endpoint', e.id, COALESCE(e.subdomain, e.domain, '') FROM endpoints e JOIN endpoint_aliases a ON a.endpoint_id = e.id WHERE a.connection_id = $3 AND e.org_id = (SELECT org_id FROM connections WHERE id = $4)`, id, id, id, id)
+	if err != nil {
+		return wrap("read connection references", err)
+	}
+	for rows.Next() {
+		var reference store.ConnectionReference
+		if err := rows.Scan(&reference.Kind, &reference.ID, &reference.Name); err != nil {
+			rows.Close()
+			return wrap("read connection references", err)
+		}
+		references = append(references, reference)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return wrap("read connection references", err)
+	}
+	rows, err = tx.QueryContext(ctx, `SELECT id, COALESCE(subdomain, domain, ''), policy FROM endpoints WHERE org_id = (SELECT org_id FROM connections WHERE id = $1) AND policy IS NOT NULL AND policy <> ''`, id)
+	if err != nil {
+		return wrap("read connection references", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var reference store.ConnectionReference
+		var raw string
+		reference.Kind = "endpoint"
+		if err := rows.Scan(&reference.ID, &reference.Name, &raw); err != nil {
+			return wrap("read connection references", err)
+		}
+		var policy store.EndpointPolicy
+		if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+			return wrap("read connection references", err)
+		}
+		for _, access := range policy.Access {
+			if access.ConnectionID == id {
+				duplicate := false
+				for _, existing := range references {
+					duplicate = duplicate || existing.Kind == reference.Kind && existing.ID == reference.ID
+				}
+				if !duplicate {
+					references = append(references, reference)
+				}
+				break
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return wrap("read connection references", err)
+	}
+	return &store.ConnectionInUseError{References: references}
+}
+
+func (s *Store) UpdateConnectionState(ctx context.Context, orgID, connectionID string, state json.RawMessage) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	if len(state) > 0 && !json.Valid(state) {
+		return fmt.Errorf("connection state must be valid JSON")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE connections SET state = $1 WHERE org_id = $2 AND id = $3`, nullableJSON(state), orgID, connectionID)
+	if err != nil {
+		return wrap("update connection state", err)
+	}
+	return affected("update connection state", result)
+}
+
+func scanConnection(row interface{ Scan(...any) error }) (*store.Connection, error) {
+	var c store.Connection
+	var config string
+	var state sql.NullString
+	var created, updated int64
+	if err := row.Scan(&c.ID, &c.OrgID, &c.Type, &c.Name, &config, &c.SecretsEnc, &created, &updated, &state); err != nil {
+		return nil, scanErr("scan connection", err)
+	}
+	c.Config = json.RawMessage(config)
+	if state.Valid {
+		c.State = json.RawMessage(state.String)
+	}
+	c.CreatedAt, c.UpdatedAt = fromNS(created), fromNS(updated)
 	return &c, nil
 }
+
+const networkWriteLockKey int64 = 731907244
+
+func (s *Store) beginNetworkWrite(ctx context.Context) (*sql.Tx, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return nil, wrap("begin network write", err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, networkWriteLockKey); err != nil {
+		tx.Rollback()
+		return nil, wrap("lock network write", err)
+	}
+	return tx, nil
+}
+
+func endpointPolicies(ctx context.Context, tx *sql.Tx) ([]store.EndpointPolicy, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT policy FROM endpoints WHERE policy IS NOT NULL AND policy <> ''`)
+	if err != nil {
+		return nil, wrap("read endpoint references", err)
+	}
+	defer rows.Close()
+	var out []store.EndpointPolicy
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, wrap("read endpoint references", err)
+		}
+		var policy store.EndpointPolicy
+		if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+			return nil, wrap("decode endpoint references", err)
+		}
+		out = append(out, policy)
+	}
+	return out, wrap("read endpoint references", rows.Err())
+}
+
+const cloudflareCols = `org_id, name, account_id, tunnel_id, tunnel_token_enc, api_token_enc, access_app_id, origin, connector, metrics_addr, prune, updated_at`
 
 func uniqueErr(op string, err error) error {
 	var pgErr *pgconn.PgError
@@ -205,4 +639,34 @@ func nullBytes(b []byte) any {
 		return nil
 	}
 	return b
+}
+
+func (s *Store) beginConnectionInputWrite(ctx context.Context, proposed, expected *store.Connection) (*sql.Tx, *store.Connection, error) {
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionCols+` FROM connections WHERE id = $1 FOR UPDATE`, proposed.ID))
+	if err != nil {
+		tx.Rollback()
+		return nil, nil, err
+	}
+	if expected != nil && !store.SameConnectionInput(*current, *expected) {
+		tx.Rollback()
+		return nil, nil, store.ErrConflict
+	}
+	if current.OrgID != proposed.OrgID {
+		tx.Rollback()
+		return nil, nil, store.ErrNotFound
+	}
+	return tx, current, nil
+}
+
+func commitConnectionInput(ctx context.Context, tx *sql.Tx, previous, proposed *store.Connection) error {
+	if previous.Type != proposed.Type || !bytes.Equal(previous.Config, proposed.Config) {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM endpoint_aliases WHERE connection_id = $1`, proposed.ID); err != nil {
+			return wrap("invalidate changed connection aliases", err)
+		}
+	}
+	return wrap("commit connection input", tx.Commit())
 }

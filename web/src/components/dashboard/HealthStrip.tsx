@@ -2,25 +2,57 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { StateDot } from "@/components/common/StatusDot";
-import { connectorState, isCloudflareConnected } from "@/lib/cloudflare";
 import { endpointHealthState } from "@/lib/health";
-import type { Cloudflare, Endpoint, HealthState, Service, ServiceState } from "@/api/types";
+import type {
+  TypedConnection,
+  Endpoint,
+  HealthState,
+  Service,
+  ServiceState,
+} from "@/api/types";
 
-const HEALTH_ORDER: HealthState[] = ["up", "down", "degraded", "sleeping", "waking", "offline", "unknown"];
-const SERVICE_ORDER: ServiceState[] = ["running", "starting", "sleeping", "stopped", "partial", "error", "unknown"];
+const HEALTH_ORDER: HealthState[] = [
+  "up",
+  "down",
+  "degraded",
+  "sleeping",
+  "waking",
+  "offline",
+  "unknown",
+];
+const SERVICE_ORDER: ServiceState[] = [
+  "running",
+  "starting",
+  "sleeping",
+  "stopped",
+  "partial",
+  "error",
+  "unknown",
+];
 
 function StripLink({ to, children }: { to: string; children: ReactNode }) {
   return (
-    <Link to={to} className="inline-flex items-center rounded-md px-2 py-1 text-sm hover:bg-accent">
+    <Link
+      to={to}
+      className="inline-flex items-center rounded-md px-2 py-1 text-sm hover:bg-accent"
+    >
       {children}
     </Link>
   );
 }
 
-function StripGroup({ label, children }: { label: string; children: ReactNode }) {
+function StripGroup({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
   return (
     <div className="flex flex-wrap items-center gap-1">
-      <span className="pr-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+      <span className="pr-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </span>
       {children}
     </div>
   );
@@ -38,21 +70,24 @@ function countBy<T, K>(items: T[], key: (item: T) => K): Map<K, number> {
 export function HealthStrip({
   endpoints,
   services,
-  cloudflare,
+  connections,
 }: {
   endpoints: Endpoint[];
   services: Service[];
-  cloudflare?: Cloudflare;
+  connections: TypedConnection[];
 }) {
   const endpointCounts = countBy(endpoints, endpointHealthState);
   const serviceCounts = countBy(services, (service) => service.status.state);
-  const endpointStates = HEALTH_ORDER.filter((state) => endpointCounts.has(state));
-  const serviceStates = SERVICE_ORDER.filter((state) => serviceCounts.has(state));
-  const connected = isCloudflareConnected(cloudflare);
-  const hostnames = cloudflare?.status?.hostnames ?? [];
-  const published = hostnames.filter((host) => host.state === "published").length;
+  const endpointStates = HEALTH_ORDER.filter((state) =>
+    endpointCounts.has(state),
+  );
+  const serviceStates = SERVICE_ORDER.filter((state) =>
+    serviceCounts.has(state),
+  );
+  const connected = connections.length > 0;
 
-  if (endpointStates.length === 0 && serviceStates.length === 0 && !connected) return null;
+  if (endpointStates.length === 0 && serviceStates.length === 0 && !connected)
+    return null;
 
   return (
     <Card className="mb-4">
@@ -61,7 +96,10 @@ export function HealthStrip({
           <StripGroup label="Endpoints">
             {endpointStates.map((state) => (
               <StripLink key={state} to="/endpoints">
-                <StateDot state={state} label={`${endpointCounts.get(state)} ${state}`} />
+                <StateDot
+                  state={state}
+                  label={`${endpointCounts.get(state)} ${state}`}
+                />
               </StripLink>
             ))}
           </StripGroup>
@@ -70,19 +108,27 @@ export function HealthStrip({
           <StripGroup label="Services">
             {serviceStates.map((state) => (
               <StripLink key={state} to="/services">
-                <StateDot state={state} label={`${serviceCounts.get(state)} ${state}`} />
+                <StateDot
+                  state={state}
+                  label={`${serviceCounts.get(state)} ${state}`}
+                />
               </StripLink>
             ))}
           </StripGroup>
         )}
         {connected && (
-          <StripGroup label="Cloudflare">
-            <StripLink to="/cloudflare">
-              <StateDot
-                state={connectorState(cloudflare?.status?.connector)}
-                label={`${cloudflare?.connection?.name} · ${published}/${hostnames.length} published`}
-              />
-            </StripLink>
+          <StripGroup label="Connections">
+            {connections.map((connection) => (
+              <StripLink
+                key={connection.id}
+                to={`/connections/${encodeURIComponent(connection.id)}`}
+              >
+                <StateDot
+                  state={connection.status.health}
+                  label={`${connection.name} · ${(connection.status.hostnames ?? []).filter((host) => host.state === "published").length}/${connection.status.hostnames?.length ?? 0} published`}
+                />
+              </StripLink>
+            ))}
           </StripGroup>
         )}
       </CardContent>

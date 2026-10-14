@@ -39,7 +39,13 @@ export function KeyValueEditor({
             placeholder={valuePlaceholder}
             className="font-mono text-xs"
           />
-          <Button type="button" variant="ghost" size="icon" className="shrink-0" onClick={() => remove(i)}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="shrink-0"
+            onClick={() => remove(i)}
+          >
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -55,12 +61,15 @@ export function ListEditor({
   values,
   onChange,
   placeholder,
+  disabled = false,
 }: {
   values: string[];
   onChange: (values: string[]) => void;
   placeholder?: string;
+  disabled?: boolean;
 }) {
-  const update = (i: number, v: string) => onChange(values.map((x, idx) => (idx === i ? v : x)));
+  const update = (i: number, v: string) =>
+    onChange(values.map((x, idx) => (idx === i ? v : x)));
   const remove = (i: number) => onChange(values.filter((_, idx) => idx !== i));
   const add = () => onChange([...values, ""]);
   return (
@@ -69,16 +78,30 @@ export function ListEditor({
         <div key={i} className="flex items-center gap-2">
           <Input
             value={v}
+            disabled={disabled}
             onChange={(e) => update(i, e.target.value)}
             placeholder={placeholder}
             className="font-mono text-xs"
           />
-          <Button type="button" variant="ghost" size="icon" className="shrink-0" onClick={() => remove(i)}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="shrink-0"
+            disabled={disabled}
+            onClick={() => remove(i)}
+          >
             <X className="h-4 w-4" />
           </Button>
         </div>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={add}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={disabled}
+        onClick={add}
+      >
         <Plus className="h-3.5 w-3.5" /> Add
       </Button>
     </div>

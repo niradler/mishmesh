@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -103,8 +104,23 @@ type EndpointPolicy struct {
 	LoadBalance           string            `json:"load_balance,omitempty"`
 	OriginTLS             *OriginTLS        `json:"origin_tls,omitempty"`
 	ServiceID             string            `json:"service_id,omitempty"`
-	PublicAccess          string            `json:"public_access,omitempty"`
 	Connect               *ConnectPolicy    `json:"connect,omitempty"`
+	Access                []AccessRef       `json:"access,omitempty"`
+}
+
+type AccessRef struct {
+	ConnectionID string `json:"connection_id"`
+	Hostname     string `json:"hostname,omitempty"`
+}
+
+type EndpointAlias struct {
+	Hostname            string
+	AccessHostname      string
+	AccessHostnameKnown bool
+	Kind                string
+	EndpointID          string
+	ConnectionID        string
+	OrgID               string
 }
 
 const ConnectAnyAgent = "*"
@@ -133,8 +149,6 @@ func PortKind(kind string) bool {
 const (
 	LoadBalanceRoundRobin = "round_robin"
 	LoadBalanceFailover   = "failover"
-
-	PublicAccessCloudflare = "cloudflare"
 )
 
 type OriginTLS struct {
@@ -185,17 +199,18 @@ type MTLSConfig struct {
 }
 
 type Endpoint struct {
-	ID        string
-	AgentID   string
-	OrgID     string
-	Kind      string
-	Method    string
-	Lifecycle string
-	Subdomain string
-	Domain    string
-	Port      int
-	Policy    *EndpointPolicy
-	CreatedAt time.Time
+	ID                  string
+	AgentID             string
+	OrgID               string
+	Kind                string
+	Method              string
+	Lifecycle           string
+	Subdomain           string
+	Domain              string
+	Port                int
+	Policy              *EndpointPolicy
+	ConnectionSnapshots []*Connection `json:"-"`
+	CreatedAt           time.Time
 }
 
 type Quota struct {
@@ -261,32 +276,46 @@ type Service struct {
 	OrgID               string
 	Name                string
 	Driver              string
-	Spec                json.RawMessage
+	Config              json.RawMessage
+	Ready               json.RawMessage
+	Requires            []string
+	ConnectionIDs       []string `json:"-"`
 	IdleTimeoutSeconds  int
 	StartTimeoutSeconds int
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
 
-const (
-	CloudflareConnectorExternal = "external"
-	CloudflareConnectorManaged  = "managed"
-)
-
-type CloudflareConnection struct {
-	OrgID          string
-	Name           string
-	AccountID      string
-	TunnelID       string
-	TunnelTokenEnc []byte
-	APITokenEnc    []byte
-	AccessAppID    string
-	Origin         string
-	Connector      string
-	MetricsAddr    string
-	Prune          bool
-	UpdatedAt      time.Time
+type Connection struct {
+	ID         string
+	OrgID      string
+	Type       string
+	Name       string
+	Config     json.RawMessage
+	State      json.RawMessage `json:"-"`
+	SecretsEnc []byte          `json:"-"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
+
+func SameConnectionInput(left, right Connection) bool {
+	return left.ID == right.ID && left.OrgID == right.OrgID && left.Type == right.Type && left.Name == right.Name && bytes.Equal(left.Config, right.Config) && bytes.Equal(left.SecretsEnc, right.SecretsEnc) && left.UpdatedAt.Equal(right.UpdatedAt)
+}
+
+type ConnectionReference struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type ConnectionInUseError struct {
+	References []ConnectionReference
+}
+
+func (e *ConnectionInUseError) Error() string {
+	return "connection is referenced by endpoints or services"
+}
+func (e *ConnectionInUseError) Unwrap() error { return ErrConflict }
 
 type DataStore interface {
 	CreateOrg(ctx context.Context, o *Org) error
@@ -311,6 +340,9 @@ type DataStore interface {
 	GetEndpoint(ctx context.Context, id string) (*Endpoint, error)
 	GetEndpointBySubdomain(ctx context.Context, subdomain string) (*Endpoint, error)
 	GetEndpointByDomain(ctx context.Context, domain string) (*Endpoint, error)
+	GetEndpointByAccessHostname(ctx context.Context, hostname string) (*Endpoint, error)
+	ReplaceConnectionAliases(ctx context.Context, orgID, connectionID string, aliases []EndpointAlias) error
+	ReplaceConnectionAliasesIfCurrent(ctx context.Context, expected *Connection, aliases []EndpointAlias) error
 	ListEndpointsByAgent(ctx context.Context, agentID string) ([]*Endpoint, error)
 	ListEndpointsByOrg(ctx context.Context, orgID string) ([]*Endpoint, error)
 	UpdateEndpoint(ctx context.Context, e *Endpoint) error
@@ -358,14 +390,20 @@ type DataStore interface {
 	CreateService(ctx context.Context, svc *Service) error
 	GetService(ctx context.Context, id string) (*Service, error)
 	ListServices(ctx context.Context, orgID string) ([]*Service, error)
+	ListServiceDependents(ctx context.Context, orgID, serviceID string) ([]*Service, error)
 	ListAllServices(ctx context.Context) ([]*Service, error)
 	UpdateService(ctx context.Context, svc *Service) error
 	DeleteService(ctx context.Context, id string) error
 
-	GetCloudflareConnection(ctx context.Context, orgID string) (*CloudflareConnection, error)
-	ListCloudflareConnections(ctx context.Context) ([]*CloudflareConnection, error)
-	SetCloudflareConnection(ctx context.Context, c *CloudflareConnection) error
-	DeleteCloudflareConnection(ctx context.Context, orgID string) error
+	CreateConnection(ctx context.Context, c *Connection) error
+	GetConnection(ctx context.Context, id string) (*Connection, error)
+	ListConnections(ctx context.Context, orgID string) ([]*Connection, error)
+	ListAllConnections(ctx context.Context) ([]*Connection, error)
+	UpdateConnection(ctx context.Context, c *Connection) error
+	UpdateConnectionIfCurrent(ctx context.Context, c, expected *Connection) error
+	UpdateConnectionState(ctx context.Context, orgID, connectionID string, state json.RawMessage) error
+	DeleteConnection(ctx context.Context, id string) error
+	DeleteConnectionIfCurrent(ctx context.Context, expected *Connection) error
 
 	AppendAudit(ctx context.Context, e *AuditEvent) error
 	ListAudit(ctx context.Context, orgID string, limit int) ([]*AuditEvent, error)
