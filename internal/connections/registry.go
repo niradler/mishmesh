@@ -34,7 +34,7 @@ func (r *Registry) Register(provider Provider) error {
 	if descriptor.Role != "access" && descriptor.Role != "runtime" {
 		return errors.New("connection role must be access or runtime")
 	}
-	if descriptor.Role == "runtime" && descriptor.Scope != "" || descriptor.Role == "access" && descriptor.Scope != "public" && descriptor.Scope != "tailnet" {
+	if descriptor.Role == "runtime" && descriptor.Scope != "" || descriptor.Role == "access" && descriptor.Scope != "public" && descriptor.Scope != "private" {
 		return errors.New("connection scope does not match its role")
 	}
 	fields := cloneDescriptor(descriptor).Fields

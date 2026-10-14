@@ -18,6 +18,10 @@ type Provider interface {
 	Open(Config, Deps) (Instance, error)
 }
 
+type AccessHostnameProvider interface {
+	AccessHostname(endpointDomain, requested string) (string, error)
+}
+
 type Instance interface {
 	Run(context.Context)
 	Sync(context.Context) (Status, error)

@@ -86,11 +86,22 @@ func TestShouldValidateProviderDescriptors(t *testing.T) {
 		{Type: "fake", Role: "other"},
 		{Type: "fake", Role: "runtime", Scope: "public"},
 		{Type: "fake", Role: "access", Scope: ""},
+		{Type: "fake", Role: "access", Scope: "tailnet"},
 		{Type: "fake", Role: "access", Scope: "public", Fields: []typedfields.Field{{Key: "a", Kind: "invalid"}}},
 		{Type: "fake", Role: "access", Scope: "public", Fields: []typedfields.Field{{Key: "a", Kind: "text"}, {Key: "a", Kind: "secret"}}},
 	} {
 		if err := NewRegistry().Register(&fakeProvider{descriptor: descriptor}); err == nil {
 			t.Fatalf("accepted %+v", descriptor)
+		}
+	}
+}
+
+func TestShouldAcceptPrivateAccessForExistingNetworkProviders(t *testing.T) {
+	for _, name := range []string{"tailscale", "netbird-extension", "wireguard-extension"} {
+		provider := testProvider(nil)
+		provider.descriptor.Type, provider.descriptor.Scope = name, "private"
+		if err := NewRegistry().Register(provider); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

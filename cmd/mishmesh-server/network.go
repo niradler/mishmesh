@@ -10,6 +10,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/config"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connections"
+	tailscaleconnection "github.com/mishmesh/mishmesh/internal/connections/tailscale"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
 	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/ingress"
@@ -69,6 +70,9 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 	connectionRegistry := connections.NewRegistry()
 	if err := connectionRegistry.Register(cloudflare.NewProvider(cloudflare.ProviderOptions{CloudflaredBin: cfg.CloudflaredBin})); err != nil {
 		return nil, fmt.Errorf("register cloudflare connection provider: %w", err)
+	}
+	if err := connectionRegistry.Register(tailscaleconnection.NewProvider(tailscaleconnection.Options{})); err != nil {
+		return nil, fmt.Errorf("register tailscale connection provider: %w", err)
 	}
 	nc.connectionHub = connections.NewHub(connections.HubOptions{
 		Registry: connectionRegistry,

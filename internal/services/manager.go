@@ -39,15 +39,14 @@ const (
 var ErrUnknownService = errors.New("unknown service")
 
 type Options struct {
-	Log              *slog.Logger
-	Now              func() time.Time
-	Dial             func(ctx context.Context, network, addr string) (net.Conn, error)
-	HTTPClient       *http.Client
-	OnChange         func()
-	DockerHost       string
-	HostCommands     bool
-	Registry         *Registry
-	KubernetesClient KubernetesResolver
+	Log          *slog.Logger
+	Now          func() time.Time
+	Dial         func(ctx context.Context, network, addr string) (net.Conn, error)
+	HTTPClient   *http.Client
+	OnChange     func()
+	DockerHost   string
+	HostCommands bool
+	Registry     *Registry
 }
 
 type Status struct {
@@ -133,15 +132,14 @@ func NewManager(opts Options) *Manager {
 	if host == "" {
 		host = DefaultDockerHost
 	}
-	drivers := &hostDrivers{dockerHost: host, hostCommands: opts.HostCommands, registry: opts.Registry, kubernetesClient: opts.KubernetesClient}
+	drivers := &hostDrivers{dockerHost: host, hostCommands: opts.HostCommands, registry: opts.Registry}
 	return newManager(opts, drivers.build)
 }
 
 type hostDrivers struct {
-	dockerHost       string
-	hostCommands     bool
-	registry         *Registry
-	kubernetesClient KubernetesResolver
+	dockerHost   string
+	hostCommands bool
+	registry     *Registry
 
 	mu     sync.Mutex
 	client *dockerClient
@@ -176,7 +174,7 @@ func (h *hostDrivers) build(def Definition) (Driver, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown driver %q", name)
 	}
-	deps := Deps{OrgID: def.OrgID, Docker: h.docker, HostCommands: h.hostCommands, KubernetesClient: h.kubernetesClient}
+	deps := Deps{OrgID: def.OrgID, Docker: h.docker, HostCommands: h.hostCommands}
 	if err := validateHostConfig(driverType.Describe(), config, deps); err != nil {
 		return nil, err
 	}

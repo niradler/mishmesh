@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/mishmesh/mishmesh/internal/typedfields"
-	"k8s.io/client-go/kubernetes"
 )
 
 type DriverDescriptor struct {
@@ -27,13 +25,10 @@ type DriverType interface {
 	New(json.RawMessage, Deps) (Driver, error)
 }
 
-type KubernetesResolver func(ctx context.Context, orgID, connectionID string) (kubernetes.Interface, error)
-
 type Deps struct {
-	OrgID            string
-	Docker           func() (*dockerClient, error)
-	KubernetesClient KubernetesResolver
-	HostCommands     bool
+	OrgID        string
+	Docker       func() (*dockerClient, error)
+	HostCommands bool
 }
 
 type Registry struct {
