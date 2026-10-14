@@ -22,7 +22,7 @@ import (
 )
 
 func AccessHostname(endpointDomain, requested string) (string, error) {
-	label := strings.ToLower(strings.TrimSpace(requested))
+	label := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(requested)), ".")
 	if label == "" {
 		label = strings.SplitN(strings.ToLower(strings.TrimSpace(endpointDomain)), ".", 2)[0]
 	}
@@ -148,7 +148,7 @@ func localIdentity(status *ipnstate.Status, configured string) (string, string, 
 func desiredServices(connectionID string, endpoints []*store.Endpoint) (map[string]string, error) {
 	desired := map[string]string{}
 	for _, endpoint := range endpoints {
-		if endpoint == nil || endpoint.Policy == nil {
+		if endpoint == nil || endpoint.Policy == nil || endpoint.Kind != "" && endpoint.Kind != store.KindHTTP {
 			continue
 		}
 		for _, ref := range endpoint.Policy.Access {
@@ -320,7 +320,18 @@ func (i *instance) sync(ctx context.Context, status *connections.Status) error {
 	status.Health = "healthy"
 	names := slices.Sorted(maps.Keys(desired))
 	for _, name := range names {
-		host := connections.HostStatus{Host: strings.TrimPrefix(name, "svc:") + "." + suffix, EndpointID: desired[name], State: "pending", Detail: "Service-host approval and access-policy grants are required", Fix: "Approve the Service host and grant access in Tailscale"}
+		host := connections.HostStatus{Host: strings.TrimPrefix(name, "svc:") + "." + suffix, EndpointID: desired[name], State: "pending", Detail: "Service-host approval and access-policy grants are required", Fix: "Approve the Service host and grant access in Tailscale", EndpointKind: store.KindHTTP, AccessHostnameKnown: true}
+		for _, endpoint := range endpoints {
+			if endpoint.ID != desired[name] || endpoint.Policy == nil {
+				continue
+			}
+			for _, ref := range endpoint.Policy.Access {
+				label, normalizeErr := AccessHostname(endpoint.Domain, ref.Hostname)
+				if ref.ConnectionID == i.record.ID && normalizeErr == nil && "svc:"+label == name {
+					host.AccessHostname = ref.Hostname
+				}
+			}
+		}
 		if !reflect.DeepEqual(serve.Services[tailcfg.ServiceName(name)], serviceConfig(name, suffix, i.origin)) {
 			host.State, host.Detail = "conflict", "Service configuration is missing or routed elsewhere"
 		} else if !slices.Contains(prefs.AdvertiseServices, name) {

@@ -1,6 +1,18 @@
 package tailscaleconnection
 
-import "testing"
+import (
+	"github.com/mishmesh/mishmesh/internal/store"
+	"testing"
+)
+
+func TestShouldNeverSelectUnsupportedHistoricalAccessProtocols(t *testing.T) {
+	for _, kind := range []string{store.KindTCP, store.KindUDP, store.KindTLS} {
+		endpoints := []*store.Endpoint{{ID: "unsafe", Kind: kind, Domain: "unsafe.example.org", Policy: &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: "connection", Hostname: "invalid.full.name"}}}}}
+		if services, err := desiredServices("connection", endpoints); err != nil || len(services) != 0 {
+			t.Fatalf("unsupported %s selected %+v %v", kind, services, err)
+		}
+	}
+}
 
 func TestShouldPreserveForeignServeEntries(t *testing.T) {
 	current := map[string]string{"svc:foreign": "http://127.0.0.1:9000", "svc:notes": "http://127.0.0.1:8090"}

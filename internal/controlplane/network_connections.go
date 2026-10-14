@@ -329,6 +329,7 @@ func (a *API) saveConnection(w http.ResponseWriter, r *http.Request, existing *s
 		return
 	}
 	a.audit(r, action, record.ID, record.Type)
+	a.invalidateIngressCaches()
 	ctx, cancel := context.WithTimeout(r.Context(), connectionOperationTimeout)
 	defer cancel()
 	status := a.connectionRecordStatus(&record)
@@ -400,6 +401,7 @@ func (a *API) deleteConnectionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "connection.delete", record.ID, record.Type)
+	a.invalidateIngressCaches()
 	if a.connections != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), connectionOperationTimeout)
 		defer cancel()
@@ -466,9 +468,12 @@ func (a *API) detectConnectionHandler(w http.ResponseWriter, r *http.Request) {
 	if len(input.Input) == 0 {
 		input.Input = json.RawMessage(`{}`)
 	}
-	fields := append([]typedfields.Field(nil), descriptor.Fields...)
-	for i := range fields {
-		fields[i].Required = false
+	fields := append([]typedfields.Field(nil), descriptor.DetectFields...)
+	if descriptor.DetectFields == nil {
+		fields = append([]typedfields.Field(nil), descriptor.Fields...)
+		for i := range fields {
+			fields[i].Required = false
+		}
 	}
 	if typedfields.Validate(fields, input.Input) != nil {
 		writeError(w, http.StatusBadRequest, "invalid detection input")
@@ -491,12 +496,17 @@ func (a *API) detectConnectionHandler(w http.ResponseWriter, r *http.Request) {
 	var supplied map[string]json.RawMessage
 	_ = json.Unmarshal(input.Input, &supplied)
 	cfg := connections.Config{Record: store.Connection{Config: input.Input}, Secrets: map[string]string{}}
-	for _, field := range connectionFields(descriptor, true) {
+	for _, field := range fields {
+		if field.Kind != "secret" {
+			continue
+		}
 		var secret string
 		_ = json.Unmarshal(supplied[field.Key], &secret)
 		cfg.Secrets[field.Key] = secret
 	}
-	safe, err := connections.SanitizeJSON(cfg, descriptor, result)
+	detectionDescriptor := descriptor
+	detectionDescriptor.Fields = append(append([]typedfields.Field(nil), descriptor.Fields...), fields...)
+	safe, err := connections.SanitizeJSON(cfg, detectionDescriptor, result)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "invalid connection detection response")
 		return

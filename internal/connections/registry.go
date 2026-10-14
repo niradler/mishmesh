@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/typedfields"
 )
 
@@ -43,6 +44,20 @@ func (r *Registry) Register(provider Provider) error {
 	}
 	if err := typedfields.Validate(fields, json.RawMessage(`{}`)); err != nil {
 		return errors.New("invalid connection field descriptor")
+	}
+	detectFields := cloneDescriptor(descriptor).DetectFields
+	for index := range detectFields {
+		detectFields[index].Required = false
+	}
+	if err := typedfields.Validate(detectFields, json.RawMessage(`{}`)); err != nil {
+		return errors.New("invalid detection field descriptor")
+	}
+	protocols := map[string]bool{}
+	for _, protocol := range descriptor.Protocols {
+		if descriptor.Role != "access" || protocols[protocol] || protocol != store.KindHTTP && protocol != store.KindTCP && protocol != store.KindUDP && protocol != store.KindTLS {
+			return errors.New("invalid access protocol descriptor")
+		}
+		protocols[protocol] = true
 	}
 	levels := make(map[string]bool)
 	for _, level := range descriptor.Levels {
@@ -90,9 +105,15 @@ func (r *Registry) Descriptors() []Descriptor {
 func cloneDescriptor(descriptor Descriptor) Descriptor {
 	descriptor.Levels = append([]string{}, descriptor.Levels...)
 	descriptor.Fields = append([]typedfields.Field{}, descriptor.Fields...)
+	descriptor.Protocols = append([]string(nil), descriptor.Protocols...)
+	descriptor.DetectFields = append([]typedfields.Field(nil), descriptor.DetectFields...)
 	for i := range descriptor.Fields {
 		descriptor.Fields[i].Options = append([]string(nil), descriptor.Fields[i].Options...)
 		descriptor.Fields[i].Default = append(json.RawMessage(nil), descriptor.Fields[i].Default...)
+	}
+	for index := range descriptor.DetectFields {
+		descriptor.DetectFields[index].Options = append([]string(nil), descriptor.DetectFields[index].Options...)
+		descriptor.DetectFields[index].Default = append(json.RawMessage(nil), descriptor.DetectFields[index].Default...)
 	}
 	return descriptor
 }

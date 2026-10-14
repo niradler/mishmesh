@@ -115,10 +115,13 @@ type AccessRef struct {
 }
 
 type EndpointAlias struct {
-	Hostname     string
-	EndpointID   string
-	ConnectionID string
-	OrgID        string
+	Hostname            string
+	AccessHostname      string
+	AccessHostnameKnown bool
+	Kind                string
+	EndpointID          string
+	ConnectionID        string
+	OrgID               string
 }
 
 const ConnectAnyAgent = "*"
@@ -199,17 +202,18 @@ type MTLSConfig struct {
 }
 
 type Endpoint struct {
-	ID        string
-	AgentID   string
-	OrgID     string
-	Kind      string
-	Method    string
-	Lifecycle string
-	Subdomain string
-	Domain    string
-	Port      int
-	Policy    *EndpointPolicy
-	CreatedAt time.Time
+	ID                  string
+	AgentID             string
+	OrgID               string
+	Kind                string
+	Method              string
+	Lifecycle           string
+	Subdomain           string
+	Domain              string
+	Port                int
+	Policy              *EndpointPolicy
+	ConnectionSnapshots []*Connection `json:"-"`
+	CreatedAt           time.Time
 }
 
 type Quota struct {
@@ -362,6 +366,7 @@ type DataStore interface {
 	GetEndpointByDomain(ctx context.Context, domain string) (*Endpoint, error)
 	GetEndpointByAccessHostname(ctx context.Context, hostname string) (*Endpoint, error)
 	ReplaceConnectionAliases(ctx context.Context, orgID, connectionID string, aliases []EndpointAlias) error
+	ReplaceConnectionAliasesIfCurrent(ctx context.Context, expected *Connection, aliases []EndpointAlias) error
 	ListEndpointsByAgent(ctx context.Context, agentID string) ([]*Endpoint, error)
 	ListEndpointsByOrg(ctx context.Context, orgID string) ([]*Endpoint, error)
 	UpdateEndpoint(ctx context.Context, e *Endpoint) error

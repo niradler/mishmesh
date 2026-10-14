@@ -451,7 +451,8 @@ func (s *Store) GetEndpointBySubdomain(ctx context.Context, subdomain string) (*
 func (s *Store) GetEndpointByDomain(ctx context.Context, domain string) (*store.Endpoint, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	return scanEndpoint(s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE domain = $1`, domain).Scan)
+	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
+	return scanEndpoint(s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE lower(rtrim(domain, '.')) = $1 AND (SELECT COUNT(*) FROM endpoints WHERE lower(rtrim(domain, '.')) = $1) = 1`, domain).Scan)
 }
 
 func (s *Store) ListEndpointsByAgent(ctx context.Context, agentID string) ([]*store.Endpoint, error) {
@@ -496,6 +497,9 @@ func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
 	}
 	defer tx.Rollback()
 	if err := validateEndpointReferences(ctx, tx, e, true); err != nil {
+		return err
+	}
+	if err := clearChangedEndpointAliases(ctx, tx, e); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx,

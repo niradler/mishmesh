@@ -23,6 +23,7 @@ type networkControl struct {
 	log                *slog.Logger
 	services           *services.Manager
 	serviceRegistry    *services.Registry
+	invalidateIngress  func()
 	prober             *health.Prober
 	connectionHub      *connections.Hub
 	connectionRegistry *connections.Registry
@@ -72,7 +73,7 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 	nc.connectionRegistry = connectionRegistry
 	nc.connectionHub = connections.NewHub(connections.HubOptions{
 		Registry: connectionRegistry,
-		Deps:     connections.Deps{Data: data, Box: nc.box, Log: log, Origin: cloudflare.OriginForListenAddr(cfg.IngressAddr), HostCommands: cfg.HostCommands},
+		Deps:     connections.Deps{Data: data, Box: nc.box, Log: log, Origin: cloudflare.OriginForListenAddr(cfg.IngressAddr), HostCommands: cfg.HostCommands, OnAliasesChanged: nc.aliasesChanged},
 	})
 	log.Info("network control ready", "secret_key_file", keyFile, "host_commands", cfg.HostCommands)
 	return nc, nil
@@ -80,6 +81,12 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 
 func (nc *networkControl) serviceChanged() {
 	nc.prober.Trigger()
+}
+
+func (nc *networkControl) aliasesChanged() {
+	if nc.invalidateIngress != nil {
+		nc.invalidateIngress()
+	}
 }
 
 func (nc *networkControl) attach(cp *controlplane.API) {

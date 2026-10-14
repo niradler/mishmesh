@@ -9,6 +9,54 @@ import (
 	"time"
 )
 
+func TestShouldGateInvalidatedRuntimeAndRequirementsUntilSavedReload(t *testing.T) {
+	old := Definition{ID: "svc", OrgID: "org", Driver: "fake", Config: json.RawMessage(`{"version":1}`)}
+	updated := old
+	updated.Config = json.RawMessage(`{"version":2}`)
+	oldDriver, newDriver := &fakeDriver{state: Running}, &fakeDriver{state: Stopped}
+	m := newManager(Options{}, func(def Definition) (Driver, error) {
+		if string(def.Config) == string(old.Config) {
+			return oldDriver, nil
+		}
+		return newDriver, nil
+	})
+	m.Apply([]Definition{old})
+	if err := m.Reserve(context.Background(), []Definition{old}, func(r LifecycleReservation) error {
+		if err := r.Stop(old.ID); err != nil {
+			return err
+		}
+		r.Invalidate(old.ID)
+		return context.Canceled
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	m.Refresh(context.Background())
+	if m.VisibleTo("org", old.ID) {
+		t.Fatal("invalidated service is ingress-visible")
+	}
+	if err := m.EnsureRunning(context.Background(), old.ID, ""); !errors.Is(err, ErrDefinitionChanged) {
+		t.Fatalf("old wake accepted %v", err)
+	}
+	done := m.Acquire(old.ID)
+	done()
+	if starts, _ := oldDriver.counts(); starts != 0 {
+		t.Fatal("old definition started after commit")
+	}
+	m.Apply([]Definition{updated})
+	if !m.VisibleTo("org", old.ID) {
+		t.Fatal("saved reload did not restore availability")
+	}
+	if err := m.EnsureRunning(context.Background(), old.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if starts, _ := oldDriver.counts(); starts != 0 {
+		t.Fatal("saved reload woke old driver")
+	}
+	if starts, _ := newDriver.counts(); starts != 1 {
+		t.Fatalf("new driver starts=%d", starts)
+	}
+}
+
 func TestShouldReserveRestartAcrossConcurrentWakeAcquireAndReload(t *testing.T) {
 	old := Definition{ID: "svc", OrgID: "org", Driver: "fake", Config: json.RawMessage(`{"version":1}`), StartTimeout: time.Second}
 	updated := old

@@ -720,8 +720,15 @@ func TestShouldValidateAliasOwnersAndHostnameCollisions(t *testing.T) {
 	orgID, foreignID := createTypedOrg(t, s), createTypedOrg(t, s)
 	connection, other := createTypedConnection(t, s, orgID), createTypedConnection(t, s, foreignID)
 	endpoint := createTypedEndpoint(t, s, orgID, "")
-	foreign := createTypedEndpoint(t, s, foreignID, store.NewID("canonical")+".example")
+	foreign := createTypedEndpoint(t, s, foreignID, strings.ReplaceAll(store.NewID("canonical"), "_", "-")+".example")
 	host := strings.ReplaceAll(store.NewID("alias"), "_", "-") + ".example"
+	endpoint.Policy = &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: connection.ID, Hostname: host}}}
+	foreign.Policy = &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: other.ID, Hostname: host}}}
+	for _, row := range []*store.Endpoint{endpoint, foreign} {
+		if err := s.UpdateEndpoint(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
 	original := []store.EndpointAlias{{Hostname: strings.ToUpper(host) + ".", EndpointID: endpoint.ID, OrgID: foreignID, ConnectionID: other.ID}}
 	if err := s.ReplaceConnectionAliases(ctx, orgID, connection.ID, original); err != nil {
 		t.Fatal(err)
@@ -745,6 +752,9 @@ func TestShouldValidateAliasOwnersAndHostnameCollisions(t *testing.T) {
 		{"replacement collision rollback", orgID, connection.ID, []store.EndpointAlias{{Hostname: "new.example", EndpointID: endpoint.ID}, {Hostname: foreign.Domain, EndpointID: endpoint.ID}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			for i := range test.aliases {
+				test.aliases[i].AccessHostname = host
+			}
 			if err := s.ReplaceConnectionAliases(ctx, test.orgID, test.connectionID, test.aliases); err == nil {
 				t.Fatal("invalid alias replacement accepted")
 			}
@@ -775,6 +785,10 @@ func TestShouldValidateAliasOwnersAndHostnameCollisions(t *testing.T) {
 	if err := s.UpdateEndpoint(ctx, foreign); err != nil {
 		t.Fatal(err)
 	}
+	endpoint.Policy.Access = nil
+	if err := s.UpdateEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.DeleteConnection(ctx, connection.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -789,6 +803,13 @@ func TestShouldSerializeConflictingAliasReplacements(t *testing.T) {
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	host := strings.ReplaceAll(store.NewID("race"), "_", "-") + ".example"
+	endpoint.Policy = &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: first.ID, Hostname: host}}}
+	other.Policy = &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: second.ID, Hostname: host}}}
+	for _, row := range []*store.Endpoint{endpoint, other} {
+		if err := s.UpdateEndpoint(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, test := range []struct{ connection, endpoint string }{{first.ID, endpoint.ID}, {second.ID, other.ID}} {
 		go func(connectionID, endpointID string) {
 			<-start

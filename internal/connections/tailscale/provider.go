@@ -47,8 +47,9 @@ func NewProvider(options Options) connections.Provider {
 }
 
 func (p *provider) Describe() connections.Descriptor {
-	return connections.Descriptor{Type: "tailscale", Label: "Tailscale Services", Role: "access", Scope: "private", Levels: []string{"imported", "managed"}, Detect: true, DetectHostCommand: true,
-		Help: "Observe or publish HTTPS services on an existing tailnet. Tagged node, host approval and access grants are managed in Tailscale.", Fields: []typedfields.Field{
+	return connections.Descriptor{Type: "tailscale", Label: "Tailscale Services", Role: "access", Scope: "private", Protocols: []string{store.KindHTTP}, Levels: []string{"imported", "managed"}, Detect: true, DetectHostCommand: true,
+		DetectFields: []typedfields.Field{{Key: "socket", Label: "LocalAPI socket", Kind: "text"}},
+		Help:         "Observe or publish HTTPS services on an existing tailnet. Tagged node, host approval and access grants are managed in Tailscale.", Fields: []typedfields.Field{
 			{Key: "level", Label: "Management", Kind: "select", Options: []string{"imported", "managed"}, Default: json.RawMessage(`"imported"`)},
 			{Key: "socket", Label: "LocalAPI socket", Kind: "text"},
 			{Key: "tailnet", Label: "Tailnet", Kind: "text", Required: true},
@@ -234,6 +235,9 @@ func (i *instance) Sync(ctx context.Context) (connections.Status, error) {
 		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
 		err = i.sync(ctx, &status)
+		if err == nil {
+			err = connections.RecordAccessAliases(ctx, i.record, i.provider.Describe(), &status, i.deps)
+		}
 	}
 	if err != nil {
 		status.LastError = err.Error()

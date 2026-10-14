@@ -380,18 +380,31 @@ func (s *Store) UpdateConnection(ctx context.Context, c *store.Connection) error
 	if !json.Valid(c.Config) {
 		return fmt.Errorf("connection config must be valid JSON")
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE connections SET type = ?, name = ?, config = ?, secrets_enc = ?, updated_at = ? WHERE id = ? AND org_id = ?`, c.Type, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), c.ID, c.OrgID)
+	tx, previous, err := s.beginConnectionInputWrite(ctx, c, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE connections SET type = ?, name = ?, config = ?, secrets_enc = ?, updated_at = ? WHERE id = ? AND org_id = ?`, c.Type, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), c.ID, c.OrgID)
 	if err != nil {
 		return uniqueErr("update connection", err)
 	}
-	return affected("update connection", res)
+	if err := affected("update connection", res); err != nil {
+		return err
+	}
+	return commitConnectionInput(ctx, tx, previous, c)
 }
 
 func (s *Store) UpdateConnectionIfCurrent(ctx context.Context, c, expected *store.Connection) error {
 	if c.ID != expected.ID || c.OrgID != expected.OrgID || c.Type != expected.Type || !json.Valid(c.Config) {
 		return store.ErrConflict
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE connections SET name = ?, config = ?, secrets_enc = ?, updated_at = ? WHERE id = ? AND org_id = ? AND type = ? AND name = ? AND config = ? AND secrets_enc IS ? AND updated_at = ?`, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), expected.ID, expected.OrgID, expected.Type, expected.Name, string(expected.Config), nullBytes(expected.SecretsEnc), ns(expected.UpdatedAt))
+	tx, previous, err := s.beginConnectionInputWrite(ctx, c, expected)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE connections SET name = ?, config = ?, secrets_enc = ?, updated_at = ? WHERE id = ? AND org_id = ? AND type = ? AND name = ? AND config = ? AND secrets_enc IS ? AND updated_at = ?`, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), expected.ID, expected.OrgID, expected.Type, expected.Name, string(expected.Config), nullBytes(expected.SecretsEnc), ns(expected.UpdatedAt))
 	if err != nil {
 		return uniqueErr("update connection", err)
 	}
@@ -402,7 +415,7 @@ func (s *Store) UpdateConnectionIfCurrent(ctx context.Context, c, expected *stor
 	if count == 0 {
 		return store.ErrConflict
 	}
-	return nil
+	return commitConnectionInput(ctx, tx, previous, c)
 }
 
 func (s *Store) DeleteConnectionIfCurrent(ctx context.Context, expected *store.Connection) error {
@@ -656,4 +669,34 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+func (s *Store) beginConnectionInputWrite(ctx context.Context, proposed, expected *store.Connection) (*sql.Tx, *store.Connection, error) {
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionCols+` FROM connections WHERE id = ?`, proposed.ID))
+	if err != nil {
+		tx.Rollback()
+		return nil, nil, err
+	}
+	if expected != nil && !store.SameConnectionInput(*current, *expected) {
+		tx.Rollback()
+		return nil, nil, store.ErrConflict
+	}
+	if current.OrgID != proposed.OrgID {
+		tx.Rollback()
+		return nil, nil, store.ErrNotFound
+	}
+	return tx, current, nil
+}
+
+func commitConnectionInput(ctx context.Context, tx *sql.Tx, previous, proposed *store.Connection) error {
+	if previous.Type != proposed.Type || !bytes.Equal(previous.Config, proposed.Config) {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM endpoint_aliases WHERE connection_id = ?`, proposed.ID); err != nil {
+			return wrap("invalidate changed connection aliases", err)
+		}
+	}
+	return wrap("commit connection input", tx.Commit())
 }

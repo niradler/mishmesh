@@ -56,7 +56,7 @@ func TestShouldRejectDeleteAfterConcurrentAuthorizedUpdate(t *testing.T) {
 	proposal.Name = "owner-protected"
 	proposal.Config = []byte(`{"command":["owner-command"]}`)
 	proposal.UpdatedAt = time.Now()
-	if err := s.UpdateConnectionIfCurrent(ctx, &proposal, expected); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE connections SET name = $1, config = $2, updated_at = $3 WHERE id = $4`, proposal.Name, string(proposal.Config), ns(proposal.UpdatedAt), proposal.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := blocker.Commit(); err != nil {

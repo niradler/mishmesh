@@ -92,6 +92,7 @@ type service struct {
 	lastActivity    time.Time
 	lastError       string
 	definitionError string
+	invalidated     bool
 	startedBy       string
 	updatedAt       time.Time
 	stoppedByUs     bool
@@ -243,7 +244,7 @@ func (m *Manager) VisibleTo(orgID, id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.services[id]
-	return ok && s.def.OrgID == orgID
+	return ok && !s.invalidated && s.def.OrgID == orgID
 }
 
 func (m *Manager) Status(id string) (Status, bool) {
@@ -332,7 +333,7 @@ func (m *Manager) Acquire(id string) func() {
 		return func() {}
 	}
 	s, ok := m.services[id]
-	if !ok {
+	if !ok || s.invalidated {
 		m.mu.Unlock()
 		return func() {}
 	}
@@ -406,6 +407,9 @@ func (m *Manager) beginEnsure(ctx context.Context, id, readyAddr string, recursi
 	s, ok := m.services[id]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnknownService, id)
+	}
+	if s.invalidated {
+		return nil, ErrDefinitionChanged
 	}
 	if err := m.validateRequirementsLocked(s); err != nil {
 		return nil, err
@@ -818,6 +822,7 @@ func (m *Manager) applyReserved(ctx context.Context, defs []Definition, releaseA
 		existing := m.services[def.ID]
 		if existing != nil && reflect.DeepEqual(existing.def, def) {
 			existing.definitionError = ""
+			existing.invalidated = false
 			next[def.ID] = existing
 			continue
 		}
@@ -832,6 +837,7 @@ func (m *Manager) applyReserved(ctx context.Context, defs []Definition, releaseA
 		}
 		existing.def = def
 		existing.definitionError = ""
+		existing.invalidated = false
 		if update.driver != nil {
 			existing.driver = update.driver
 		}
@@ -927,7 +933,7 @@ func (m *Manager) Refresh(ctx context.Context) {
 	changed := false
 	for _, item := range all {
 		s := item.svc
-		if m.services[s.def.ID] != s || s.version != item.version || s.inflight != nil || s.stopping != nil || s.state == StateStarting {
+		if m.services[s.def.ID] != s || s.invalidated || s.version != item.version || s.inflight != nil || s.stopping != nil || s.state == StateStarting {
 			continue
 		}
 		if item.err != nil {

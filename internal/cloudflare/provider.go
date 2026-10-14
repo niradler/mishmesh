@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/mishmesh/mishmesh/internal/connections"
+	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/typedfields"
 )
 
@@ -53,8 +55,9 @@ func NewProvider(options ProviderOptions) connections.Provider {
 }
 
 func (p *provider) Describe() connections.Descriptor {
-	return connections.Descriptor{Type: "cloudflare", Label: "Cloudflare Tunnel", Role: "access", Scope: "public", Levels: []string{LevelImported, LevelManaged}, Detect: true, DetectHostCommand: true,
-		Help: "Observe an existing tunnel or manage its ingress, DNS and Access hostnames.", Fields: []typedfields.Field{
+	return connections.Descriptor{Type: "cloudflare", Label: "Cloudflare Tunnel", Role: "access", Scope: "public", Protocols: []string{store.KindHTTP}, Levels: []string{LevelImported, LevelManaged}, Detect: true, DetectHostCommand: true,
+		DetectFields: []typedfields.Field{{Key: "metrics_addr", Label: "Metrics address", Kind: "text"}, {Key: TokenKindTunnel, Label: "Tunnel token", Kind: "secret"}},
+		Help:         "Observe an existing tunnel or manage its ingress, DNS and Access hostnames.", Fields: []typedfields.Field{
 			{Key: "account_id", Label: "Account ID", Kind: "text"},
 			{Key: "tunnel_id", Label: "Tunnel ID", Kind: "text"},
 			{Key: "access_app_id", Label: "Access application ID", Kind: "text"},
@@ -141,6 +144,21 @@ func (p *provider) UsesHostCommands(input connections.Config) bool {
 	return json.Unmarshal(input.Record.Config, &values) != nil || values.Connector == ConnectorManaged
 }
 
+func (p *provider) AccessHostname(endpointDomain, requested string) (string, error) {
+	return accessHostname(endpointDomain, requested)
+}
+
+func accessHostname(endpointDomain, requested string) (string, error) {
+	if requested == "" {
+		requested = endpointDomain
+	}
+	host, err := connections.NormalizeAccessHostname(requested)
+	if err != nil || !strings.Contains(host, ".") || net.ParseIP(host) != nil {
+		return "", errors.New("Cloudflare access hostname must be a full DNS domain")
+	}
+	return host, nil
+}
+
 func (p *provider) Detect(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 	fields := []typedfields.Field{{Key: "metrics_addr", Kind: "text"}, {Key: TokenKindTunnel, Kind: "secret"}}
 	if err := typedfields.Validate(fields, input); err != nil {
@@ -194,6 +212,19 @@ func (p *provider) Open(input connections.Config, deps connections.Deps) (connec
 	pub, err := NewPublisher(cfg, StoreSource{Data: deps.Data, ConnectionID: cfg.ConnectionID}, deps.Log)
 	if err != nil {
 		return nil, errors.New("cloudflare publisher could not be opened")
+	}
+	pub.publishAliases = func(ctx context.Context, status *Status) error {
+		observed := providerStatus(*status)
+		if err := connections.RecordAccessAliases(ctx, input.Record, p.Describe(), &observed, deps); err != nil {
+			for index := range status.Hostnames {
+				if status.Hostnames[index].State == StatePublished {
+					status.Hostnames[index].State = StateError
+					status.Hostnames[index].Detail = "Access routing changed or could not be saved; retry sync"
+				}
+			}
+			return err
+		}
+		return nil
 	}
 	if cfg.Level() == LevelManaged {
 		pub.client = p.options.NewClient(cfg.BaseURL, cfg.APIToken)
@@ -293,7 +324,7 @@ func providerStatus(status Status) connections.Status {
 		} else if host.State == StateUnclaimed && strings.HasPrefix(detail, "routed to ") {
 			detail = "hostname is routed directly to another service"
 		}
-		result.Hostnames = append(result.Hostnames, connections.HostStatus{Host: host.Host, State: host.State, EndpointID: host.EndpointID, Detail: detail, Fix: host.Fix})
+		result.Hostnames = append(result.Hostnames, connections.HostStatus{Host: host.Host, State: host.State, EndpointID: host.EndpointID, Detail: detail, Fix: host.Fix, AccessHostname: host.AccessHostname, AccessHostnameKnown: host.AccessHostnameKnown, EndpointKind: store.KindHTTP})
 		if result.Health == "healthy" && (host.State == StateError || host.State == StateConflict || host.State == StatePending) {
 			result.Health = "degraded"
 		}

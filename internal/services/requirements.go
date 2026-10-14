@@ -61,6 +61,9 @@ func (m *Manager) validateRequirementsLocked(s *service) error {
 	}
 	records := make([]*store.Service, 0, len(m.services))
 	for _, candidate := range m.services {
+		if candidate.invalidated {
+			continue
+		}
 		records = append(records, &store.Service{ID: candidate.def.ID, OrgID: candidate.def.OrgID, Name: candidate.def.Name, Requires: candidate.def.Requires})
 	}
 	return ValidateRequirements(s.def.OrgID, s.def.ID, s.def.Requires, records)

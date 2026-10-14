@@ -17,6 +17,7 @@ import (
 
 	"github.com/mishmesh/mishmesh/internal/cloudflare"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
+	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/services"
@@ -104,6 +105,12 @@ func (f *fakeServiceReservation) Stop(id string) error {
 func (f *fakeServiceReservation) Apply(defs []services.Definition) error {
 	f.control.Apply(defs)
 	return nil
+}
+
+func (f *fakeServiceReservation) Invalidate(id string) {
+	f.control.mu.Lock()
+	delete(f.control.statuses, id)
+	f.control.mu.Unlock()
 }
 
 func (f *fakeServiceReservation) Start(id, ready string) error {
@@ -306,7 +313,11 @@ func (f *networkFixture) connectCloudflare(t *testing.T) {
 	if err := f.api.data.SetCloudflareConnection(context.Background(), &store.CloudflareConnection{OrgID: defaultOrgID, Name: "lab", AccountID: "acct1", TunnelID: "tun1", Connector: cloudflare.ConnectorExternal, MetricsAddr: cloudflare.DefaultMetricsAddr, UpdatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.api.data.CreateConnection(context.Background(), &store.Connection{ID: "legacy-trigger", OrgID: defaultOrgID, Name: "legacy-trigger", Type: "cloudflare", Config: json.RawMessage(`{}`), CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+	sealed, err := f.api.secretBox.Seal([]byte(`{"tunnel_token":"`+testTunnelToken("acct1", "tun1")+`"}`), connections.SecretContext(defaultOrgID, "legacy-trigger"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.api.data.CreateConnection(context.Background(), &store.Connection{ID: "legacy-trigger", OrgID: defaultOrgID, Name: "legacy-trigger", Type: "cloudflare", Config: json.RawMessage(`{}`), SecretsEnc: sealed, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -558,10 +569,10 @@ func TestNetworkPolicyValidation(t *testing.T) {
 		{"service of this org", false, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"$SVC"}}`, http.StatusCreated, ""},
 		{"service unknown", false, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"svc_nope"}}`, http.StatusBadRequest, "not a service of this org"},
 		{"service of another org", false, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"$OTHER"}}`, http.StatusBadRequest, "not a service of this org"},
-		{"public access without connection", false, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`, http.StatusBadRequest, "needs a Cloudflare connection"},
-		{"public access without domain", true, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`, http.StatusBadRequest, "requires a custom domain"},
-		{"public access unknown", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"akamai"}}`, http.StatusBadRequest, "public_access must be"},
-		{"public access with domain", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`, http.StatusCreated, ""},
+		{"public access without connection", false, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusBadRequest, "connection in this organization"},
+		{"public access without domain", true, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusBadRequest, "full DNS domain"},
+		{"public access unknown", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"missing"}]}}`, http.StatusBadRequest, "connection in this organization"},
+		{"public access with domain", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusCreated, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -597,10 +608,10 @@ func TestNetworkPolicyValidation(t *testing.T) {
 func TestPatchRevalidatesNetworkPolicy(t *testing.T) {
 	f := newNetworkFixture(t)
 	f.connectCloudflare(t)
-	ep := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`)
+	ep := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`)
 	code, body := statusAndBody(t, f.srv, http.MethodPatch, "/api/v1/endpoints/"+ep.ID, `{"domain":""}`)
-	if code != http.StatusBadRequest || !strings.Contains(body, "requires a custom domain") {
-		t.Fatalf("removing the domain of a public endpoint: %d %s", code, body)
+	if code != http.StatusOK {
+		t.Fatalf("explicit access hostname was lost when canonical domain was cleared: %d %s", code, body)
 	}
 	before := f.hub.triggerCount("legacy-trigger")
 	if code, _ := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/endpoints/"+ep.ID, ""); code != http.StatusNoContent {
@@ -614,9 +625,14 @@ func TestPatchRevalidatesNetworkPolicy(t *testing.T) {
 func TestPublicEndpointStaysEditableAfterDisconnect(t *testing.T) {
 	f := newNetworkFixture(t)
 	f.connectCloudflare(t)
-	public := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`)
+	public := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`)
 	private := f.createEndpoint(t, `{"method":"proxy","domain":"other.example.org","policy":{"proxy_targets":["93.184.216.34:80"]}}`)
-	if err := f.api.data.DeleteCloudflareConnection(context.Background(), defaultOrgID); err != nil {
+	record, err := f.api.data.GetConnection(context.Background(), "legacy-trigger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Config = json.RawMessage(`{"invalid":true}`)
+	if err := f.api.data.UpdateConnection(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
@@ -625,11 +641,11 @@ func TestPublicEndpointStaysEditableAfterDisconnect(t *testing.T) {
 		body string
 		want int
 	}{
-		{"edit targets of a public endpoint", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"public_access":"cloudflare"}}`, http.StatusOK},
+		{"edit targets of a public endpoint", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusOK},
 		{"edit port of a public endpoint", public.ID, `{"port":8443}`, http.StatusOK},
-		{"turn public access off", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"public_access":""}}`, http.StatusOK},
-		{"turn public access back on", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"public_access":"cloudflare"}}`, http.StatusBadRequest},
-		{"newly public endpoint", private.ID, `{"policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`, http.StatusBadRequest},
+		{"turn public access off", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[]}}`, http.StatusOK},
+		{"turn public access back on", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusBadRequest},
+		{"newly public endpoint", private.ID, `{"policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -638,7 +654,7 @@ func TestPublicEndpointStaysEditableAfterDisconnect(t *testing.T) {
 			}
 		})
 	}
-	if code, body := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/endpoints", `{"method":"proxy","domain":"new.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`); code != http.StatusBadRequest {
+	if code, body := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/endpoints", `{"method":"proxy","domain":"new.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`); code != http.StatusBadRequest {
 		t.Fatalf("create public endpoint without a connection: %d %s", code, body)
 	}
 }
@@ -649,7 +665,7 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 	f.api.SetHealth(h)
 	f.connectCloudflare(t)
 	svc := f.createService(t, `{"name":"syncthing","driver":"compose","config":{"project":"syncthing"}}`)
-	ep := f.createEndpoint(t, `{"method":"proxy","domain":"sync.example.org","policy":{"proxy_targets":["93.184.216.34:8384","https://93.184.216.35:8384"],"service_id":"`+svc.ID+`","public_access":"cloudflare"}}`)
+	ep := f.createEndpoint(t, `{"method":"proxy","domain":"sync.example.org","policy":{"proxy_targets":["93.184.216.34:8384","https://93.184.216.35:8384"],"service_id":"`+svc.ID+`","access":[{"connection_id":"legacy-trigger"}]}}`)
 	f.cf.setStatus(defaultOrgID, cloudflare.Status{
 		Level:  cloudflare.LevelImported,
 		Tunnel: &cloudflare.TunnelInfo{Name: "lab", Status: cloudflare.TunnelHealthy, Connections: 2},

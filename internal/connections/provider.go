@@ -41,6 +41,8 @@ type Descriptor struct {
 	Help              string              `json:"help"`
 	Levels            []string            `json:"levels"`
 	Fields            []typedfields.Field `json:"fields"`
+	Protocols         []string            `json:"protocols,omitempty"`
+	DetectFields      []typedfields.Field `json:"detect_fields,omitempty"`
 	Detect            bool                `json:"detect"`
 	DetectHostCommand bool                `json:"detect_host_command,omitempty"`
 }
@@ -52,19 +54,24 @@ type Config struct {
 }
 
 type Deps struct {
-	Data         store.DataStore
-	Origin       string
-	Log          *slog.Logger
-	Box          *secrets.Box
-	HostCommands bool
+	Data             store.DataStore
+	Origin           string
+	Log              *slog.Logger
+	Box              *secrets.Box
+	HostCommands     bool
+	OnAliasesChanged func()
+	PublishAliases   func(context.Context, []store.EndpointAlias) error
 }
 
 type HostStatus struct {
-	Host       string `json:"host"`
-	State      string `json:"state"`
-	EndpointID string `json:"endpoint_id"`
-	Detail     string `json:"detail"`
-	Fix        string `json:"fix"`
+	Host                string `json:"host"`
+	State               string `json:"state"`
+	EndpointID          string `json:"endpoint_id"`
+	Detail              string `json:"detail"`
+	Fix                 string `json:"fix"`
+	AccessHostname      string `json:"-"`
+	AccessHostnameKnown bool   `json:"-"`
+	EndpointKind        string `json:"-"`
 }
 
 type Status struct {

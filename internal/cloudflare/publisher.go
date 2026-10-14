@@ -43,16 +43,18 @@ const (
 )
 
 type HostStatus struct {
-	Host       string `json:"host"`
-	EndpointID string `json:"endpoint_id,omitempty"`
-	Ingress    bool   `json:"ingress"`
-	Service    string `json:"service,omitempty"`
-	DNS        string `json:"dns"`
-	DNSDetail  string `json:"dns_detail,omitempty"`
-	Access     string `json:"access"`
-	State      string `json:"state"`
-	Detail     string `json:"detail,omitempty"`
-	Fix        string `json:"fix,omitempty"`
+	Host                string `json:"host"`
+	EndpointID          string `json:"endpoint_id,omitempty"`
+	Ingress             bool   `json:"ingress"`
+	Service             string `json:"service,omitempty"`
+	DNS                 string `json:"dns"`
+	DNSDetail           string `json:"dns_detail,omitempty"`
+	Access              string `json:"access"`
+	State               string `json:"state"`
+	Detail              string `json:"detail,omitempty"`
+	Fix                 string `json:"fix,omitempty"`
+	AccessHostname      string `json:"-"`
+	AccessHostnameKnown bool   `json:"-"`
 }
 
 type TunnelInfo struct {
@@ -74,16 +76,17 @@ type Status struct {
 }
 
 type Publisher struct {
-	cfg        *Config
-	src        Source
-	log        *slog.Logger
-	client     *Client
-	local      *LocalReader
-	supervisor *Supervisor
-	ownership  *routeOwnership
-	locks      *providerLocks
-	debounce   time.Duration
-	trigger    chan struct{}
+	cfg            *Config
+	src            Source
+	log            *slog.Logger
+	client         *Client
+	local          *LocalReader
+	supervisor     *Supervisor
+	ownership      *routeOwnership
+	locks          *providerLocks
+	debounce       time.Duration
+	trigger        chan struct{}
+	publishAliases func(context.Context, *Status) error
 
 	syncMu sync.Mutex
 	mu     sync.RWMutex
@@ -214,6 +217,11 @@ func (p *Publisher) Sync(ctx context.Context) (Status, error) {
 			}
 		}
 	}
+	if p.publishAliases != nil {
+		if aliasErr := p.publishAliases(ctx, &st); aliasErr != nil {
+			err, st.LastError = errors.Join(err, aliasErr), "access aliases could not be saved"
+		}
+	}
 	p.mu.Lock()
 	p.status = st
 	p.mu.Unlock()
@@ -303,7 +311,7 @@ func (p *Publisher) inspect(ctx context.Context) (Status, error) {
 	wanted := make(map[string]bool, len(hosts))
 	for _, h := range hosts {
 		wanted[h.Host] = true
-		hs := HostStatus{Host: h.Host, EndpointID: h.EndpointID, DNS: DNSUnchecked, Access: p.accessUnchecked()}
+		hs := HostStatus{Host: h.Host, EndpointID: h.EndpointID, DNS: DNSUnchecked, Access: p.accessUnchecked(), AccessHostname: h.AccessHostname, AccessHostnameKnown: h.AccessHostnameKnown}
 		service, routed := routes[h.Host]
 		switch {
 		case !routed:
@@ -445,7 +453,7 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 
 	entries := make([]*hostEntry, 0, len(hosts)+len(plan.orphans))
 	for _, h := range hosts {
-		e := &hostEntry{HostStatus: HostStatus{Host: h.Host, EndpointID: h.EndpointID, DNS: DNSMissing, Access: AccessNA, Service: routes[h.Host]}}
+		e := &hostEntry{HostStatus: HostStatus{Host: h.Host, EndpointID: h.EndpointID, DNS: DNSMissing, Access: AccessNA, Service: routes[h.Host], AccessHostname: h.AccessHostname, AccessHostnameKnown: h.AccessHostnameKnown}}
 		switch {
 		case plan.present[h.Host]:
 			e.Ingress = true

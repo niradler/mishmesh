@@ -269,6 +269,8 @@ func serve() error {
 			UpstreamResponseTimeout: cfg.UpstreamResponseTimeout,
 			Services:                network.ingressWaker(),
 		})
+		cp.SetIngressInvalidator(ing.InvalidateCaches)
+		network.invalidateIngress = ing.InvalidateCaches
 		if cfg.TLSEnabled {
 			tc, acmeHTTP, err := buildTLSConfig(cfg, data)
 			if err != nil {

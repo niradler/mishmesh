@@ -10,10 +10,12 @@ import (
 )
 
 type Hostname struct {
-	Host       string
-	EndpointID string
-	OrgID      string
-	Public     bool
+	Host                string
+	EndpointID          string
+	OrgID               string
+	Public              bool
+	AccessHostname      string
+	AccessHostnameKnown bool
 }
 
 type Source interface {
@@ -32,7 +34,7 @@ type StoreSource struct {
 func AccessHosts(connectionID string, endpoints []*store.Endpoint) []Hostname {
 	out := make([]Hostname, 0)
 	for _, endpoint := range endpoints {
-		if endpoint == nil || endpoint.Policy == nil || connectionID == "" {
+		if endpoint == nil || endpoint.Policy == nil || connectionID == "" || endpoint.Kind != "" && endpoint.Kind != store.KindHTTP {
 			continue
 		}
 		for _, ref := range endpoint.Policy.Access {
@@ -43,8 +45,8 @@ func AccessHosts(connectionID string, endpoints []*store.Endpoint) []Hostname {
 			if host == "" {
 				host = endpoint.Domain
 			}
-			if host = normalizeHost(host); host != "" {
-				out = append(out, Hostname{Host: host, EndpointID: endpoint.ID, OrgID: endpoint.OrgID, Public: true})
+			if normalized, err := accessHostname(endpoint.Domain, host); err == nil {
+				out = append(out, Hostname{Host: normalized, EndpointID: endpoint.ID, OrgID: endpoint.OrgID, Public: true, AccessHostname: ref.Hostname, AccessHostnameKnown: true})
 			}
 		}
 	}
@@ -68,7 +70,7 @@ func (s StoreSource) Hostnames(ctx context.Context, orgID string) ([]Hostname, e
 		if host == "" {
 			continue
 		}
-		public := ep.Policy != nil && ep.Policy.PublicAccess == store.PublicAccessCloudflare
+		public := ep.Policy != nil && ep.Policy.PublicAccess == store.PublicAccessCloudflare && (ep.Kind == "" || ep.Kind == store.KindHTTP)
 		out = append(out, Hostname{Host: host, EndpointID: ep.ID, OrgID: ep.OrgID, Public: public})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Host < out[j].Host })

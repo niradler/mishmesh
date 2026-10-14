@@ -226,6 +226,47 @@ type endpointData struct {
 	store.DataStore
 	endpoints []*store.Endpoint
 	path      string
+	aliasMu   sync.Mutex
+	aliases   map[string][]store.EndpointAlias
+}
+
+func (d *endpointData) ReplaceConnectionAliasesIfCurrent(ctx context.Context, expected *store.Connection, aliases []store.EndpointAlias) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	current, err := d.DataStore.GetConnection(ctx, expected.ID)
+	if err != nil {
+		return err
+	}
+	if !store.SameConnectionInput(*current, *expected) {
+		return store.ErrConflict
+	}
+	for _, alias := range aliases {
+		matched := false
+		for _, endpoint := range d.endpoints {
+			if endpoint == nil || endpoint.ID != alias.EndpointID || endpoint.OrgID != expected.OrgID || endpoint.Policy == nil {
+				continue
+			}
+			if endpoint.Kind != "" && endpoint.Kind != alias.Kind {
+				return store.ErrConflict
+			}
+			for _, ref := range endpoint.Policy.Access {
+				if ref.ConnectionID == expected.ID && ref.Hostname == alias.AccessHostname {
+					matched = true
+				}
+			}
+		}
+		if !matched {
+			return store.ErrConflict
+		}
+	}
+	d.aliasMu.Lock()
+	defer d.aliasMu.Unlock()
+	if d.aliases == nil {
+		d.aliases = map[string][]store.EndpointAlias{}
+	}
+	d.aliases[expected.ID] = append([]store.EndpointAlias(nil), aliases...)
+	return nil
 }
 
 func (d *endpointData) ListEndpointsByOrg(_ context.Context, org string) ([]*store.Endpoint, error) {

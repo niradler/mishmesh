@@ -150,12 +150,18 @@ func TestShouldPreserveSensitiveEnvironmentAndRejectInventedPlaceholders(t *test
 type serviceLeaseIntercept struct {
 	store.DataStore
 	store.ServiceSnapshotStore
-	once     sync.Once
-	before   func()
-	failSave bool
+	once       sync.Once
+	before     func()
+	failSave   bool
+	failSecond bool
+	calls      int
 }
 
 func (s *serviceLeaseIntercept) WithServiceSnapshots(ctx context.Context, orgID string, expected []*store.Service, action func(store.ServiceMutation) error) error {
+	s.calls++
+	if s.failSecond && s.calls == 2 {
+		return context.Canceled
+	}
 	s.once.Do(func() {
 		if s.before != nil {
 			s.before()
@@ -167,6 +173,46 @@ func (s *serviceLeaseIntercept) WithServiceSnapshots(ctx context.Context, orgID 
 		}
 		return action(mutation)
 	})
+}
+
+func TestShouldInvalidateOldRuntimeWhenPostCommitLeaseIsCanceled(t *testing.T) {
+	for _, deleting := range []bool{false, true} {
+		f := newNetworkFixture(t)
+		created := f.createService(t, dockerServiceBody)
+		statusBody(t, f, http.MethodPost, "/api/v1/services/"+created.ID+"/start")
+		original := f.api.data
+		f.api.data = &serviceLeaseIntercept{DataStore: original, ServiceSnapshotStore: original.(store.ServiceSnapshotStore), failSecond: true}
+		method, path, body := http.MethodPut, "/api/v1/services/"+created.ID+"?restart=true", `{"name":"new","driver":"docker","config":{"containers":["new"]}}`
+		if deleting {
+			method, path, body = http.MethodDelete, "/api/v1/services/"+created.ID, ""
+		}
+		code, response := statusAndBody(t, f.srv, method, path, body)
+		if code == http.StatusOK || code == http.StatusNoContent {
+			t.Fatalf("canceled apply reported success %d %s", code, response)
+		}
+		if !deleting && (!strings.Contains(response, `"saved":true`) || !strings.Contains(response, `"phase":"apply"`)) {
+			t.Fatalf("lost committed save phase %s", response)
+		}
+		if _, ok := f.svc.Status(created.ID); ok {
+			t.Fatal("old runtime remained available after committed mutation")
+		}
+		record, err := original.GetService(context.Background(), created.ID)
+		if deleting {
+			if err != store.ErrNotFound {
+				t.Fatalf("delete did not commit %v", err)
+			}
+		} else if err != nil || record.Name != "new" {
+			t.Fatalf("save did not commit %v %v", record, err)
+		}
+		f.api.data = original
+		if err := f.api.LoadServices(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		_, loaded := f.svc.Status(created.ID)
+		if loaded == deleting {
+			t.Fatalf("reload restored incorrect availability delete=%v loaded=%v", deleting, loaded)
+		}
+	}
 }
 
 type serviceFailSave struct{ store.ServiceMutation }

@@ -283,6 +283,10 @@ func dropControlPlaneFields(p *store.EndpointPolicy) []string {
 		dropped = append(dropped, "service_id")
 		p.ServiceID = ""
 	}
+	if len(p.Access) > 0 {
+		dropped = append(dropped, "access")
+		p.Access = nil
+	}
 	if p.PublicAccess != "" {
 		dropped = append(dropped, "public_access")
 		p.PublicAccess = ""

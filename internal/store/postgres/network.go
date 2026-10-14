@@ -407,11 +407,19 @@ func (s *Store) UpdateConnection(ctx context.Context, c *store.Connection) error
 	if !json.Valid(c.Config) {
 		return fmt.Errorf("connection config must be valid JSON")
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE connections SET type = $1, name = $2, config = $3, secrets_enc = $4, updated_at = $5 WHERE id = $6 AND org_id = $7`, c.Type, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), c.ID, c.OrgID)
+	tx, previous, err := s.beginConnectionInputWrite(ctx, c, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE connections SET type = $1, name = $2, config = $3, secrets_enc = $4, updated_at = $5 WHERE id = $6 AND org_id = $7`, c.Type, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), c.ID, c.OrgID)
 	if err != nil {
 		return uniqueErr("update connection", err)
 	}
-	return affected("update connection", res)
+	if err := affected("update connection", res); err != nil {
+		return err
+	}
+	return commitConnectionInput(ctx, tx, previous, c)
 }
 
 func (s *Store) UpdateConnectionIfCurrent(ctx context.Context, c, expected *store.Connection) error {
@@ -420,7 +428,12 @@ func (s *Store) UpdateConnectionIfCurrent(ctx context.Context, c, expected *stor
 	if c.ID != expected.ID || c.OrgID != expected.OrgID || c.Type != expected.Type || !json.Valid(c.Config) {
 		return store.ErrConflict
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE connections SET name = $1, config = $2, secrets_enc = $3, updated_at = $4 WHERE id = $5 AND org_id = $6 AND type = $7 AND name = $8 AND config = $9 AND secrets_enc IS NOT DISTINCT FROM $10 AND updated_at = $11`, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), expected.ID, expected.OrgID, expected.Type, expected.Name, string(expected.Config), nullBytes(expected.SecretsEnc), ns(expected.UpdatedAt))
+	tx, previous, err := s.beginConnectionInputWrite(ctx, c, expected)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE connections SET name = $1, config = $2, secrets_enc = $3, updated_at = $4 WHERE id = $5 AND org_id = $6 AND type = $7 AND name = $8 AND config = $9 AND secrets_enc IS NOT DISTINCT FROM $10 AND updated_at = $11`, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), expected.ID, expected.OrgID, expected.Type, expected.Name, string(expected.Config), nullBytes(expected.SecretsEnc), ns(expected.UpdatedAt))
 	if err != nil {
 		return uniqueErr("update connection", err)
 	}
@@ -431,7 +444,7 @@ func (s *Store) UpdateConnectionIfCurrent(ctx context.Context, c, expected *stor
 	if count == 0 {
 		return store.ErrConflict
 	}
-	return nil
+	return commitConnectionInput(ctx, tx, previous, c)
 }
 
 func (s *Store) DeleteConnectionIfCurrent(ctx context.Context, expected *store.Connection) error {
@@ -705,4 +718,34 @@ func nullBytes(b []byte) any {
 		return nil
 	}
 	return b
+}
+
+func (s *Store) beginConnectionInputWrite(ctx context.Context, proposed, expected *store.Connection) (*sql.Tx, *store.Connection, error) {
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionCols+` FROM connections WHERE id = $1 FOR UPDATE`, proposed.ID))
+	if err != nil {
+		tx.Rollback()
+		return nil, nil, err
+	}
+	if expected != nil && !store.SameConnectionInput(*current, *expected) {
+		tx.Rollback()
+		return nil, nil, store.ErrConflict
+	}
+	if current.OrgID != proposed.OrgID {
+		tx.Rollback()
+		return nil, nil, store.ErrNotFound
+	}
+	return tx, current, nil
+}
+
+func commitConnectionInput(ctx context.Context, tx *sql.Tx, previous, proposed *store.Connection) error {
+	if previous.Type != proposed.Type || !bytes.Equal(previous.Config, proposed.Config) {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM endpoint_aliases WHERE connection_id = $1`, proposed.ID); err != nil {
+			return wrap("invalidate changed connection aliases", err)
+		}
+	}
+	return wrap("commit connection input", tx.Commit())
 }

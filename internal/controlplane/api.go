@@ -44,6 +44,7 @@ type API struct {
 	services           ServiceControl
 	servicesMu         sync.Mutex
 	serviceRegistry    *services.Registry
+	invalidateIngress  func()
 	endpointHealth     HealthSource
 	connections        ConnectionControl
 	connectionRegistry *connections.Registry

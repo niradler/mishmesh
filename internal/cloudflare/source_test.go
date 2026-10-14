@@ -10,6 +10,15 @@ import (
 
 type endpointList struct{ endpoints []*store.Endpoint }
 
+func TestShouldNeverSelectUnsupportedHistoricalAccessProtocols(t *testing.T) {
+	for _, kind := range []string{store.KindTCP, store.KindUDP, store.KindTLS} {
+		endpoints := []*store.Endpoint{{ID: "unsafe", Kind: kind, Domain: "unsafe.example.org", Policy: &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: "connection", Hostname: "unsafe.example.org"}}}}}
+		if hosts := AccessHosts("connection", endpoints); len(hosts) != 0 {
+			t.Fatalf("unsupported %s published %+v", kind, hosts)
+		}
+	}
+}
+
 func (s endpointList) ListEndpointsByOrg(context.Context, string) ([]*store.Endpoint, error) {
 	return s.endpoints, nil
 }
@@ -24,8 +33,8 @@ func TestShouldSelectPublicHostsPerConnection(t *testing.T) {
 		connection string
 		want       []Hostname
 	}{
-		{"conn-a", []Hostname{{Host: "notes.example.test", EndpointID: "ep", OrgID: "org", Public: true}}},
-		{"conn-b", []Hostname{{Host: "alias.example.test", EndpointID: "ep", OrgID: "org", Public: true}}},
+		{"conn-a", []Hostname{{Host: "notes.example.test", EndpointID: "ep", OrgID: "org", Public: true, AccessHostnameKnown: true}}},
+		{"conn-b", []Hostname{{Host: "alias.example.test", EndpointID: "ep", OrgID: "org", Public: true, AccessHostname: " Alias.Example.Test. ", AccessHostnameKnown: true}}},
 		{"conn-c", []Hostname{}},
 	} {
 		t.Run(test.connection, func(t *testing.T) {
@@ -52,7 +61,7 @@ func TestShouldObserveFullOrgWithoutSelectingForeignConnections(t *testing.T) {
 		{Host: "domain.example.test", EndpointID: "selected", OrgID: "org"},
 		{Host: "foreign.example.test", EndpointID: "foreign", OrgID: "org"},
 		{Host: "off.example.test", EndpointID: "off", OrgID: "org"},
-		{Host: "selected.example.test", EndpointID: "selected", OrgID: "org", Public: true},
+		{Host: "selected.example.test", EndpointID: "selected", OrgID: "org", Public: true, AccessHostname: "selected.example.test", AccessHostnameKnown: true},
 	}
 	if !reflect.DeepEqual(hosts, want) {
 		t.Fatalf("observer=%+v want=%+v", hosts, want)

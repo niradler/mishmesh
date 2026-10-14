@@ -19,6 +19,7 @@ type LifecycleReservation interface {
 	CheckUpdate(string, Definition, bool) error
 	Stop(string) error
 	Apply([]Definition) error
+	Invalidate(string)
 	Start(string, string) error
 }
 
@@ -141,6 +142,19 @@ func (r *Reservation) Stop(id string) error {
 
 func (r *Reservation) Apply(defs []Definition) error {
 	return r.manager.applyReserved(r.context, defs, false)
+}
+
+func (r *Reservation) Invalidate(id string) {
+	m := r.manager
+	m.mu.Lock()
+	if service := m.services[id]; service != nil {
+		service.invalidated = true
+		service.definitionError = "saved service definition requires reload"
+		service.version++
+		m.applyVersion++
+	}
+	m.mu.Unlock()
+	m.notify(true)
 }
 
 func (r *Reservation) Start(id, readyAddr string) error {

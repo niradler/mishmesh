@@ -383,6 +383,12 @@ func (a *API) updateServiceHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		phase = "apply"
+		applied := false
+		defer func() {
+			if !applied {
+				reservation.Invalidate(rec.ID)
+			}
+		}()
 		return snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, current, func(mutation store.ServiceMutation) error {
 			records, err := mutation.ListAllServices(r.Context())
 			if err != nil {
@@ -395,6 +401,7 @@ func (a *API) updateServiceHandler(w http.ResponseWriter, r *http.Request) {
 			if err := reservation.Apply(defs); err != nil {
 				return err
 			}
+			applied = true
 			if restart {
 				phase = "start"
 				operationErr = reservation.Start(rec.ID, "")
@@ -456,6 +463,7 @@ func (a *API) deleteServiceHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "service is required by other services; remove their requirements first", "required_by": ids})
 		return
 	}
+	deleted := false
 	err = a.reserveService(r, definitions, func(reservation services.LifecycleReservation) error {
 		snapshots, ok := a.data.(store.ServiceSnapshotStore)
 		if !ok {
@@ -472,9 +480,14 @@ func (a *API) deleteServiceHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			return mutation.DeleteService(r.Context(), rec.ID)
 		})
-		if err != nil || reservation == nil {
+		if err != nil {
 			return err
 		}
+		deleted = true
+		if reservation == nil {
+			return nil
+		}
+		reservation.Invalidate(rec.ID)
 		remaining := []*store.Service{}
 		for _, record := range expected {
 			if record.ID != rec.ID {
@@ -493,7 +506,7 @@ func (a *API) deleteServiceHandler(w http.ResponseWriter, r *http.Request) {
 			return reservation.Apply(defs)
 		})
 	})
-	if a.serviceOperationError(w, err, "delete", false) {
+	if a.serviceOperationError(w, err, "delete", deleted) {
 		return
 	}
 	a.audit(r, "service.delete", rec.ID, rec.Name)

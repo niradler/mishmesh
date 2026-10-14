@@ -1,6 +1,8 @@
 package controlplane
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -54,6 +56,22 @@ type endpointInput struct {
 type policyInput struct {
 	store.EndpointPolicy
 	BasicAuthPassword string `json:"basic_auth_password,omitempty"`
+	connectPresent    bool
+}
+
+func (input *policyInput) UnmarshalJSON(raw []byte) error {
+	type plain policyInput
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode((*plain)(input)); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	_, input.connectPresent = fields["connect"]
+	return nil
 }
 
 func (a *API) toEndpointDTO(ep *store.Endpoint) endpointDTO {
@@ -187,7 +205,8 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := a.validateNetworkPolicy(r.Context(), orgID, domain, pol, false); err != nil {
+	connectionSnapshots := []*store.Connection{}
+	if err := a.validateNetworkPolicy(r.Context(), orgID, "", domain, kind, pol, nil, &connectionSnapshots); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -215,8 +234,9 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		ID: store.NewID("ep"), AgentID: agentID, OrgID: orgID, Kind: kind, Method: method,
 		Lifecycle: store.LifecycleReserved, Subdomain: req.Subdomain, Domain: domain,
 		Port: req.Port, Policy: pol, CreatedAt: time.Now(),
+		ConnectionSnapshots: connectionSnapshots,
 	}
-	if a.handleErr(w, a.data.CreateEndpoint(r.Context(), ep)) {
+	if a.endpointWriteError(w, a.data.CreateEndpoint(r.Context(), ep)) {
 		return
 	}
 	if method == store.MethodProxy && a.conns != nil {
@@ -236,6 +256,7 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	previousAccess := a.previousAccess(r.Context(), ep)
 	var req struct {
 		Subdomain *string      `json:"subdomain"`
 		Domain    *string      `json:"domain"`
@@ -270,7 +291,6 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Port != nil {
 		ep.Port = *req.Port
 	}
-	wasPublic := endpointPublic(ep)
 	if req.Policy != nil {
 		pol, err := buildPolicy(req.Policy, ep.Policy)
 		if err != nil {
@@ -283,11 +303,13 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		ep.Policy = pol
 	}
-	if err := a.validateNetworkPolicy(r.Context(), ep.OrgID, ep.Domain, ep.Policy, wasPublic); err != nil {
+	connectionSnapshots := []*store.Connection{}
+	if err := a.validateNetworkPolicy(r.Context(), ep.OrgID, ep.ID, ep.Domain, ep.Kind, ep.Policy, previousAccess, &connectionSnapshots); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if a.handleErr(w, a.data.UpdateEndpoint(r.Context(), ep)) {
+	ep.ConnectionSnapshots = connectionSnapshots
+	if a.endpointWriteError(w, a.data.UpdateEndpoint(r.Context(), ep)) {
 		return
 	}
 	a.audit(r, "endpoint.update", ep.ID, "")
@@ -326,6 +348,14 @@ func methodError(m string) string {
 	}
 }
 
+func (a *API) endpointWriteError(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, store.ErrConflict) {
+		writeError(w, http.StatusConflict, "endpoint access or hostname changed or is already claimed; reload and retry")
+		return true
+	}
+	return a.handleErr(w, err)
+}
+
 func (a *API) validatePolicyForMethod(method string, pol *store.EndpointPolicy) error {
 	if method != store.MethodProxy {
 		if pol != nil && len(pol.ProxyTargets) > 0 {
@@ -358,6 +388,9 @@ func buildPolicy(in *policyInput, existing *store.EndpointPolicy) (*store.Endpoi
 		return existing, nil
 	}
 	p := in.EndpointPolicy
+	if existing != nil && !in.connectPresent && p.Connect == nil {
+		p.Connect = existing.Connect
+	}
 	if p.RateLimit != nil {
 		if err := p.RateLimit.Validate(); err != nil {
 			return nil, err

@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/mishmesh/mishmesh/internal/cloudflare"
@@ -135,7 +136,7 @@ func (a *API) topologyHandler(w http.ResponseWriter, r *http.Request) {
 	b := newTopologyBuilder()
 	hosts := addTunnel(b, a.cloudflareStatus(orgID))
 	for _, ep := range eps {
-		a.addEndpoint(b, ep, hosts, agentNames, serviceNames)
+		a.addEndpoint(r.Context(), b, ep, hosts, agentNames, serviceNames)
 	}
 	writeJSON(w, http.StatusOK, b.result())
 }
@@ -199,7 +200,7 @@ func hostState(h cloudflare.HostStatus) string {
 	return health.StateDegraded
 }
 
-func (a *API) addEndpoint(b *topologyBuilder, ep *store.Endpoint, hosts map[string]cloudflare.HostStatus, agentNames, serviceNames map[string]string) {
+func (a *API) addEndpoint(ctx context.Context, b *topologyBuilder, ep *store.Endpoint, hosts map[string]cloudflare.HostStatus, agentNames, serviceNames map[string]string) {
 	epID := nodeEndpoint + ":" + ep.ID
 	h := a.healthOf(ep.ID)
 	state, detail := health.StateUnknown, ""
@@ -212,7 +213,7 @@ func (a *API) addEndpoint(b *topologyBuilder, ep *store.Endpoint, hosts map[stri
 	}
 	b.node(topologyNode{ID: epID, Kind: nodeEndpoint, Label: label, State: state, Detail: detail, Ref: &topologyRef{Kind: "endpoint", ID: ep.ID}})
 
-	if endpointPublic(ep) {
+	if a.endpointPublic(ctx, ep) {
 		hostID := nodeHostname + ":" + ep.Domain
 		hs, ok := hosts[ep.Domain]
 		hState, hDetail := health.StateUnknown, "not published yet"

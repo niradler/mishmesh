@@ -23,6 +23,45 @@ import (
 type providerData struct {
 	store.DataStore
 	endpointList
+	aliases *sync.Map
+}
+
+func (d providerData) ReplaceConnectionAliasesIfCurrent(ctx context.Context, expected *store.Connection, aliases []store.EndpointAlias) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if d.DataStore != nil {
+		current, err := d.DataStore.GetConnection(ctx, expected.ID)
+		if err != nil {
+			return err
+		}
+		if !store.SameConnectionInput(*current, *expected) {
+			return store.ErrConflict
+		}
+	}
+	for _, alias := range aliases {
+		matched := false
+		for _, endpoint := range d.endpoints {
+			if endpoint == nil || endpoint.ID != alias.EndpointID || endpoint.OrgID != expected.OrgID || endpoint.Policy == nil {
+				continue
+			}
+			if endpoint.Kind != "" && endpoint.Kind != alias.Kind {
+				return store.ErrConflict
+			}
+			for _, ref := range endpoint.Policy.Access {
+				if ref.ConnectionID == expected.ID && ref.Hostname == alias.AccessHostname {
+					matched = true
+				}
+			}
+		}
+		if !matched {
+			return store.ErrConflict
+		}
+	}
+	if d.aliases != nil {
+		d.aliases.Store(expected.ID, append([]store.EndpointAlias(nil), aliases...))
+	}
+	return nil
 }
 
 func (d providerData) ListEndpointsByOrg(ctx context.Context, orgID string) ([]*store.Endpoint, error) {
@@ -285,6 +324,10 @@ func TestShouldOwnAndStopIndependentManagedConnectors(t *testing.T) {
 type ownershipData struct {
 	store.DataStore
 	endpoints []*store.Endpoint
+}
+
+func (d *ownershipData) ReplaceConnectionAliasesIfCurrent(ctx context.Context, expected *store.Connection, aliases []store.EndpointAlias) error {
+	return (providerData{DataStore: d.DataStore, endpointList: endpointList{endpoints: d.endpoints}}).ReplaceConnectionAliasesIfCurrent(ctx, expected, aliases)
 }
 
 func (d *ownershipData) ListEndpointsByOrg(_ context.Context, orgID string) ([]*store.Endpoint, error) {

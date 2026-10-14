@@ -245,6 +245,12 @@ func (h *Hub) reload(ctx context.Context, connectionID string, expected *store.C
 		return err
 	}
 	deps := h.opts.Deps
+	aliasSnapshot := *record
+	aliasSnapshot.Config = append([]byte(nil), record.Config...)
+	aliasSnapshot.SecretsEnc = append([]byte(nil), record.SecretsEnc...)
+	deps.PublishAliases = func(ctx context.Context, aliases []store.EndpointAlias) error {
+		return h.opts.Deps.Data.ReplaceConnectionAliasesIfCurrent(ctx, &aliasSnapshot, aliases)
+	}
 	deps.Log = slog.New(redactingHandler{base: deps.Log.Handler(), redactor: redactor})
 	instance, err := entry.provider.Open(cloneConfig(cfg), deps)
 	if err != nil || isNil(instance) {
