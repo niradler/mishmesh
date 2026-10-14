@@ -1,0 +1,11 @@
+# Task18: operational scripts, deterministic fixtures and docs
+
+Generic Cloudflare import now finds/creates/updates the named typed connection without duplication. Tokens come from private files/environment and are never printed; API token management is not automatically enabled. Legacy service YAML maps to flat config, Command, ready/Requires/timers with argv whitespace and redacted env output. Running changes remain explicit API409 rather than an implicit restart.
+
+Added read-only org-scoped snapshot-api.py with explicit legacy capture, env redaction, exclusive private output creation, and check-regression.py comparing stable service/endpoint identities, configurations/readiness/timers/Requires, selected Cloudflare connection fields/identity/hostname, unrelated policy/Connect and unclaimed hostnames. Regression corpus verifies every one of12Access refs and8service configs individually, plus changed tunnel identity. Fake HTTP records actual generic connection/service payloads, import idempotency and read-only snapshot methods/scoping.
+
+Ignored private lab-endpoints.py now adds an explicit connection ID while preserving unrelated Access/Connect. Private lab-e2e.py uses generic Connections/status and connection-qualified topology IDs; default mode has no service mutation. --wake/--requires-wake are explicit opt-in. --crud creates/updates a retained probe and prints cleanup instead of deleting it. No private machine-specific script or note was staged. Public docs explain API breakage, backup+matching key restoration, provider HTTP limits, Tailscale prerequisites, ownership/CAS limits and modern browser requirements. Kubernetes/kind omitted as cancelled.
+
+Python in-memory compile PASS for changed generic/private scripts. `python -m unittest discover -s .claude/scripts/pluggable-types -p '*_test.py'` PASS5tests1.308s, including optional private Access preservation. Public fixtures work without private lab files; only that optional test skips if absent. Web lint and production build PASS. No actual lab script, external provider account or production operation executed.
+
+Task19 validation helpers/real browser scripts are staged separately. Final review/release preparation remains Task20.

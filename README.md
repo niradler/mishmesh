@@ -9,6 +9,9 @@ You deploy it once and reuse it everywhere, instead of building a custom tunnel 
 
 One Go module builds two binaries: `mishmesh-server` (gateway, public ingress, control API, web UI) and `mishmesh-agent` (the tunnel client).
 
+App Access is pluggable: Cloudflare publishes HTTP apps publicly and Tailscale Services publishes private HTTPS over an existing tailnet. The Connections UI supports multiple named connections and per-endpoint Access refs while preserving agent Connect and UDP. Docker/Compose/Command services use typed descriptors, readiness, Requires and explicit Save and restart. See [Connections and upgrade requirements](docs/connections.md) and [Services](docs/services.md). Kubernetes and VPN peer/key/route management are outside this release. Back up the database and matching secret key before upgrading; old binaries require the matching pre-migration database/key.
+
+
 ## Contents
 
 - [When to use it](#when-to-use-it)
@@ -468,7 +471,7 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `PROXY_ALLOWED_CIDRS` | empty | comma-separated CIDRs `method=proxy` may reach even when private targets are otherwise denied |
 | `HEALTH_INTERVAL` / `HEALTH_TIMEOUT` | `15s` / `3s` | endpoint health probe interval and per-target dial timeout |
 | `SECRET_KEY_FILE` | `mishmesh-secret.key` next to the SQLite file, else in the working directory | AES-256 key that seals stored Cloudflare tokens; created on first start (mode 0600) |
-| `HOST_COMMANDS` | `true` in `invite` mode, else `false` | allow services that run commands on the server host (`exec`, Compose `file`); see [docs/services.md](docs/services.md) |
+| `HOST_COMMANDS` | `true` in `invite` mode, else `false` | allow services that run commands on the server host (`command`, Compose `file`); see [docs/services.md](docs/services.md) |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker Engine address for `docker` and `compose` services |
 | `CLOUDFLARED_BIN` | `cloudflared` | binary run for a Cloudflare connection with `connector: managed`; see [docs/cloudflare.md](docs/cloudflare.md) |
 | `CLUSTER_ENABLED`, `NODE_ID`, `RELAY_ADDR`, `RELAY_ADVERTISE`, `CLUSTER_SECRET` | | [cluster mode](#how-it-scales) |
