@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -81,6 +82,11 @@ func newWakeIngress(t *testing.T, pol *store.EndpointPolicy, waker ServiceWaker)
 	ctx := context.Background()
 	_ = data.CreateOrg(ctx, &store.Org{ID: "org_1", Name: "o", CreatedAt: time.Now()})
 	_ = data.CreateAgent(ctx, &store.Agent{ID: "ag_test", OrgID: "org_1", Name: "a", Status: store.AgentActive, CreatedAt: time.Now()})
+	if pol != nil && pol.ServiceID != "" {
+		if err := data.CreateService(ctx, &store.Service{ID: pol.ServiceID, OrgID: "org_1", Name: pol.ServiceID, Driver: "docker", Config: json.RawMessage(`{"containers":["ingress-test"]}`), CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := data.CreateEndpoint(ctx, &store.Endpoint{ID: "ep_1", AgentID: "ag_test", OrgID: "org_1", Kind: store.KindHTTP, Subdomain: "app", Policy: pol, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}

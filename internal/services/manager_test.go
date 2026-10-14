@@ -605,6 +605,14 @@ func TestApplyKeepsRuntimeStateAndDropsRemoved(t *testing.T) {
 	}
 
 	m.Apply(nil)
+	if !m.Has("svc_1") {
+		t.Fatal("live definition silently discarded")
+	}
+	release()
+	if err := m.Stop(context.Background(), "svc_1"); err != nil {
+		t.Fatal(err)
+	}
+	m.Apply(nil)
 	if m.Has("svc_1") {
 		t.Fatal("removed definition still present")
 	}
@@ -703,14 +711,14 @@ func TestHostDriversGateHostCommands(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &hostDrivers{dockerHost: DefaultDockerHost, hostCommands: tt.hostCommands}
+			h := &hostDrivers{dockerHost: DefaultDockerHost, hostCommands: tt.hostCommands, registry: testRegistry(t)}
 			_, err := h.build(tt.def)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tt.wantErr)
 			}
 		})
 	}
-	bad := &hostDrivers{dockerHost: "ftp://nope"}
+	bad := &hostDrivers{dockerHost: "ftp://nope", registry: testRegistry(t)}
 	if _, err := bad.build(Definition{Driver: DriverDocker, Spec: Spec{Docker: &DockerSpec{Label: "a"}}}); err == nil {
 		t.Error("expected error for bad docker host")
 	}
@@ -718,7 +726,7 @@ func TestHostDriversGateHostCommands(t *testing.T) {
 
 func TestManagerWithDockerEngine(t *testing.T) {
 	engine := newFakeEngine(t, &fakeContainer{ID: "1", Name: "portainer", State: "exited"})
-	m := NewManager(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DockerHost: engine.host()})
+	m := NewManager(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DockerHost: engine.host(), Registry: testRegistry(t)})
 	m.Apply([]Definition{{ID: "svc_p", OrgID: "org_a", Name: "portainer", Driver: DriverDocker,
 		Spec: Spec{Docker: &DockerSpec{Containers: []string{"portainer"}}}, StartTimeout: 5 * time.Second}})
 	if err := m.EnsureRunning(context.Background(), "svc_p", ""); err != nil {

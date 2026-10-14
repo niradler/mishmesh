@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func TestValidate(t *testing.T) {
 		{"exec", "job", DriverExec, Spec{Exec: &ExecSpec{Start: []string{"a"}, Stop: []string{"b"}}}, 0, 0, ""},
 		{"ready tcp", "portainer", DriverDocker, Spec{Docker: docker.Docker, ReadyTCP: "127.0.0.1:9443"}, 0, 0, ""},
 		{"bad name", "Bad Name", DriverDocker, docker, 0, 0, "name must"},
-		{"negative idle", "x", DriverDocker, docker, -1, 0, "idle_timeout_seconds"},
+		{"negative idle", "x", DriverDocker, docker, -2, 0, "idle_timeout_seconds"},
 		{"huge start", "x", DriverDocker, docker, 0, maxTimeoutSeconds + 1, "start_timeout_seconds"},
 		{"ready without port", "x", DriverDocker, Spec{Docker: docker.Docker, ReadyTCP: "localhost"}, 0, 0, "ready_tcp"},
 		{"missing driver", "x", "", docker, 0, 0, "driver is required"},
@@ -120,5 +121,74 @@ func TestFromRecord(t *testing.T) {
 	rec.Spec = []byte(`{"docker":{}}`)
 	if _, err := FromRecord(rec); err == nil {
 		t.Fatal("want validation error for empty docker selector")
+	}
+}
+
+func TestShouldConvertLegacyCommandRecordAndPreferGenericConfig(t *testing.T) {
+	record := &store.Service{ID: "svc_1", OrgID: "org_a", Name: "job", Driver: DriverExec, Spec: json.RawMessage(`{"exec":{"start":["a"],"stop":["b"]},"ready_tcp":"127.0.0.1:8080"}`)}
+	definition, err := FromRecord(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definition.Driver != DriverCommand || definition.Ready.TCP != "127.0.0.1:8080" || len(definition.Config) == 0 {
+		t.Fatalf("definition=%+v", definition)
+	}
+	if record.Driver != DriverExec || len(record.Config) != 0 {
+		t.Fatal("record mutated")
+	}
+	record.Driver = DriverCommand
+	record.Config = json.RawMessage(`{"start":["new"],"stop":["stop"]}`)
+	record.Ready = json.RawMessage(`{"tcp":"127.0.0.1:9090"}`)
+	record.Requires = []string{"svc_2"}
+	record.Spec = json.RawMessage(`invalid legacy spec`)
+	definition, err = FromRecordWithRegistry(record, testRegistry(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(definition.Config) != string(record.Config) || definition.Ready.TCP != "127.0.0.1:9090" || readyTarget(definition, "") != "127.0.0.1:9090" {
+		t.Fatalf("definition=%+v", definition)
+	}
+	definition.Config[0] = ' '
+	definition.Requires[0] = "changed"
+	if record.Config[0] != '{' || record.Requires[0] != "svc_2" {
+		t.Fatal("definition aliases record")
+	}
+	if _, err := FromRecordWithRegistry(nil, testRegistry(t)); err == nil {
+		t.Fatal("nil record accepted")
+	}
+	if _, err := FromRecordWithRegistry(record, NewRegistry()); err == nil {
+		t.Fatal("unregistered record driver accepted")
+	}
+}
+
+func TestShouldLoadCustomDriverRecordUsingRegistry(t *testing.T) {
+	registry := testRegistry(t)
+	if err := registry.Register(testDriverType{}); err != nil {
+		t.Fatal(err)
+	}
+	definition, err := FromRecordWithRegistry(&store.Service{ID: "svc_1", OrgID: "org_a", Name: "custom", Driver: "test", Config: json.RawMessage(`{}`)}, registry)
+	if err != nil || definition.Driver != "test" {
+		t.Fatalf("definition=%+v error=%v", definition, err)
+	}
+}
+
+func TestShouldLoadWithDependentsIdleSentinel(t *testing.T) {
+	for _, typed := range []bool{false, true} {
+		for _, idle := range []int{-2, -1, 0, 1} {
+			rec := &store.Service{ID: "svc", OrgID: "org", Name: "svc", Driver: DriverDocker, IdleTimeoutSeconds: idle, Spec: json.RawMessage(`{"docker":{"containers":["web"]}}`)}
+			if typed {
+				rec.Config = json.RawMessage(`{"containers":["web"]}`)
+			}
+			def, err := FromRecord(rec)
+			if idle < -1 {
+				if err == nil {
+					t.Fatal("invalid negative timeout accepted")
+				}
+				continue
+			}
+			if err != nil || def.IdleTimeout != time.Duration(idle)*time.Second {
+				t.Fatalf("typed=%v idle=%d def=%+v err=%v", typed, idle, def, err)
+			}
+		}
 	}
 }

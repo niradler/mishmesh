@@ -211,6 +211,9 @@ CREATE TABLE IF NOT EXISTS org_policies (
 		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS domain TEXT`,
 		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS policy TEXT`,
 		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS method TEXT`,
+		`ALTER TABLE services ADD COLUMN IF NOT EXISTS config TEXT`,
+		`ALTER TABLE services ADD COLUMN IF NOT EXISTS ready TEXT`,
+		`ALTER TABLE connections ADD COLUMN IF NOT EXISTS state TEXT`,
 	} {
 		if _, err := conn.ExecContext(ctx, alter); err != nil {
 			return fmt.Errorf("postgres migrate alter: %w", err)
@@ -416,10 +419,21 @@ func (s *Store) CreateEndpoint(ctx context.Context, e *store.Endpoint) error {
 	if err != nil {
 		return wrap("create endpoint", err)
 	}
-	_, err = s.db.ExecContext(ctx,
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := validateEndpointReferences(ctx, tx, e, false); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO endpoints (id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, policy, created_at, method) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		e.ID, e.AgentID, e.OrgID, e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, ns(e.CreatedAt), store.MethodOrDefault(e.Method))
-	return wrap("create endpoint", err)
+	if err != nil {
+		return wrap("create endpoint", err)
+	}
+	return wrap("create endpoint", tx.Commit())
 }
 
 func (s *Store) GetEndpoint(ctx context.Context, id string) (*store.Endpoint, error) {
@@ -476,10 +490,21 @@ func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
 	if err != nil {
 		return wrap("update endpoint", err)
 	}
-	_, err = s.db.ExecContext(ctx,
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := validateEndpointReferences(ctx, tx, e, true); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
 		`UPDATE endpoints SET kind = $1, lifecycle = $2, subdomain = $3, domain = $4, port = $5, policy = $6, method = $7 WHERE id = $8`,
 		e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, store.MethodOrDefault(e.Method), e.ID)
-	return wrap("update endpoint", err)
+	if err != nil {
+		return wrap("update endpoint", err)
+	}
+	return wrap("update endpoint", tx.Commit())
 }
 
 func (s *Store) DeleteEndpoint(ctx context.Context, id string) error {

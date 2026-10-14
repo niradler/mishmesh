@@ -9,6 +9,8 @@ import (
 	"github.com/mishmesh/mishmesh/internal/cloudflare"
 	"github.com/mishmesh/mishmesh/internal/config"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
+	"github.com/mishmesh/mishmesh/internal/connections"
+	tailscaleconnection "github.com/mishmesh/mishmesh/internal/connections/tailscale"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
 	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/ingress"
@@ -18,15 +20,16 @@ import (
 )
 
 type networkControl struct {
-	log          *slog.Logger
-	services     *services.Manager
-	prober       *health.Prober
-	hub          *cloudflare.Hub
-	box          *secrets.Box
-	hostCommands bool
-	cp           *controlplane.API
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
+	log           *slog.Logger
+	services      *services.Manager
+	prober        *health.Prober
+	hub           *cloudflare.Hub
+	connectionHub *connections.Hub
+	box           *secrets.Box
+	hostCommands  bool
+	cp            *controlplane.API
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 func newNetworkControl(cfg config.Server, data store.DataStore, conns store.ConnectionStore, guard *proxy.Guard, connector *proxy.Connector, log *slog.Logger) (*networkControl, error) {
@@ -39,7 +42,14 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 	if nc.box, err = secrets.New(key); err != nil {
 		return nil, err
 	}
+	driverRegistry := services.NewRegistry()
+	for _, driver := range []services.DriverType{services.DockerType{}, services.ComposeType{}, services.CommandType{}} {
+		if err := driverRegistry.Register(driver); err != nil {
+			return nil, fmt.Errorf("register service driver: %w", err)
+		}
+	}
 	nc.services = services.NewManager(services.Options{
+		Registry:     driverRegistry,
 		Log:          log,
 		OnChange:     nc.serviceChanged,
 		DockerHost:   cfg.DockerHost,
@@ -56,6 +66,17 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 		Log:            log,
 		Origin:         cloudflare.OriginForListenAddr(cfg.IngressAddr),
 		CloudflaredBin: cfg.CloudflaredBin,
+	})
+	connectionRegistry := connections.NewRegistry()
+	if err := connectionRegistry.Register(cloudflare.NewProvider(cloudflare.ProviderOptions{CloudflaredBin: cfg.CloudflaredBin})); err != nil {
+		return nil, fmt.Errorf("register cloudflare connection provider: %w", err)
+	}
+	if err := connectionRegistry.Register(tailscaleconnection.NewProvider(tailscaleconnection.Options{})); err != nil {
+		return nil, fmt.Errorf("register tailscale connection provider: %w", err)
+	}
+	nc.connectionHub = connections.NewHub(connections.HubOptions{
+		Registry: connectionRegistry,
+		Deps:     connections.Deps{Data: data, Box: nc.box, Log: log, Origin: cloudflare.OriginForListenAddr(cfg.IngressAddr), HostCommands: cfg.HostCommands},
 	})
 	log.Info("network control ready", "secret_key_file", keyFile, "host_commands", cfg.HostCommands)
 	return nc, nil
@@ -86,8 +107,13 @@ func (nc *networkControl) start() error {
 			return fmt.Errorf("load services: %w", err)
 		}
 	}
+	if err := nc.connectionHub.Start(ctx); err != nil {
+		cancel()
+		return fmt.Errorf("connections: %w", err)
+	}
 	if err := nc.hub.Start(ctx); err != nil {
 		cancel()
+		nc.connectionHub.Close()
 		return fmt.Errorf("cloudflare: %w", err)
 	}
 	nc.spawn(ctx, func(ctx context.Context) {
@@ -111,6 +137,7 @@ func (nc *networkControl) stop(ctx context.Context, log *slog.Logger) {
 		return
 	}
 	nc.cancel()
+	nc.connectionHub.Close()
 	nc.hub.Close()
 	done := make(chan struct{})
 	go func() {

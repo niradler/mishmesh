@@ -105,6 +105,19 @@ type EndpointPolicy struct {
 	ServiceID             string            `json:"service_id,omitempty"`
 	PublicAccess          string            `json:"public_access,omitempty"`
 	Connect               *ConnectPolicy    `json:"connect,omitempty"`
+	Access                []AccessRef       `json:"access,omitempty"`
+}
+
+type AccessRef struct {
+	ConnectionID string `json:"connection_id"`
+	Hostname     string `json:"hostname,omitempty"`
+}
+
+type EndpointAlias struct {
+	Hostname     string
+	EndpointID   string
+	ConnectionID string
+	OrgID        string
 }
 
 const ConnectAnyAgent = "*"
@@ -262,10 +275,26 @@ type Service struct {
 	Name                string
 	Driver              string
 	Spec                json.RawMessage
+	Config              json.RawMessage
+	Ready               json.RawMessage
+	Requires            []string
+	ConnectionIDs       []string `json:"-"`
 	IdleTimeoutSeconds  int
 	StartTimeoutSeconds int
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+}
+
+type Connection struct {
+	ID         string
+	OrgID      string
+	Type       string
+	Name       string
+	Config     json.RawMessage
+	State      json.RawMessage `json:"-"`
+	SecretsEnc []byte          `json:"-"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 const (
@@ -311,6 +340,8 @@ type DataStore interface {
 	GetEndpoint(ctx context.Context, id string) (*Endpoint, error)
 	GetEndpointBySubdomain(ctx context.Context, subdomain string) (*Endpoint, error)
 	GetEndpointByDomain(ctx context.Context, domain string) (*Endpoint, error)
+	GetEndpointByAccessHostname(ctx context.Context, hostname string) (*Endpoint, error)
+	ReplaceConnectionAliases(ctx context.Context, orgID, connectionID string, aliases []EndpointAlias) error
 	ListEndpointsByAgent(ctx context.Context, agentID string) ([]*Endpoint, error)
 	ListEndpointsByOrg(ctx context.Context, orgID string) ([]*Endpoint, error)
 	UpdateEndpoint(ctx context.Context, e *Endpoint) error
@@ -358,9 +389,18 @@ type DataStore interface {
 	CreateService(ctx context.Context, svc *Service) error
 	GetService(ctx context.Context, id string) (*Service, error)
 	ListServices(ctx context.Context, orgID string) ([]*Service, error)
+	ListServiceDependents(ctx context.Context, orgID, serviceID string) ([]*Service, error)
 	ListAllServices(ctx context.Context) ([]*Service, error)
 	UpdateService(ctx context.Context, svc *Service) error
 	DeleteService(ctx context.Context, id string) error
+
+	CreateConnection(ctx context.Context, c *Connection) error
+	GetConnection(ctx context.Context, id string) (*Connection, error)
+	ListConnections(ctx context.Context, orgID string) ([]*Connection, error)
+	ListAllConnections(ctx context.Context) ([]*Connection, error)
+	UpdateConnection(ctx context.Context, c *Connection) error
+	UpdateConnectionState(ctx context.Context, orgID, connectionID string, state json.RawMessage) error
+	DeleteConnection(ctx context.Context, id string) error
 
 	GetCloudflareConnection(ctx context.Context, orgID string) (*CloudflareConnection, error)
 	ListCloudflareConnections(ctx context.Context) ([]*CloudflareConnection, error)

@@ -1,9 +1,14 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +27,9 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(0)
 	case "fail":
 		fmt.Fprint(os.Stderr, "boom")
+		os.Exit(3)
+	case "fail-secrets":
+		fmt.Fprint(os.Stderr, os.Getenv("SERVICES_CONFIGURED_SECRET")+"|"+os.Getenv("SERVICES_INHERITED_SECRET"))
 		os.Exit(3)
 	case "flood":
 		fmt.Print(strings.Repeat("x", 10000))
@@ -61,7 +69,7 @@ func TestRunCommandOutcomes(t *testing.T) {
 		wantInErr  string
 	}{
 		{"success", "ok", false, "hello", ""},
-		{"failure includes output", "fail", true, "boom", "boom"},
+		{"failure returns output internally", "fail", true, "boom", "exit status"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -74,6 +82,9 @@ func TestRunCommandOutcomes(t *testing.T) {
 			}
 			if tt.wantInErr != "" && !strings.Contains(err.Error(), tt.wantInErr) {
 				t.Errorf("err %q missing %q", err, tt.wantInErr)
+			}
+			if err != nil && strings.Contains(err.Error(), tt.wantOutput) {
+				t.Fatal("captured output leaked into error")
 			}
 		})
 	}
@@ -136,6 +147,9 @@ func TestRunCommandContextTimeout(t *testing.T) {
 	}
 	if ctx.Err() == nil {
 		t.Error("context should be expired")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("context cause lost: %v", err)
 	}
 }
 
@@ -204,10 +218,49 @@ func TestExecDriverStartStop(t *testing.T) {
 		t.Errorf("Stop: %v", err)
 	}
 	bad := newExecDriver(ExecSpec{Start: helperArgv(), Stop: helperArgv(), Env: helperEnv("fail", nil)})
-	if err := bad.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "boom") {
+	if err := bad.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "exit status") || strings.Contains(err.Error(), "boom") {
 		t.Errorf("Start err = %v", err)
 	}
-	if err := bad.Stop(context.Background()); err == nil || !strings.Contains(err.Error(), "boom") {
+	if err := bad.Stop(context.Background()); err == nil || !strings.Contains(err.Error(), "exit status") || strings.Contains(err.Error(), "boom") {
 		t.Errorf("Stop err = %v", err)
+	}
+}
+
+func TestShouldExcludeCommandOutputFromErrorsStatusAndLogs(t *testing.T) {
+	configured, inherited := "configured-test-secret", "inherited-test-secret"
+	t.Setenv("SERVICES_INHERITED_SECRET", inherited)
+	env := helperEnv("fail-secrets", map[string]string{"SERVICES_CONFIGURED_SECRET": configured})
+	output, err := runCommand(context.Background(), helperArgv(), "", env)
+	if err == nil || output != configured+"|"+inherited {
+		t.Fatalf("missing internal output or exit error: %v", err)
+	}
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 3 {
+		t.Fatalf("exit cause lost: %v", err)
+	}
+	for _, secret := range []string{configured, inherited} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatal("output exposed by runner error")
+		}
+	}
+	config, err := json.Marshal(ExecSpec{Start: helperArgv(), Stop: helperArgv(), Env: env})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	manager := NewManager(Options{Registry: testRegistry(t), HostCommands: true, DockerHost: "ftp://unused", Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	manager.Apply([]Definition{{ID: "svc_secret", Name: "secret", Driver: DriverCommand, Config: config, StartTimeout: 5 * time.Second}})
+	err = manager.EnsureRunning(context.Background(), "svc_secret", "")
+	if err == nil {
+		t.Fatal("expected start failure")
+	}
+	status, ok := manager.Status("svc_secret")
+	if !ok || status.State != StateError {
+		t.Fatalf("status = %+v", status)
+	}
+	for _, secret := range []string{configured, inherited} {
+		if strings.Contains(err.Error(), secret) || strings.Contains(status.LastError, secret) || strings.Contains(logs.String(), secret) {
+			t.Fatal("command output exposed by manager")
+		}
 	}
 }

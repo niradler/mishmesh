@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -120,6 +121,11 @@ func TestProbeProxyStates(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
+			if tc.service != "" {
+				if err := f.data.CreateService(context.Background(), &store.Service{ID: tc.service, OrgID: "org_default", Name: tc.service, Driver: "docker", Config: json.RawMessage(`{"containers":["health-test"]}`), CreatedAt: time.Now()}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			ep := f.addEndpoint(t, store.MethodProxy, &store.EndpointPolicy{ProxyTargets: tc.targets, ServiceID: tc.service})
 			p := f.prober(tc.services)
 			h, err := p.ProbeNow(context.Background(), ep.ID)

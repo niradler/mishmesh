@@ -5,18 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/typedfields"
 )
 
 const (
 	DriverDocker  = "docker"
 	DriverCompose = "compose"
 	DriverExec    = "exec"
+	DriverCommand = "command"
 
 	DefaultDockerHost   = "unix:///var/run/docker.sock"
 	DefaultStartTimeout = 120 * time.Second
@@ -59,23 +60,43 @@ type ExecSpec struct {
 }
 
 type Definition struct {
-	ID           string
-	OrgID        string
-	Name         string
-	Driver       string
-	Spec         Spec
-	IdleTimeout  time.Duration
-	StartTimeout time.Duration
+	ID                string
+	OrgID             string
+	Name              string
+	Driver            string
+	Spec              Spec
+	Config            json.RawMessage
+	Ready             Readiness
+	Requires          []string
+	FallbackReadyAddr string
+	IdleTimeout       time.Duration
+	StartTimeout      time.Duration
 }
 
 func UsesHostCommands(driver string, spec Spec) bool {
-	switch driver {
-	case DriverExec:
+	driverType, config, err := legacyDriverConfig(driver, spec)
+	if err != nil {
 		return true
-	case DriverCompose:
-		return spec.Compose != nil && spec.Compose.File != ""
 	}
-	return false
+	uses, err := typedfields.UsesHostCommands(driverType.Describe().Fields, config)
+	return err != nil || uses
+}
+
+func legacyDriverConfig(driver string, spec Spec) (DriverType, json.RawMessage, error) {
+	var driverType DriverType
+	var value any
+	switch driver {
+	case DriverDocker:
+		driverType, value = DockerType{}, spec.Docker
+	case DriverCompose:
+		driverType, value = ComposeType{}, spec.Compose
+	case DriverExec, DriverCommand:
+		driverType, value = CommandType{}, spec.Exec
+	default:
+		return nil, nil, errors.New("unknown driver")
+	}
+	config, err := json.Marshal(value)
+	return driverType, config, err
 }
 
 func DecodeSpec(raw []byte) (Spec, error) {
@@ -127,15 +148,15 @@ func Validate(name, driver string, spec Spec, idleSeconds, startSeconds int) err
 	if !NamePattern.MatchString(name) {
 		return fmt.Errorf("name must be 1-63 lowercase letters, digits, '-', '_' or '.', starting with a letter or digit")
 	}
-	if idleSeconds < 0 || idleSeconds > maxTimeoutSeconds {
-		return fmt.Errorf("idle_timeout_seconds must be between 0 and %d", maxTimeoutSeconds)
+	if idleSeconds < -1 || idleSeconds > maxTimeoutSeconds {
+		return fmt.Errorf("idle_timeout_seconds must be between -1 and %d", maxTimeoutSeconds)
 	}
 	if startSeconds < 0 || startSeconds > maxTimeoutSeconds {
 		return fmt.Errorf("start_timeout_seconds must be between 0 and %d", maxTimeoutSeconds)
 	}
 	if spec.ReadyTCP != "" {
-		if _, port, err := net.SplitHostPort(spec.ReadyTCP); err != nil || port == "" {
-			return fmt.Errorf("ready_tcp must be host:port")
+		if err := ValidateReadiness(Readiness{TCP: spec.ReadyTCP}); err != nil {
+			return fmt.Errorf("ready_tcp: %w", err)
 		}
 	}
 	blocks := 0
@@ -179,11 +200,47 @@ func Validate(name, driver string, spec Spec, idleSeconds, startSeconds int) err
 }
 
 func FromRecord(rec *store.Service) (Definition, error) {
-	spec, err := DecodeSpec(rec.Spec)
-	if err != nil {
+	return FromRecordWithRegistry(rec, builtinRegistry())
+}
+
+func FromRecordWithRegistry(rec *store.Service, registry *Registry) (Definition, error) {
+	if rec == nil {
+		return Definition{}, errors.New("service record is required")
+	}
+	driver, config, ready := rec.Driver, rec.Config, rec.Ready
+	var spec Spec
+	if len(bytes.TrimSpace(config)) == 0 {
+		var err error
+		driver, config, ready, err = store.MigrateService(driver, rec.Spec)
+		if err != nil {
+			return Definition{}, fmt.Errorf("service %s: %w", rec.ID, err)
+		}
+		spec, err = DecodeSpec(rec.Spec)
+		if err != nil {
+			return Definition{}, fmt.Errorf("service %s: %w", rec.ID, err)
+		}
+		if err := Validate(rec.Name, rec.Driver, spec, rec.IdleTimeoutSeconds, rec.StartTimeoutSeconds); err != nil {
+			return Definition{}, fmt.Errorf("service %s: %w", rec.ID, err)
+		}
+	}
+	if !NamePattern.MatchString(rec.Name) {
+		return Definition{}, errors.New("invalid service name")
+	}
+	if rec.IdleTimeoutSeconds < -1 || rec.IdleTimeoutSeconds > maxTimeoutSeconds || rec.StartTimeoutSeconds < 0 || rec.StartTimeoutSeconds > maxTimeoutSeconds {
+		return Definition{}, errors.New("service timeout is out of range")
+	}
+	if registry == nil {
+		return Definition{}, errors.New("driver registry is required")
+	}
+	driverType, ok := registry.Lookup(driver)
+	if !ok {
+		return Definition{}, fmt.Errorf("unknown driver %q", driver)
+	}
+	if err := driverType.Validate(config); err != nil {
 		return Definition{}, fmt.Errorf("service %s: %w", rec.ID, err)
 	}
-	if err := Validate(rec.Name, rec.Driver, spec, rec.IdleTimeoutSeconds, rec.StartTimeoutSeconds); err != nil {
+	readiness, err := DecodeReadiness(ready)
+	if err != nil {
 		return Definition{}, fmt.Errorf("service %s: %w", rec.ID, err)
 	}
 	start := time.Duration(rec.StartTimeoutSeconds) * time.Second
@@ -194,11 +251,24 @@ func FromRecord(rec *store.Service) (Definition, error) {
 		ID:           rec.ID,
 		OrgID:        rec.OrgID,
 		Name:         rec.Name,
-		Driver:       rec.Driver,
+		Driver:       driver,
 		Spec:         spec,
+		Config:       append(json.RawMessage(nil), config...),
+		Ready:        readiness,
+		Requires:     append([]string(nil), rec.Requires...),
 		IdleTimeout:  time.Duration(rec.IdleTimeoutSeconds) * time.Second,
 		StartTimeout: start,
 	}, nil
+}
+
+func builtinRegistry() *Registry {
+	registry := NewRegistry()
+	for _, driver := range []DriverType{DockerType{}, ComposeType{}, CommandType{}} {
+		if err := registry.Register(driver); err != nil {
+			panic(err)
+		}
+	}
+	return registry
 }
 
 func trimAll(in []string) []string {
