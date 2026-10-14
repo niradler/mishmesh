@@ -1,10 +1,10 @@
 {
   "candidate": "v0.1.0-beta.7",
-  "state": "clean-slate-review-pending-unpublished",
+  "state": "prepared-unpublished",
   "branch": "feat/pluggable-access",
   "base": "124e5b10738587c2114a533fb43088a1c377f903",
-  "code_validation_commit": "c63a46f84c6e01b70c4c79898189534eb89ae338",
-  "independent_review": "pending-clean-slate-amendment",
+  "code_validation_commit": "5b559d939e278b8af7775c3cb8b17392dbcd132a",
+  "independent_review": "approved-clean-slate-5b559d9-native-manual-review",
   "availability_checked": "2026-10-14",
   "remote_tag_lookup": "missing-exit-2",
   "github_release_lookup": "release-not-found",
@@ -17,7 +17,6 @@
     "windows/arm64"
   ],
   "requires": [
-    "clean-slate-independent-review",
     "authorized-branch-publication-and-PR",
     "passing-remote-CI",
     "authorized-tag-publication",

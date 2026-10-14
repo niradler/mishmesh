@@ -1,6 +1,8 @@
 # Pluggable access — implementation checkpoint
 
-Updated 2026-10-14. Nir subsequently required a clean slate with no legacy/backward compatibility. Conversion/upgrade paths, old routes and import formats are removed; fresh/current typed databases only. Unsupported old databases remain unchanged. Follow-up validation is passing; final browser reopening and scoped independent review are in progress. clean-slate-report.md records the amendment. Nothing published or deployed.
+Updated 2026-10-14. COMPLETE under Nir's clean-slate direction: no legacy/backward compatibility. Conversion/ALTER-upgrade paths, ciphertext/Cedar rewrites, old routes/redirect and import formats are removed. Fresh/current typed databases only; unsupported old or incomplete schemas remain unchanged and cannot create a replacement key. Current key/ciphertext safeguards, Docker/Compose/Command, readiness/Requires, explicit Save and restart, Access/Connect/UDP and provider extensibility remain.
+
+Product commit5b559d939e278b8af7775c3cb8b17392dbcd132a independently APPROVED after amendment eaa41ce and one reproduced/fixed schema-guard finding. The guard matches all17known tables/columns. Fresh/current SQLite and full isolated live PostgreSQL races, current key/secret rejection, controlplane races, six script regressions, vet/build/web checks and final native-binary/browser database/key reopening pass. Old singleton API404 and old page404/no redirect are proven in the browser. Historical fixture data is retained solely for negative rejection tests; production imports it zero times. Reports clean-slate-report.md, clean-slate-review.md and clean-slate-rereview.md record exact evidence. Nothing published or deployed; live account/second-client and authorized publication/CI/release/rollout gates remain external.
 
 ## Prior completed scope — superseded by clean-slate amendment above
 
@@ -17,7 +19,7 @@ Task20 preparation54e1c56 includes proposed unused v0.1.0-beta.7, CHANGELOG, rel
 - App access over existing networks. Ship Cloudflare public access and Tailscale private HTTPS app access. NetBird/existing WireGuard networks are extension cases, not implemented-provider claims. No VPN peers, keys, routes or policies management.
 - Nir cancelled Kubernetes: the deployment platform owns workload lifecycle. No Kubernetes provider/driver, credential executor, UI option or kind gate. Partial Task10 source is preserved untouched in the old pluggable-types worktree and must not be imported.
 - Keep generic Docker/Compose/Command drivers, readiness, Requires and explicit **Save and restart**. Normal runtime-config changes require stopped service; restart action checks permissions/dependents, reserves lifecycle admission across stop/save/apply/start, and reports failures by phase. No silent restart or dependent cascade.
-- Finish generic connection/service APIs, safe legacy migration, descriptor UI and topology; prove save/reopen, SQLite and live PostgreSQL migration, security and compatibility with current main; independent whole-branch review before release.
+- Finish generic connection/service APIs, clean typed initialization, descriptor UI and topology; prove save/reopen, SQLite/live PostgreSQL initialization and unsupported-schema rejection, security and current-main integration; independent review before release. Nir cancelled legacy conversion/backward compatibility after the initial completed implementation.
 
 ## Where and source of truth
 

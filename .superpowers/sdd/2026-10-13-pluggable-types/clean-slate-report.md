@@ -21,4 +21,14 @@ Historical literal SQL/data fixtures are retained solely as negative rejection e
 - Six Python script regressions PASS1.203s including typed imports, old-format rejection, exact snapshot identity/config/Access checks and read-only secret-safe output.
 - Whole vet final PASS. All12server/agent OS/arch crossbuilds PASS before the final removal of an unreachable config fallback; final source compile/build follows. Web format/lint/typecheck/build PASS. Dependency graph/lockfiles unchanged, reuse prior npm audit0 and dual-OS govulncheck reachability evidence.
 
-Real browser/current database-key reopen and scoped independent review follow the committed final source. Original Task19/20 migration results are historical evidence for the superseded contract, not claims about this clean-slate build. No publication/deployment/live account traffic.
+## Final correction and approval
+
+Amendment eaa41ce was reviewed independently. One concrete finding: the guard initially covered only3tables, allowing incomplete orgs/Requires/alias schemas to create a key or change schema before failing. Exact new regression failed for all3cases before correction (output/clean-slate-schema-red.log). Correction5b559d9 covers every known table. SQLite fullrace3.776s and cmd fullrace3.103s PASS; fresh full live PostgreSQL3.083s, no skips, including new incomplete-known-table probe/Open unchanged-table/column tests. Final fixture output/mishmesh-pluggable-pg-1791996844136415700/test.log retained. No cleanup.
+
+Whole final vet and Windows native build PASS after correction; dependency/platform code unchanged from the12passing crossbuilds at eaa41ce. Fresh browser plus corrected native binary reopen the same typed SQLite/key and verify secret masks/retention, Requires, Access+Connect and UDP. Old singleton API404 and /cloudflare page404 without redirect PASS, output/clean-slate-browser-final.log.
+
+Final Linux SQLite/cmd affected rejection/key/current-state races also PASS1.734s/1.591s, output/clean-slate-linux-final.log. The retained runner has no published ports. Final browser/server owned processes stopped, with database/key and all PostgreSQL fixtures retained.
+
+Scoped independent rereview APPROVED5b559d939e278b8af7775c3cb8b17392dbcd132a, exact regression independently PASS1.403s, schema inventory independently matches actual SQLite DDL17/17tables/allcolumns, no new blockers. clean-slate-review.md and clean-slate-rereview.md retain both verdicts. ORC effective guidance available; manual native reviewer reused because prior review dispatch stayed queued. No fabricated flow outcome, daemon change or durable memory/wiki write.
+
+Original Task19/20 migration results are historical evidence for the superseded contract, not claims about this clean-slate build. No local implementation remains, publication/deployment/live account traffic or destructive data cleanup. External gates remain actual provider accounts/approved joined tagged tailnet host+secondclient and authorized publication/CI/release/target rollout.
