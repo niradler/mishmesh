@@ -14,9 +14,14 @@ export function EndpointPath({
   services: Map<string, Service>;
 }) {
   const steps: ReactNode[] = [];
-  if (endpoint.policy?.public_access === "cloudflare") {
+  for (const ref of endpoint.policy?.access ?? []) {
     steps.push(
-      <Link key="cf" to="/cloudflare" className="text-muted-foreground hover:text-foreground" aria-label="Published via Cloudflare" title="Published via Cloudflare">
+      <Link
+        key={ref.connection_id}
+        to={`/connections/${encodeURIComponent(ref.connection_id)}`}
+        aria-label={`Access connection ${ref.hostname}`}
+        title={ref.hostname}
+      >
         <Cloud className="h-3.5 w-3.5" />
       </Link>,
     );
@@ -31,7 +36,11 @@ export function EndpointPath({
   } else if (endpoint.agent_id) {
     const agent = agents.get(endpoint.agent_id);
     steps.push(
-      <Link key="agent" to={`/agents/${endpoint.agent_id}`} className="hover:underline">
+      <Link
+        key="agent"
+        to={`/agents/${endpoint.agent_id}`}
+        className="hover:underline"
+      >
         {agent?.name ?? "agent"}
       </Link>,
     );
@@ -42,18 +51,25 @@ export function EndpointPath({
   if (serviceId) {
     const service = services.get(serviceId);
     steps.push(
-      <Link key="service" to={`/services/${serviceId}`} className="inline-flex items-center gap-1 hover:underline">
+      <Link
+        key="service"
+        to={`/services/${serviceId}`}
+        className="inline-flex items-center gap-1 hover:underline"
+      >
         {service ? <StateDot state={service.status.state} /> : null}
         {service?.name ?? endpoint.health?.service ?? "service"}
       </Link>,
     );
   }
-  if (steps.length === 0) return <span className="text-xs text-muted-foreground">none</span>;
+  if (steps.length === 0)
+    return <span className="text-xs text-muted-foreground">none</span>;
   return (
     <span className="inline-flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
       {steps.map((step, index) => (
         <Fragment key={index}>
-          {index > 0 && <ChevronRight className="h-3 w-3 shrink-0" aria-hidden="true" />}
+          {index > 0 && (
+            <ChevronRight className="h-3 w-3 shrink-0" aria-hidden="true" />
+          )}
           <span className="text-foreground">{step}</span>
         </Fragment>
       ))}

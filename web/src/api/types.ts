@@ -2,7 +2,7 @@ export type Role = "owner" | "admin" | "member";
 
 export type AgentStatus = "active" | "disabled" | "revoked";
 
-export type EndpointKind = "http" | "tcp" | "tls";
+export type EndpointKind = "http" | "tcp" | "udp" | "tls";
 
 export type EndpointLifecycle = "ephemeral" | "reserved";
 
@@ -10,15 +10,23 @@ export type EndpointMethod = "native" | "ssh" | "proxy";
 
 export type LoadBalanceMode = "" | "round_robin" | "failover";
 
-export type PublicAccess = "" | "cloudflare";
+export type HealthState =
+  "up" | "down" | "degraded" | "sleeping" | "waking" | "offline" | "unknown";
 
-export type HealthState = "up" | "down" | "degraded" | "sleeping" | "waking" | "offline" | "unknown";
+export type ServiceState =
+  | "running"
+  | "stopped"
+  | "sleeping"
+  | "starting"
+  | "partial"
+  | "error"
+  | "unknown";
 
-export type ServiceState = "running" | "stopped" | "sleeping" | "starting" | "partial" | "error" | "unknown";
+export type TopologyNodeKind =
+  "connection" | "hostname" | "endpoint" | "target" | "service" | "agent";
 
-export type TopologyNodeKind = "tunnel" | "hostname" | "endpoint" | "target" | "service" | "agent";
-
-export type TopologyEdgeKind = "routes" | "serves" | "proxies" | "tunnels" | "wakes";
+export type TopologyEdgeKind =
+  "routes" | "serves" | "proxies" | "tunnels" | "wakes" | "requires";
 
 export interface AuthConfig {
   bootstrap_required?: boolean;
@@ -134,7 +142,8 @@ export interface EndpointPolicy {
   mtls?: EndpointMTLS | null;
   rate_limit?: EndpointRateLimit | null;
   service_id?: string;
-  public_access?: PublicAccess;
+  access?: AccessRef[];
+  connect?: { name: string; allow_agents?: string[] };
 }
 
 export interface EndpointMTLS {
@@ -204,7 +213,6 @@ export interface CreateEndpointRequest {
   kind: EndpointKind;
   method?: EndpointMethod;
   policy?: EndpointPolicy;
-  lifecycle?: EndpointLifecycle;
   subdomain?: string;
   domain?: string;
   port?: number;
@@ -213,6 +221,7 @@ export interface CreateEndpointRequest {
 export interface EndpointKindCount {
   http: number;
   tcp: number;
+  udp: number;
   tls: number;
 }
 
@@ -257,33 +266,11 @@ export interface AuditEvent {
   created_at: string;
 }
 
-export type ServiceDriver = "docker" | "compose" | "exec";
+export type ServiceDriver = string;
 
-export interface DockerSpec {
-  containers?: string[];
-  label?: string;
-}
-
-export interface ComposeSpec {
-  project: string;
-  services?: string[];
-  file?: string;
-  bin?: string;
-}
-
-export interface ExecSpec {
-  start: string[];
-  stop: string[];
-  status?: string[];
-  dir?: string;
-  env?: Record<string, string>;
-}
-
-export interface ServiceSpec {
-  docker?: DockerSpec;
-  compose?: ComposeSpec;
-  exec?: ExecSpec;
-  ready_tcp?: string;
+export interface Readiness {
+  tcp?: string;
+  http?: { url: string; status: number };
 }
 
 export interface ServiceStatus {
@@ -299,19 +286,24 @@ export interface Service {
   id: string;
   name: string;
   driver: ServiceDriver;
-  spec: ServiceSpec;
+  config: Record<string, unknown>;
+  ready: Readiness;
+  requires: string[];
   idle_timeout_seconds: number;
   start_timeout_seconds: number;
   created_at: string;
   updated_at: string;
   status: ServiceStatus;
   endpoints: string[] | null;
+  required_by: string[];
 }
 
 export interface ServiceInput {
   name: string;
   driver: ServiceDriver;
-  spec: ServiceSpec;
+  config: Record<string, unknown>;
+  ready: Readiness;
+  requires: string[];
   idle_timeout_seconds: number;
   start_timeout_seconds: number;
 }
@@ -319,6 +311,10 @@ export interface ServiceInput {
 export interface ServiceDeleteConflict {
   error: string;
   endpoints?: string[];
+  required_by?: string[];
+  dependents?: { id: string; name: string; state: string }[];
+  phase?: string;
+  saved?: boolean;
 }
 
 export interface Capabilities {
@@ -326,104 +322,11 @@ export interface Capabilities {
 }
 
 export type CloudflareLevel = "none" | "imported" | "managed";
-
 export type CloudflareConnector = "external" | "managed";
+export type CloudflareHostState =
+  "published" | "pending" | "conflict" | "error" | "unclaimed";
 
-export type CloudflareHostState = "published" | "pending" | "conflict" | "error" | "unclaimed";
-
-export interface CloudflareConnection {
-  name: string;
-  account_id: string;
-  tunnel_id: string;
-  access_app_id?: string;
-  origin: string;
-  connector: CloudflareConnector;
-  metrics_addr: string;
-  prune: boolean;
-  api_token_set: boolean;
-  tunnel_token_set: boolean;
-  updated_at: string;
-}
-
-export interface CloudflareTunnel {
-  id: string;
-  name: string;
-  status: string;
-  connections: number;
-}
-
-export interface CloudflareConnectorStatus {
-  reachable: boolean;
-  ready_connections: number;
-  connector_id?: string;
-  version?: string;
-  edge_locations: string[] | null;
-  error?: string;
-}
-
-export interface CloudflareSupervisor {
-  running: boolean;
-  pid?: number;
-  restarts: number;
-  last_exit?: string;
-  ready: boolean;
-}
-
-export interface CloudflareHostname {
-  host: string;
-  endpoint_id?: string;
-  state: CloudflareHostState;
-  ingress: boolean;
-  service?: string;
-  dns: string;
-  dns_detail?: string;
-  access: string;
-  detail?: string;
-  fix?: string;
-}
-
-export interface CloudflareStatus {
-  level: CloudflareLevel;
-  tunnel?: CloudflareTunnel;
-  origin?: string;
-  connector: CloudflareConnectorStatus;
-  supervisor?: CloudflareSupervisor;
-  last_sync?: string;
-  last_error?: string;
-  hostnames: CloudflareHostname[] | null;
-}
-
-export interface Cloudflare {
-  level: CloudflareLevel;
-  connection?: CloudflareConnection;
-  status: CloudflareStatus;
-}
-
-export interface CloudflareInput {
-  name: string;
-  tunnel_token?: string;
-  api_token?: string;
-  clear_api_token?: boolean;
-  access_app_id?: string;
-  origin?: string;
-  connector: CloudflareConnector;
-  metrics_addr?: string;
-  prune?: boolean;
-}
-
-export interface CloudflareDetectRequest {
-  metrics_addr: string;
-  tunnel_token?: string;
-}
-
-export interface CloudflareDetectResult {
-  account_id?: string;
-  tunnel_id?: string;
-  connector?: CloudflareConnectorStatus;
-  hostnames: string[] | null;
-}
-
-export type TopologyRefKind = "cloudflare" | "endpoint" | "service" | "agent";
+export type TopologyRefKind = "connection" | "endpoint" | "service" | "agent";
 
 export interface TopologyRef {
   kind: TopologyRefKind;
@@ -452,4 +355,81 @@ export interface Topology {
 
 export interface ApiErrorBody {
   error: string;
+}
+
+export interface TypedField {
+  key: string;
+  label: string;
+  kind:
+    | "text"
+    | "list"
+    | "keyvalue"
+    | "secret"
+    | "select"
+    | "number"
+    | "bool"
+    | "connection";
+  options?: string[];
+  conn_type?: string;
+  required: boolean;
+  placeholder?: string;
+  help?: string;
+  host_command?: boolean;
+  sensitive?: boolean;
+  default?: unknown;
+}
+
+export interface TypeDescriptor {
+  type: string;
+  label: string;
+  help: string;
+  fields: TypedField[];
+}
+
+export interface ConnectionDescriptor extends TypeDescriptor {
+  role: "access" | "runtime";
+  scope: "public" | "private" | "";
+  levels: string[];
+  detect: boolean;
+  detect_host_command?: boolean;
+  detect_fields?: TypedField[];
+  protocols?: string[];
+}
+
+export interface ConnectionStatus {
+  level: string;
+  health: string;
+  last_error?: string;
+  last_sync?: string;
+  hostnames:
+    | {
+        host: string;
+        state: string;
+        endpoint_id?: string;
+        detail?: string;
+        fix?: string;
+      }[]
+    | null;
+  details: Record<string, unknown> | null;
+}
+
+export interface TypedConnection {
+  id: string;
+  type: string;
+  name: string;
+  config: Record<string, unknown>;
+  status: ConnectionStatus;
+  [key: `has_${string}`]: boolean | undefined;
+}
+
+export interface ConnectionInput {
+  type: string;
+  name: string;
+  config: Record<string, unknown>;
+  secrets?: Record<string, string>;
+}
+
+export interface AccessRef {
+  connection_id: string;
+  hostname: string;
 }

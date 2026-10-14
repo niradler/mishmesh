@@ -18,6 +18,7 @@ export interface GlossaryEntry {
 export const KIND_LABELS: Record<EndpointKind, string> = {
   http: "HTTP",
   tcp: "TCP",
+  udp: "UDP",
   tls: "TLS passthrough",
 };
 
@@ -35,10 +36,14 @@ export const LIFECYCLE_LABELS: Record<EndpointLifecycle, string> = {
 export const DRIVER_LABELS: Record<ServiceDriver, string> = {
   docker: "Docker containers",
   compose: "Docker Compose",
-  exec: "Host commands",
+  command: "Host commands",
 };
 
 export const KIND_HELP: Record<EndpointKind, GlossaryEntry> = {
+  udp: {
+    title: "Kind · UDP",
+    body: "Agent UDP traffic uses a reserved port. HTTP access providers do not publish UDP.",
+  },
   http: {
     title: "Kind · HTTP",
     body: "Routed by hostname. mishmesh sees each request, so auth, headers, wake pages and Cloudflare publishing work.",
@@ -199,13 +204,29 @@ export const DRIVER_HELP: Record<ServiceDriver, GlossaryEntry> = {
     title: "Driver · Compose",
     body: "Runs docker compose for a project. With a compose file mishmesh runs commands on the host, which needs host command permission.",
   },
-  exec: {
+  command: {
     title: "Driver · Host commands",
     body: "Runs your start, stop and status commands on the server host. Needs MISHMESH_HOST_COMMANDS and the host:exec permission.",
   },
 };
 
 export const HELP = {
+  connection: {
+    title: "Connection",
+    body: "A saved integration with an existing network or workload platform. Each connection has its own credentials, health and supported capabilities.",
+  },
+  access: {
+    title: "Access",
+    body: "How an endpoint is published through one or more connections. Public and Private access can point to the same app.",
+  },
+  driver: {
+    title: "Driver",
+    body: "How a service starts and stops its workload. Driver fields come from the server’s registered service types.",
+  },
+  requires: {
+    title: "Requires",
+    body: "Services that start before this service and stay running while it needs them. Stop dependents before stopping a required service.",
+  },
   pinned: {
     title: "Pinned",
     body: "The target's certificate key must match the pin, so a self-signed origin is verified, not trusted blindly.",
@@ -288,7 +309,10 @@ export const HELP = {
   },
 } satisfies Record<string, GlossaryEntry>;
 
-export function stateHelp(scope: "endpoint" | "service" | "hostname", state: string): GlossaryEntry | undefined {
+export function stateHelp(
+  scope: "endpoint" | "service" | "hostname",
+  state: string,
+): GlossaryEntry | undefined {
   if (scope === "endpoint") return HEALTH_STATE_HELP[state as HealthState];
   if (scope === "service") return SERVICE_STATE_HELP[state as ServiceState];
   return HOSTNAME_STATE_HELP[state as CloudflareHostState];

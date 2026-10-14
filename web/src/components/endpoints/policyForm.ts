@@ -1,8 +1,18 @@
-import { pairsToRecord, recordToPairs, type KVPair } from "@/components/common/KeyValueEditor";
-import { upstreamFormFromPolicy, upstreamPolicyFields, type UpstreamForm } from "@/components/common/UpstreamFields";
+import {
+  pairsToRecord,
+  recordToPairs,
+  type KVPair,
+} from "@/components/common/KeyValueEditor";
+import {
+  upstreamFormFromPolicy,
+  upstreamPolicyFields,
+  type UpstreamForm,
+} from "@/components/common/UpstreamFields";
 import type { EndpointPolicy } from "@/api/types";
 
 export interface PolicyForm {
+  connectName: string;
+  connectAgents: string[];
   reqAdd: KVPair[];
   reqRemove: string[];
   resAdd: KVPair[];
@@ -31,6 +41,8 @@ const REDACTED = "set";
 
 export function policyFormFromPolicy(p?: EndpointPolicy | null): PolicyForm {
   return {
+    connectName: p?.connect?.name ?? "",
+    connectAgents: p?.connect?.allow_agents ?? [],
     reqAdd: recordToPairs(p?.request_headers_add),
     reqRemove: p?.request_headers_remove ?? [],
     resAdd: recordToPairs(p?.response_headers_add),
@@ -60,9 +72,17 @@ export function oidcSecretIsStored(form: PolicyForm): boolean {
   return form.oidcClientSecret === REDACTED;
 }
 
-export function policyFromForm(f: PolicyForm, isProxy: boolean, base?: EndpointPolicy | null): EndpointPolicy {
+export function policyFromForm(
+  f: PolicyForm,
+  isProxy: boolean,
+  base?: EndpointPolicy | null,
+): EndpointPolicy {
   const policy: EndpointPolicy = {
     ...base,
+    connect:
+      f.connectName || f.connectAgents.length > 0
+        ? { name: f.connectName, allow_agents: f.connectAgents }
+        : undefined,
     ...(isProxy ? upstreamPolicyFields(f.upstream) : {}),
     request_headers_add: pairsToRecord(f.reqAdd),
     request_headers_remove: f.reqRemove.filter(Boolean),

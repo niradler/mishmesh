@@ -6,25 +6,28 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { ErrorState, LoadingState } from "@/components/common/States";
 import { Pipeline } from "@/components/endpoints/PipelineCard";
-import { CloudflareStage, HostnameStage } from "@/components/endpoints/PublicAccessStages";
-import { AgentStage, EndpointStage, TargetsStage } from "@/components/endpoints/EndpointStages";
+import { HostnameStage } from "@/components/endpoints/PublicAccessStages";
+import {
+  AgentStage,
+  EndpointStage,
+  TargetsStage,
+} from "@/components/endpoints/EndpointStages";
 import { ServiceStage } from "@/components/endpoints/ServiceStage";
 import { EditAddressDialog } from "@/components/endpoints/EditAddressDialog";
 import { EditTargetsDialog } from "@/components/endpoints/EditTargetsDialog";
 import { EndpointPolicyForm } from "@/components/endpoints/EndpointPolicyForm";
-import { useCloudflare, useDeleteEndpoint, useEndpoint } from "@/api/hooks";
+import { useDeleteEndpoint, useEndpoint } from "@/api/hooks";
 import { errorMessage } from "@/api/client";
 import { useSession } from "@/context/SessionContext";
 import { toast } from "@/hooks/use-toast";
 import { endpointDisplayName } from "@/lib/health";
-import { supportsPublicAccess } from "@/lib/endpoints";
+import { AccessSection } from "@/components/endpoints/AccessSection";
 
 export function EndpointDetail() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
-  const { currentOrgId, canWrite } = useSession();
+  const { canWrite } = useSession();
   const endpoint = useEndpoint(id);
-  const cloudflare = useCloudflare(currentOrgId);
   const remove = useDeleteEndpoint();
   const [editingAddress, setEditingAddress] = useState(false);
   const [editingTargets, setEditingTargets] = useState(false);
@@ -46,7 +49,10 @@ export function EndpointDetail() {
 
   return (
     <div className="space-y-6">
-      <Link to="/endpoints" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+      <Link
+        to="/endpoints"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+      >
         <ArrowLeft className="h-4 w-4" /> Endpoints
       </Link>
 
@@ -64,19 +70,20 @@ export function EndpointDetail() {
 
       <Pipeline>
         {[
-          supportsPublicAccess(ep) && (
-            <CloudflareStage key="cloudflare" endpoint={ep} cloudflare={cloudflare.data} canWrite={canWrite} />
-          ),
           <HostnameStage
             key="hostname"
             endpoint={ep}
-            cloudflare={cloudflare.data}
             canWrite={canWrite}
             onEditAddress={() => setEditingAddress(true)}
           />,
           <EndpointStage key="endpoint" endpoint={ep} />,
           isProxy ? (
-            <TargetsStage key="targets" endpoint={ep} canWrite={canWrite} onEdit={() => setEditingTargets(true)} />
+            <TargetsStage
+              key="targets"
+              endpoint={ep}
+              canWrite={canWrite}
+              onEdit={() => setEditingTargets(true)}
+            />
           ) : (
             <AgentStage key="agent" endpoint={ep} />
           ),
@@ -84,18 +91,32 @@ export function EndpointDetail() {
         ]}
       </Pipeline>
 
+      <AccessSection endpoint={ep} canWrite={canWrite} />
       <EndpointPolicyForm endpoint={ep} canWrite={canWrite} />
 
-      <EditAddressDialog endpoint={ep} open={editingAddress} onOpenChange={setEditingAddress} />
-      {isProxy && <EditTargetsDialog endpoint={ep} open={editingTargets} onOpenChange={setEditingTargets} />}
+      <EditAddressDialog
+        endpoint={ep}
+        open={editingAddress}
+        onOpenChange={setEditingAddress}
+      />
+      {isProxy && (
+        <EditTargetsDialog
+          endpoint={ep}
+          open={editingTargets}
+          onOpenChange={setEditingTargets}
+        />
+      )}
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
         title="Delete endpoint?"
         description={
           <>
-            <span className="font-mono">{endpointDisplayName(ep)}</span> stops accepting traffic and its address is released.
-            {ep.policy?.public_access === "cloudflare" && " It is also unpublished from Cloudflare."} This cannot be undone.
+            <span className="font-mono">{endpointDisplayName(ep)}</span> stops
+            accepting traffic and its address is released.
+            {Boolean(ep.policy?.access?.length) &&
+              " Its Access refs are also removed."}{" "}
+            This cannot be undone.
           </>
         }
         pending={remove.isPending}
