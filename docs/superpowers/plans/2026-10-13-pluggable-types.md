@@ -294,11 +294,11 @@ func TestShouldBindSecretsToConnectionAndOrg(t *testing.T) {
 
 ### Task 9: Move Cloudflare behind the connection provider interface
 
-**Files:** Create `internal/cloudflare/provider.go`, `provider_test.go`; modify `source.go`, `config.go`, `publisher.go`, `hub.go` and their tests; modify `cmd/mishmesh-server/network.go`.
+**Files:** Create `internal/cloudflare/provider.go`, `provider_test.go`; modify `source.go`, `config.go`, `publisher.go`, `hub.go` and their tests; modify `cmd/mishmesh-server/network.go`, store.Connection/DataStore and both backend network/schema tests for private state persistence.
 
 **Interfaces:** Produce `cloudflare.NewProvider(options ProviderOptions) connections.Provider`, where `ProviderOptions` contains `CloudflaredBin, BaseURL string` and injectable current client/detector dependencies. Provider config fields retain `account_id`, `tunnel_id`, `access_app_id`, `origin`, `connector`, `metrics_addr`, `prune`; secret keys retain `tunnel_token`, `api_token`. Level remains derived from existing token/connector behavior. Source is filtered by connection ID and selected access refs, not merely org ID.
 
-- [ ] Add tests preserving Detect/imported observation, managed supervisor startup/restart, DNS/Access reconcile, pruning ownership, pending/unclaimed/conflict fixes, and two Cloudflare connections in one org. Anchor the published/unclaimed distinction:
+- [x] Add tests preserving Detect/imported observation, managed supervisor startup/restart, DNS/Access reconcile, pruning ownership, pending/unclaimed/conflict fixes, and two Cloudflare connections in one org. Anchor the published/unclaimed distinction:
 
 ```go
 func TestShouldSelectPublicHostsPerConnection(t *testing.T) {
@@ -308,10 +308,11 @@ func TestShouldSelectPublicHostsPerConnection(t *testing.T) {
 }
 ```
 
-- [ ] Define `AccessHosts(connectionID string, endpoints []*store.Endpoint) []Hostname` in `source.go`; this gives selected public hosts only. Retain a separate full-org observer list for unclaimed reporting so endpoints with access off still report their current external routes.
-- [ ] Run `./internal/cloudflare`; expected old source ignores per-connection access.
-- [ ] Adapt existing publisher/supervisor instances without duplicating their reconciliation logic. Register new connection records with generic hub; legacy API/hub callers may stay unchanged until Task12 (no legacy API ships beta5). Do not change provider ownership interpretation or enable managed level during migration. Keep unclaimed orphans unpruned. Type panel details expose only existing nonsecret facts.
-- [ ] Run all Cloudflare tests, generic hub tests, and server compilation. Commit `refactor: register cloudflare as a connection type`.
+- [x] Define `AccessHosts(connectionID string, endpoints []*store.Endpoint) []Hostname` in `source.go`; this gives selected public hosts only. Retain a separate full-org observer list for unclaimed reporting so endpoints with access off still report their current external routes.
+- [x] Run `./internal/cloudflare`; expected old source ignores per-connection access.
+- [x] Add private `Connection.State` JSON and atomic same-org `UpdateConnectionState` for durable ownership without rewriting user config; nullable additive state column in both stores. Record successfully applied selected hosts and remote fingerprints, preserve unclaimed/foreign routes, and prune only recorded matching owned hosts with no other current owner. Tailscale Task11 reuses this private state. Cover reopen and concurrent config/state writes; no new wire field.
+- [x] Adapt existing publisher/supervisor instances without duplicating their reconciliation logic. Register new connection records with generic hub; legacy API/hub callers may stay unchanged until Task12 (no legacy API ships beta5). Do not change provider ownership interpretation or enable managed level during migration. Keep unclaimed orphans unpruned. Type panel details expose only existing nonsecret facts.
+- [x] Run all Cloudflare tests, generic hub tests, and server compilation. Commit `refactor: register cloudflare as a connection type`.
 
 ### Task 10: Kubernetes runtime connection and scale driver
 
@@ -339,7 +340,7 @@ func TestShouldRefuseExecCredentialPluginBeforeClientConstruction(t *testing.T) 
 
 **Files:** Create `internal/connections/tailscale/{provider,local,api,reconcile}.go`, their tests; modify registry bootstrap, `go.mod`, `go.sum`.
 
-**Interfaces:** Produce `tailscaleconnection.NewProvider(options Options) connections.Provider`. Inject the LocalAPI and HTTP adapters rather than shelling out. Config fields: `level`, `socket`, `tailnet`, `service_tags`; secrets `oauth_client_id`, `oauth_client_secret`. Provider-owned `owned_services` maps `svc:` names to owning endpoint IDs and cannot be supplied by clients.
+**Interfaces:** Produce `tailscaleconnection.NewProvider(options Options) connections.Provider`. Inject the LocalAPI and HTTP adapters rather than shelling out. Config fields: `level`, `socket`, `tailnet`, `service_tags`; secrets `oauth_client_id`, `oauth_client_secret`. Provider-owned `owned_services` in private `Connection.State` maps `svc:` names to owning endpoint IDs/fingerprints and cannot be supplied by clients; use atomic state-only persistence from Task9.
 
 - [ ] Add tests for imported zero-writes, managed HTTPS 443 mapping, default service name, socket-down, old version, untagged node, approval pending, OAuth/API failure, foreign entry preservation, ownership persistence, deleted ref cleanup, ETag retry, and two connections to one socket. Anchor the pure reconciliation contract:
 

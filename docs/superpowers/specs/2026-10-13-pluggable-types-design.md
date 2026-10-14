@@ -1,6 +1,8 @@
 # Pluggable types: connections, service drivers, requirements
 
-Status: draft for review · 2026-10-13 · follows `2026-10-12-network-control-ux-design.md`
+Status: approved 2026-10-13; app-access scope confirmed 2026-10-14 · follows `2026-10-12-network-control-ux-design.md`
+
+2026-10-14 direction: expose applications over existing networks. Cloudflare and Tailscale ship as access providers; NetBird and existing WireGuard networks are extension cases. VPN peer/key/route/policy management is outside this release. Generic private scope is `private`; provider-specific tailnet configuration remains owned by Tailscale. Existing agent-to-agent and UDP access on main must survive integration.
 
 ## Why
 
@@ -25,7 +27,7 @@ Non-goals: Tailscale Funnel (see Tailscale), Docker on remote hosts, React UI re
 | Term | Meaning |
 |---|---|
 | Connection | An external system mishmesh talks to, of one **type**. Has a role: **access** (carries traffic to endpoints) or **runtime** (runs services). |
-| Access | An endpoint reachable through an access connection. Scope is **public** (Cloudflare) or **tailnet** (Tailscale). Replaces "Public access" as the section name; the per-row label still says "Public access" or "Tailnet access". |
+| Access | An endpoint reachable through an access connection. Scope is **public** or **private**. Replaces "Public access" as the section name; provider-specific tailnet facts belong to the Tailscale panel. |
 | Driver | How a service is started, stopped and inspected. Driver fields use the driver's own words (Compose services, Kubernetes workload). |
 | Requires | Service A requires service B: B runs whenever A runs. |
 
@@ -78,7 +80,7 @@ type Descriptor struct {
     Type    string   // "cloudflare"
     Label   string   // "Cloudflare Tunnel"
     Role    string   // "access" | "runtime"
-    Scope   string   // "public" | "tailnet" | "" for runtime
+    Scope   string   // "public" | "private" | "" for runtime
     Levels  []string // e.g. imported, managed
     Fields  []Field  // see Field below, shared with drivers
     Help    string
