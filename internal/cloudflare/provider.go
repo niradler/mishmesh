@@ -53,7 +53,7 @@ func NewProvider(options ProviderOptions) connections.Provider {
 }
 
 func (p *provider) Describe() connections.Descriptor {
-	return connections.Descriptor{Type: "cloudflare", Label: "Cloudflare Tunnel", Role: "access", Scope: "public", Levels: []string{LevelImported, LevelManaged}, Detect: true,
+	return connections.Descriptor{Type: "cloudflare", Label: "Cloudflare Tunnel", Role: "access", Scope: "public", Levels: []string{LevelImported, LevelManaged}, Detect: true, DetectHostCommand: true,
 		Help: "Observe an existing tunnel or manage its ingress, DNS and Access hostnames.", Fields: []typedfields.Field{
 			{Key: "account_id", Label: "Account ID", Kind: "text"},
 			{Key: "tunnel_id", Label: "Tunnel ID", Kind: "text"},
@@ -134,6 +134,11 @@ func checkProviderOrigin(origin string) error {
 func (p *provider) Validate(input connections.Config) error {
 	_, err := p.configuration(input)
 	return err
+}
+
+func (p *provider) UsesHostCommands(input connections.Config) bool {
+	var values providerConfigFields
+	return json.Unmarshal(input.Record.Config, &values) != nil || values.Connector == ConnectorManaged
 }
 
 func (p *provider) Detect(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {

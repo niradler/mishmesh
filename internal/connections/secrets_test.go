@@ -2,11 +2,22 @@ package connections
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
+
+func TestShouldKeepNumericConfigPrecisionDuringRedaction(t *testing.T) {
+	result, err := SanitizeJSON(Config{Secrets: map[string]string{"token": "credential"}}, Descriptor{}, json.RawMessage(`{"number":9007199254740993,"token":"credential","note":"credential"}`))
+	if err != nil || !strings.Contains(string(result), "9007199254740993") || strings.Contains(string(result), "credential") {
+		t.Fatalf("sanitized=%s error=%v", result, err)
+	}
+	if _, err := SanitizeJSON(Config{}, Descriptor{}, json.RawMessage(`{} {}`)); err == nil {
+		t.Fatal("accepted trailing provider response")
+	}
+}
 
 func TestShouldBindSecretsToConnectionAndOrg(t *testing.T) {
 	box, err := secrets.New(make([]byte, 32))

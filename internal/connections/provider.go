@@ -22,6 +22,10 @@ type AccessHostnameProvider interface {
 	AccessHostname(endpointDomain, requested string) (string, error)
 }
 
+type HostCommandProvider interface {
+	UsesHostCommands(Config) bool
+}
+
 type Instance interface {
 	Run(context.Context)
 	Sync(context.Context) (Status, error)
@@ -30,14 +34,15 @@ type Instance interface {
 }
 
 type Descriptor struct {
-	Type   string              `json:"type"`
-	Label  string              `json:"label"`
-	Role   string              `json:"role"`
-	Scope  string              `json:"scope"`
-	Help   string              `json:"help"`
-	Levels []string            `json:"levels"`
-	Fields []typedfields.Field `json:"fields"`
-	Detect bool                `json:"detect"`
+	Type              string              `json:"type"`
+	Label             string              `json:"label"`
+	Role              string              `json:"role"`
+	Scope             string              `json:"scope"`
+	Help              string              `json:"help"`
+	Levels            []string            `json:"levels"`
+	Fields            []typedfields.Field `json:"fields"`
+	Detect            bool                `json:"detect"`
+	DetectHostCommand bool                `json:"detect_host_command,omitempty"`
 }
 
 type Config struct {

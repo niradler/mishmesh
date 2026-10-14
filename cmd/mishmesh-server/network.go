@@ -20,16 +20,16 @@ import (
 )
 
 type networkControl struct {
-	log           *slog.Logger
-	services      *services.Manager
-	prober        *health.Prober
-	hub           *cloudflare.Hub
-	connectionHub *connections.Hub
-	box           *secrets.Box
-	hostCommands  bool
-	cp            *controlplane.API
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
+	log                *slog.Logger
+	services           *services.Manager
+	prober             *health.Prober
+	connectionHub      *connections.Hub
+	connectionRegistry *connections.Registry
+	box                *secrets.Box
+	hostCommands       bool
+	cp                 *controlplane.API
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
 }
 
 func newNetworkControl(cfg config.Server, data store.DataStore, conns store.ConnectionStore, guard *proxy.Guard, connector *proxy.Connector, log *slog.Logger) (*networkControl, error) {
@@ -60,13 +60,6 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 		Interval: cfg.HealthInterval, Timeout: cfg.HealthTimeout, Log: log,
 	})
 	connector.SetTargetHealth(nc.prober)
-	nc.hub = cloudflare.NewHub(cloudflare.HubOptions{
-		Data:           data,
-		Box:            nc.box,
-		Log:            log,
-		Origin:         cloudflare.OriginForListenAddr(cfg.IngressAddr),
-		CloudflaredBin: cfg.CloudflaredBin,
-	})
 	connectionRegistry := connections.NewRegistry()
 	if err := connectionRegistry.Register(cloudflare.NewProvider(cloudflare.ProviderOptions{CloudflaredBin: cfg.CloudflaredBin})); err != nil {
 		return nil, fmt.Errorf("register cloudflare connection provider: %w", err)
@@ -74,6 +67,7 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 	if err := connectionRegistry.Register(tailscaleconnection.NewProvider(tailscaleconnection.Options{})); err != nil {
 		return nil, fmt.Errorf("register tailscale connection provider: %w", err)
 	}
+	nc.connectionRegistry = connectionRegistry
 	nc.connectionHub = connections.NewHub(connections.HubOptions{
 		Registry: connectionRegistry,
 		Deps:     connections.Deps{Data: data, Box: nc.box, Log: log, Origin: cloudflare.OriginForListenAddr(cfg.IngressAddr), HostCommands: cfg.HostCommands},
@@ -90,7 +84,7 @@ func (nc *networkControl) attach(cp *controlplane.API) {
 	nc.cp = cp
 	cp.SetHealth(nc.prober)
 	cp.SetServices(nc.services)
-	cp.SetCloudflare(nc.hub, nc.box)
+	cp.SetConnections(nc.connectionHub, nc.connectionRegistry, nc.box)
 	cp.SetHostCommands(nc.hostCommands)
 }
 
@@ -110,11 +104,6 @@ func (nc *networkControl) start() error {
 	if err := nc.connectionHub.Start(ctx); err != nil {
 		cancel()
 		return fmt.Errorf("connections: %w", err)
-	}
-	if err := nc.hub.Start(ctx); err != nil {
-		cancel()
-		nc.connectionHub.Close()
-		return fmt.Errorf("cloudflare: %w", err)
 	}
 	nc.spawn(ctx, func(ctx context.Context) {
 		nc.services.Refresh(ctx)
@@ -138,7 +127,6 @@ func (nc *networkControl) stop(ctx context.Context, log *slog.Logger) {
 	}
 	nc.cancel()
 	nc.connectionHub.Close()
-	nc.hub.Close()
 	done := make(chan struct{})
 	go func() {
 		nc.wg.Wait()

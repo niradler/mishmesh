@@ -9,6 +9,7 @@ import (
 
 	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/cloudflare"
+	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/services"
@@ -29,15 +30,18 @@ type HealthSource interface {
 	Forget(endpointID string)
 }
 
-type CloudflareControl interface {
-	DefaultOrigin() string
+type LegacyCloudflareStatus interface {
 	Status(orgID string) cloudflare.Status
-	Reload(ctx context.Context, orgID string) error
-	Sync(ctx context.Context, orgID string) (cloudflare.Status, error)
-	Trigger(orgID string)
 }
 
-type cloudflareDetector func(ctx context.Context, metricsAddr, tunnelToken string) (cloudflare.DetectResult, error)
+type ConnectionControl interface {
+	Status(connectionID string) connections.Status
+	Reload(ctx context.Context, connectionID string) error
+	ReloadIfCurrent(ctx context.Context, expected store.Connection) error
+	Sync(ctx context.Context, connectionID string) (connections.Status, error)
+	SyncIfCurrent(ctx context.Context, expected store.Connection) (connections.Status, error)
+	Trigger(connectionID string)
+}
 
 func (a *API) SetServices(s ServiceControl) {
 	a.services = s
@@ -47,10 +51,10 @@ func (a *API) SetHealth(h HealthSource) {
 	a.endpointHealth = h
 }
 
-func (a *API) SetCloudflare(c CloudflareControl, box *secrets.Box) {
-	a.cloudflare = c
+func (a *API) SetConnections(hub ConnectionControl, registry *connections.Registry, box *secrets.Box) {
+	a.connections = hub
+	a.connectionRegistry = registry
 	a.secretBox = box
-	a.detectCloudflare = cloudflare.Detect
 }
 
 func (a *API) SetHostCommands(enabled bool) {
@@ -76,9 +80,7 @@ func (a *API) capabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 const healthProbeTimeout = 10 * time.Second
 
 func (a *API) endpointChanged(ep *store.Endpoint) {
-	if a.cloudflare != nil {
-		a.cloudflare.Trigger(ep.OrgID)
-	}
+	a.triggerConnections(ep.OrgID)
 	if a.endpointHealth == nil {
 		return
 	}
@@ -95,9 +97,7 @@ func (a *API) endpointRemoved(ep *store.Endpoint) {
 	if a.endpointHealth != nil {
 		a.endpointHealth.Forget(ep.ID)
 	}
-	if a.cloudflare != nil {
-		a.cloudflare.Trigger(ep.OrgID)
-	}
+	a.triggerConnections(ep.OrgID)
 }
 
 func (a *API) validateNetworkPolicy(ctx context.Context, orgID, domain string, pol *store.EndpointPolicy, wasPublic bool) error {
@@ -118,7 +118,7 @@ func (a *API) validateNetworkPolicy(ctx context.Context, orgID, domain string, p
 	case store.PublicAccessCloudflare:
 		if !wasPublic {
 			if _, err := a.data.GetCloudflareConnection(ctx, orgID); errors.Is(err, store.ErrNotFound) {
-				return errors.New("public_access cloudflare needs a Cloudflare connection for this org (PUT /cloudflare)")
+				return errors.New("public_access cloudflare needs a Cloudflare connection for this org")
 			} else if err != nil {
 				return fmt.Errorf("public_access: %w", err)
 			}
@@ -141,4 +141,20 @@ func endpointServiceID(ep *store.Endpoint) string {
 
 func endpointPublic(ep *store.Endpoint) bool {
 	return ep.Policy != nil && ep.Policy.PublicAccess == store.PublicAccessCloudflare && ep.Domain != ""
+}
+
+func (a *API) triggerConnections(orgID string) {
+	if a.connections == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), healthProbeTimeout)
+	defer cancel()
+	records, err := a.data.ListConnections(ctx, orgID)
+	if err != nil {
+		a.log.Warn("list connections for endpoint change failed", "org", orgID)
+		return
+	}
+	for _, record := range records {
+		a.connections.Trigger(record.ID)
+	}
 }

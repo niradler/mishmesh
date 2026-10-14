@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/url"
 	"sort"
@@ -19,6 +20,32 @@ import (
 
 func SecretContext(orgID, connectionID string) string {
 	return "connection:" + orgID + ":" + connectionID
+}
+
+func OpenConfig(record store.Connection, box *secrets.Box, hostCommands bool) (Config, error) {
+	return openConfig(record, box, hostCommands)
+}
+
+func CloneConfig(cfg Config) Config {
+	return cloneConfig(cfg)
+}
+
+func SanitizeStatus(cfg Config, descriptor Descriptor, status Status) Status {
+	return newRedactor(cfg, nil, descriptor.Fields).status(status)
+}
+
+func SanitizeJSON(cfg Config, descriptor Descriptor, raw json.RawMessage) (json.RawMessage, error) {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, errors.New("invalid connection provider response")
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return nil, errors.New("invalid connection provider response")
+	}
+	return json.Marshal(newRedactor(cfg, nil, descriptor.Fields).value(value))
 }
 
 func openConfig(record store.Connection, box *secrets.Box, hostCommands bool) (Config, error) {

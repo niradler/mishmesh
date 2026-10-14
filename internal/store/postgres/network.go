@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -385,7 +386,35 @@ func (s *Store) UpdateConnection(ctx context.Context, c *store.Connection) error
 	return affected("update connection", res)
 }
 
+func (s *Store) UpdateConnectionIfCurrent(ctx context.Context, c, expected *store.Connection) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	if c.ID != expected.ID || c.OrgID != expected.OrgID || c.Type != expected.Type || !json.Valid(c.Config) {
+		return store.ErrConflict
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE connections SET name = $1, config = $2, secrets_enc = $3, updated_at = $4 WHERE id = $5 AND org_id = $6 AND type = $7 AND name = $8 AND config = $9 AND secrets_enc IS NOT DISTINCT FROM $10 AND updated_at = $11`, c.Name, string(c.Config), nullBytes(c.SecretsEnc), ns(c.UpdatedAt), expected.ID, expected.OrgID, expected.Type, expected.Name, string(expected.Config), nullBytes(expected.SecretsEnc), ns(expected.UpdatedAt))
+	if err != nil {
+		return uniqueErr("update connection", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return wrap("update connection", err)
+	}
+	if count == 0 {
+		return store.ErrConflict
+	}
+	return nil
+}
+
+func (s *Store) DeleteConnectionIfCurrent(ctx context.Context, expected *store.Connection) error {
+	return s.deleteConnection(ctx, expected.ID, expected)
+}
+
 func (s *Store) DeleteConnection(ctx context.Context, id string) error {
+	return s.deleteConnection(ctx, id, nil)
+}
+
+func (s *Store) deleteConnection(ctx context.Context, id string, expected *store.Connection) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 	tx, err := s.beginNetworkWrite(ctx)
@@ -393,12 +422,21 @@ func (s *Store) DeleteConnection(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if expected != nil {
+		current, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionCols+` FROM connections WHERE id = $1`, id))
+		if err != nil {
+			return err
+		}
+		if current.OrgID != expected.OrgID || current.Type != expected.Type || current.Name != expected.Name || !bytes.Equal(current.Config, expected.Config) || !bytes.Equal(current.SecretsEnc, expected.SecretsEnc) || !current.UpdatedAt.Equal(expected.UpdatedAt) {
+			return store.ErrConflict
+		}
+	}
 	var references int
 	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM service_connections WHERE connection_id = $1) + (SELECT COUNT(*) FROM endpoint_aliases WHERE connection_id = $2)`, id, id).Scan(&references); err != nil {
 		return wrap("check connection references", err)
 	}
 	if references > 0 {
-		return store.ErrConflict
+		return connectionInUse(ctx, tx, id)
 	}
 	policies, err := endpointPolicies(ctx, tx)
 	if err != nil {
@@ -407,7 +445,7 @@ func (s *Store) DeleteConnection(ctx context.Context, id string) error {
 	for _, policy := range policies {
 		for _, ref := range policy.Access {
 			if ref.ConnectionID == id {
-				return store.ErrConflict
+				return connectionInUse(ctx, tx, id)
 			}
 		}
 	}
@@ -419,6 +457,60 @@ func (s *Store) DeleteConnection(ctx context.Context, id string) error {
 		return err
 	}
 	return wrap("delete connection", tx.Commit())
+}
+
+func connectionInUse(ctx context.Context, tx *sql.Tx, id string) error {
+	references := []store.ConnectionReference{}
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT 'service', s.id, s.name FROM services s JOIN service_connections sc ON sc.service_id = s.id WHERE sc.connection_id = $1 AND s.org_id = (SELECT org_id FROM connections WHERE id = $2) UNION SELECT DISTINCT 'endpoint', e.id, COALESCE(e.subdomain, e.domain, '') FROM endpoints e JOIN endpoint_aliases a ON a.endpoint_id = e.id WHERE a.connection_id = $3 AND e.org_id = (SELECT org_id FROM connections WHERE id = $4)`, id, id, id, id)
+	if err != nil {
+		return wrap("read connection references", err)
+	}
+	for rows.Next() {
+		var reference store.ConnectionReference
+		if err := rows.Scan(&reference.Kind, &reference.ID, &reference.Name); err != nil {
+			rows.Close()
+			return wrap("read connection references", err)
+		}
+		references = append(references, reference)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return wrap("read connection references", err)
+	}
+	rows, err = tx.QueryContext(ctx, `SELECT id, COALESCE(subdomain, domain, ''), policy FROM endpoints WHERE org_id = (SELECT org_id FROM connections WHERE id = $1) AND policy IS NOT NULL AND policy <> ''`, id)
+	if err != nil {
+		return wrap("read connection references", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var reference store.ConnectionReference
+		var raw string
+		reference.Kind = "endpoint"
+		if err := rows.Scan(&reference.ID, &reference.Name, &raw); err != nil {
+			return wrap("read connection references", err)
+		}
+		var policy store.EndpointPolicy
+		if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+			return wrap("read connection references", err)
+		}
+		for _, access := range policy.Access {
+			if access.ConnectionID == id {
+				duplicate := false
+				for _, existing := range references {
+					duplicate = duplicate || existing.Kind == reference.Kind && existing.ID == reference.ID
+				}
+				if !duplicate {
+					references = append(references, reference)
+				}
+				break
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return wrap("read connection references", err)
+	}
+	return &store.ConnectionInUseError{References: references}
 }
 
 func (s *Store) UpdateConnectionState(ctx context.Context, orgID, connectionID string, state json.RawMessage) error {

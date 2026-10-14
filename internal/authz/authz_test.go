@@ -2,10 +2,30 @@ package authz
 
 import "testing"
 
+func TestShouldReplaceCloudflareActionWithoutRewritingCustomPolicy(t *testing.T) {
+	for _, action := range AllActions() {
+		if action == Action("cloudflare:manage") {
+			t.Fatal("old action remains registered")
+		}
+	}
+	owner := Principal{ID: "owner", Role: RoleOwner, Org: "org"}
+	if Default().Authorize(owner, Action("cloudflare:manage")) {
+		t.Fatal("default policy accepts removed action")
+	}
+	source := []byte(`permit (principal in Role::"owner", action == Action::"cloudflare:manage", resource);`)
+	custom, err := New(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if custom.Authorize(owner, ActionConnectionManage) || !custom.Authorize(owner, Action("cloudflare:manage")) {
+		t.Fatal("custom Cedar policy was rewritten implicitly")
+	}
+}
+
 func TestDefaultPolicyRoleMatrix(t *testing.T) {
 	az := Default()
 
-	writes := []Action{ActionAgentWrite, ActionEndpointWrite, ActionQuotaWrite, ActionMemberManage, ActionPolicyWrite, ActionServiceWrite, ActionCloudflare}
+	writes := []Action{ActionAgentWrite, ActionEndpointWrite, ActionQuotaWrite, ActionMemberManage, ActionPolicyWrite, ActionServiceWrite, ActionConnectionManage}
 	reads := []Action{ActionAgentRead, ActionEndpointRead, ActionQuotaRead, ActionMemberRead, ActionAuditRead, ActionStatusRead, ActionPolicyRead, ActionServiceRead}
 
 	for _, role := range []string{RoleOwner, RoleAdmin} {

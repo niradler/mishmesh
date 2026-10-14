@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -297,6 +298,25 @@ type Connection struct {
 	UpdatedAt  time.Time
 }
 
+func SameConnectionInput(left, right Connection) bool {
+	return left.ID == right.ID && left.OrgID == right.OrgID && left.Type == right.Type && left.Name == right.Name && bytes.Equal(left.Config, right.Config) && bytes.Equal(left.SecretsEnc, right.SecretsEnc) && left.UpdatedAt.Equal(right.UpdatedAt)
+}
+
+type ConnectionReference struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type ConnectionInUseError struct {
+	References []ConnectionReference
+}
+
+func (e *ConnectionInUseError) Error() string {
+	return "connection is referenced by endpoints or services"
+}
+func (e *ConnectionInUseError) Unwrap() error { return ErrConflict }
+
 const (
 	CloudflareConnectorExternal = "external"
 	CloudflareConnectorManaged  = "managed"
@@ -399,8 +419,10 @@ type DataStore interface {
 	ListConnections(ctx context.Context, orgID string) ([]*Connection, error)
 	ListAllConnections(ctx context.Context) ([]*Connection, error)
 	UpdateConnection(ctx context.Context, c *Connection) error
+	UpdateConnectionIfCurrent(ctx context.Context, c, expected *Connection) error
 	UpdateConnectionState(ctx context.Context, orgID, connectionID string, state json.RawMessage) error
 	DeleteConnection(ctx context.Context, id string) error
+	DeleteConnectionIfCurrent(ctx context.Context, expected *Connection) error
 
 	GetCloudflareConnection(ctx context.Context, orgID string) (*CloudflareConnection, error)
 	ListCloudflareConnections(ctx context.Context) ([]*CloudflareConnection, error)

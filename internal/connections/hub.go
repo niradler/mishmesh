@@ -40,6 +40,7 @@ type Hub struct {
 
 type instanceRun struct {
 	id         string
+	record     store.Connection
 	instance   Instance
 	redactor   *redactor
 	ctx        context.Context
@@ -53,7 +54,10 @@ type instanceRun struct {
 	retireOnce sync.Once
 }
 
-type syncRequest struct{ result chan syncResult }
+type syncRequest struct {
+	result   chan syncResult
+	expected *store.Connection
+}
 type syncResult struct {
 	status Status
 	err    error
@@ -131,6 +135,14 @@ func (h *Hub) enter(ctx context.Context) error {
 func (h *Hub) leave() { <-h.admission }
 
 func (h *Hub) Reload(ctx context.Context, connectionID string) error {
+	return h.reload(ctx, connectionID, nil)
+}
+
+func (h *Hub) ReloadIfCurrent(ctx context.Context, expected store.Connection) error {
+	return h.reload(ctx, expected.ID, &expected)
+}
+
+func (h *Hub) reload(ctx context.Context, connectionID string, expected *store.Connection) error {
 	if err := h.enter(ctx); err != nil {
 		return err
 	}
@@ -162,7 +174,13 @@ func (h *Hub) Reload(ctx context.Context, connectionID string) error {
 		h.waitClosed(loadCtx, old)
 		return loadCtx.Err()
 	}
+	if expected != nil && !store.SameConnectionInput(*record, *expected) {
+		return store.ErrConflict
+	}
 	if pending {
+		h.mu.Lock()
+		h.statuses[connectionID] = downStatus("previous connection generation is still draining; retry sync or restart the server")
+		h.mu.Unlock()
 		return ErrDrainPending
 	}
 	if record.ID != connectionID || record.ID == "" || record.OrgID == "" {
@@ -170,6 +188,9 @@ func (h *Hub) Reload(ctx context.Context, connectionID string) error {
 	}
 	old := h.replace(connectionID, nil, Status{Health: "unknown"})
 	if err := h.waitRetired(loadCtx, old); err != nil {
+		h.mu.Lock()
+		h.statuses[connectionID] = downStatus("connection reload could not drain the previous generation; retry sync or restart the server")
+		h.mu.Unlock()
 		return err
 	}
 	if old != nil {
@@ -184,6 +205,9 @@ func (h *Hub) Reload(ctx context.Context, connectionID string) error {
 			return h.failLoad(connectionID, "connection identity changed during reload")
 		}
 		record = fresh
+	}
+	if expected != nil && !store.SameConnectionInput(*record, *expected) {
+		return store.ErrConflict
 	}
 	entry, ok := h.opts.Registry.lookup(record.Type)
 	if !ok {
@@ -210,7 +234,7 @@ func (h *Hub) Reload(ctx context.Context, connectionID string) error {
 		return h.failLoad(connectionID, "open connection failed")
 	}
 	runCtx, runCancel := context.WithCancel(base)
-	run := &instanceRun{id: connectionID, instance: instance, redactor: redactor, ctx: runCtx, cancel: runCancel, requests: make(chan syncRequest), trigger: make(chan struct{}, 1), runDone: make(chan struct{}), syncDone: make(chan struct{}), closeDone: make(chan struct{}), done: make(chan struct{})}
+	run := &instanceRun{id: connectionID, record: *record, instance: instance, redactor: redactor, ctx: runCtx, cancel: runCancel, requests: make(chan syncRequest), trigger: make(chan struct{}, 1), runDone: make(chan struct{}), syncDone: make(chan struct{}), closeDone: make(chan struct{}), done: make(chan struct{})}
 	initial := redactor.status(instance.Status())
 	h.mu.Lock()
 	if h.closed || base.Err() != nil || loadCtx.Err() != nil {
@@ -342,6 +366,14 @@ func (h *Hub) syncLoop(run *instanceRun) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(run.ctx, h.opts.SyncTimeout)
+		if request.expected != nil {
+			current, err := h.opts.Deps.Data.GetConnection(ctx, run.id)
+			if err != nil || current == nil || !store.SameConnectionInput(*current, *request.expected) || !store.SameConnectionInput(run.record, *request.expected) {
+				cancel()
+				request.result <- syncResult{status: downStatus("connection changed; reload before retrying"), err: store.ErrConflict}
+				continue
+			}
+		}
 		status, err := run.instance.Sync(ctx)
 		contextError := ctx.Err()
 		cancel()
@@ -373,6 +405,14 @@ func (h *Hub) syncLoop(run *instanceRun) {
 }
 
 func (h *Hub) Sync(ctx context.Context, connectionID string) (Status, error) {
+	return h.sync(ctx, connectionID, nil)
+}
+
+func (h *Hub) SyncIfCurrent(ctx context.Context, expected store.Connection) (Status, error) {
+	return h.sync(ctx, expected.ID, &expected)
+}
+
+func (h *Hub) sync(ctx context.Context, connectionID string, expected *store.Connection) (Status, error) {
 	if err := ctx.Err(); err != nil {
 		return downStatus("connection sync canceled"), err
 	}
@@ -384,7 +424,7 @@ func (h *Hub) Sync(ctx context.Context, connectionID string) (Status, error) {
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, h.opts.SyncTimeout)
 	defer cancel()
-	request := syncRequest{result: make(chan syncResult, 1)}
+	request := syncRequest{result: make(chan syncResult, 1), expected: expected}
 	select {
 	case <-waitCtx.Done():
 		return downStatus("connection sync canceled"), waitCtx.Err()

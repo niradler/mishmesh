@@ -12,6 +12,82 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
+func TestShouldGateSyncOnAuthorizedGenerationAndAuthoritativeSnapshot(t *testing.T) {
+	data := connectionStore(t, "one")
+	var syncs atomic.Int32
+	hub := testHub(t, data, testProvider(func(Config, Deps) (Instance, error) {
+		return &fakeInstance{sync: func(context.Context) (Status, error) { syncs.Add(1); return Status{Health: "up"}, nil }}, nil
+	}), nil)
+	expected, err := data.GetConnection(context.Background(), "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := data.UpdateConnectionState(context.Background(), "org", "one", json.RawMessage(`{"private":"fresh"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.SyncIfCurrent(context.Background(), *expected); err != nil {
+		t.Fatalf("state-only write blocked sync: %v", err)
+	}
+	changed := *expected
+	changed.Name = "owner-changed"
+	if err := data.UpdateConnection(context.Background(), &changed); err != nil {
+		t.Fatal(err)
+	}
+	before := syncs.Load()
+	if _, err := hub.SyncIfCurrent(context.Background(), *expected); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("stale authority: %v", err)
+	}
+	if _, err := hub.SyncIfCurrent(context.Background(), changed); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("stale generation: %v", err)
+	}
+	foreign := changed
+	foreign.OrgID = "foreign"
+	if _, err := hub.SyncIfCurrent(context.Background(), foreign); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("foreign identity: %v", err)
+	}
+	if err := hub.ReloadIfCurrent(context.Background(), *expected); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("stale reload: %v", err)
+	}
+	if syncs.Load() != before {
+		t.Fatal("unchecked generation executed sync")
+	}
+	if err := hub.ReloadIfCurrent(context.Background(), changed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.SyncIfCurrent(context.Background(), changed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShouldRejectChangedAuthorizedSnapshotAfterDrainRefresh(t *testing.T) {
+	data := connectionStore(t, "one")
+	var opens atomic.Int32
+	provider := testProvider(func(Config, Deps) (Instance, error) {
+		if opens.Add(1) == 1 {
+			return &fakeInstance{close: func() {
+				row, err := data.GetConnection(context.Background(), "one")
+				if err != nil {
+					return
+				}
+				row.Name = "changed-during-drain"
+				_ = data.UpdateConnection(context.Background(), row)
+			}}, nil
+		}
+		return &fakeInstance{}, nil
+	})
+	hub := testHub(t, data, provider, nil)
+	expected, err := data.GetConnection(context.Background(), "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.ReloadIfCurrent(context.Background(), *expected); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("unchecked replacement: %v", err)
+	}
+	if opens.Load() != 1 {
+		t.Fatal("opened unchecked refreshed configuration")
+	}
+}
+
 func TestShouldNotReplaceStateWriterAfterCloseBeforeSyncDone(t *testing.T) {
 	data := connectionStore(t, "one", "two")
 	initial := json.RawMessage(`{"fingerprint":"old"}`)

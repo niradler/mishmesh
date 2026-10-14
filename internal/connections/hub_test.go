@@ -215,6 +215,9 @@ func TestShouldCancelAndRetireOldGenerationDuringSync(t *testing.T) {
 	if err := hub.Reload(context.Background(), "one"); !errors.Is(err, ErrDrainPending) {
 		t.Fatal(err)
 	}
+	if status := hub.Status("one"); status.Health != "down" || status.LastError == "" {
+		t.Fatalf("drain failure lacks status: %+v", status)
+	}
 	select {
 	case err := <-result:
 		if err == nil {
