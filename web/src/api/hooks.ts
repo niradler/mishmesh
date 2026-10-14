@@ -53,7 +53,6 @@ export const qk = {
   services: (orgId?: string) => ["services", orgId] as const,
   service: (id: string) => ["services", "detail", id] as const,
   capabilities: (orgId?: string) => ["capabilities", orgId] as const,
-  cloudflare: (orgId?: string) => ["cloudflare", orgId] as const,
   topology: (orgId?: string) => ["topology", orgId] as const,
 };
 

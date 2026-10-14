@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS connections (
  name TEXT NOT NULL,
  config TEXT NOT NULL,
  secrets_enc BYTEA,
+ state TEXT,
  created_at BIGINT NOT NULL,
  updated_at BIGINT NOT NULL,
  UNIQUE (org_id, name),

@@ -57,11 +57,7 @@ func preserveServiceSecrets(fields []typedfields.Field, proposed, existing *stor
 	}
 	previous := map[string]json.RawMessage{}
 	if existing != nil && existing.Driver == proposed.Driver {
-		if len(existing.Config) > 0 {
-			_ = json.Unmarshal(existing.Config, &previous)
-		} else if def, err := services.FromRecord(existing); err == nil {
-			_ = json.Unmarshal(def.Config, &previous)
-		}
+		_ = json.Unmarshal(existing.Config, &previous)
 	}
 	for _, field := range fields {
 		if !field.Sensitive && field.Kind != "secret" {

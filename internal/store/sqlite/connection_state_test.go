@@ -78,39 +78,50 @@ func TestShouldUpdatePrivateConnectionStateWithoutOverwritingConfig(t *testing.T
 	}
 }
 
-func TestShouldMigratePrivateConnectionStateAndReopen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state-upgrade.db")
-	db, err := sql.Open("sqlite", path)
+func TestShouldPersistCurrentPrivateConnectionStateAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "typed-state.db")
+	data, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL);
-CREATE TABLE connections (id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id), type TEXT NOT NULL, name TEXT NOT NULL, config TEXT NOT NULL, secrets_enc BLOB, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(org_id,name), UNIQUE(org_id,id));
-INSERT INTO orgs VALUES ('org','test',1);
-INSERT INTO connections VALUES ('conn','org','cloudflare','test','{}',NULL,1,1);`)
-	if err != nil {
+	org := createTypedOrg(t, data)
+	record := createTypedConnection(t, data, org)
+	if err := data.UpdateConnectionState(context.Background(), org, record.ID, json.RawMessage(`{"owned":true}`)); err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
-	for index := 0; index < 2; index++ {
+	data.Close()
+	for range 2 {
 		data, err := Open(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		record, err := data.GetConnection(context.Background(), "conn")
-		if err != nil || string(record.Config) != `{}` {
-			t.Fatalf("migrated connection=%+v %v", record, err)
-		}
-		if index == 0 {
-			if len(record.State) != 0 {
-				t.Fatal("migration invented ownership")
-			}
-			if err := data.UpdateConnectionState(context.Background(), "org", "conn", json.RawMessage(`{"owned":true}`)); err != nil {
-				t.Fatal(err)
-			}
-		} else if string(record.State) != `{"owned":true}` {
-			t.Fatalf("private state lost on reopen: %s", record.State)
+		reopened, err := data.GetConnection(context.Background(), record.ID)
+		if err != nil || string(reopened.State) != `{"owned":true}` {
+			t.Fatalf("state lost: %+v %v", reopened, err)
 		}
 		data.Close()
+	}
+}
+
+func TestShouldRejectSchemaMissingCurrentPrivateStateColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unsupported-state.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE connections(id TEXT PRIMARY KEY,org_id TEXT,type TEXT,name TEXT,config TEXT,secrets_enc BLOB,created_at INTEGER,updated_at INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	data, err := Open(path)
+	if data != nil {
+		data.Close()
+	}
+	if !errors.Is(err, store.ErrUnsupportedSchema) {
+		t.Fatalf("incomplete schema accepted: %v", err)
+	}
+	var columns int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('connections')`).Scan(&columns); err != nil || columns != 8 {
+		t.Fatalf("schema changed: %d %v", columns, err)
 	}
 }

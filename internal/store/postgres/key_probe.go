@@ -12,8 +12,10 @@ func HasEncryptedConnections(ctx context.Context, dsn string, pool PoolConfig) (
 	}
 	defer db.Close()
 	pool.apply(db)
+	if err := validateSchema(ctx, db); err != nil {
+		return false, err
+	}
 	for _, probe := range []struct{ table, query string }{
-		{"cloudflare_connections", `SELECT EXISTS(SELECT 1 FROM cloudflare_connections WHERE octet_length(tunnel_token_enc)>0 OR octet_length(api_token_enc)>0)`},
 		{"connections", `SELECT EXISTS(SELECT 1 FROM connections WHERE octet_length(secrets_enc)>0)`},
 	} {
 		var exists bool

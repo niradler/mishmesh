@@ -101,7 +101,7 @@ func TestShouldValidateReadinessTargets(t *testing.T) {
 	}
 }
 
-func TestShouldLoadGenericAndLegacyReadiness(t *testing.T) {
+func TestShouldLoadTypedReadiness(t *testing.T) {
 	registry := testRegistry(t)
 	for _, test := range []struct {
 		ready string
@@ -118,7 +118,7 @@ func TestShouldLoadGenericAndLegacyReadiness(t *testing.T) {
 	}
 	def, err := FromRecordWithRegistry(&store.Service{ID: "old", Name: "old", Driver: "docker", Config: json.RawMessage(`{"containers":["web"]}`), Ready: json.RawMessage(`{"tcp":"localhost:8080"}`)}, registry)
 	if err != nil || def.Ready.TCP != "localhost:8080" {
-		t.Fatalf("legacy=%+v error=%v", def, err)
+		t.Fatalf("typed=%+v error=%v", def, err)
 	}
 }
 

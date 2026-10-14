@@ -36,9 +36,9 @@ Published hostnames become durable endpoint aliases only after provider observat
 
 Deleting a referenced connection returns409 with endpoint/service references. Disconnect applications first. Deletion closes the local provider; it does not imply removal of every external resource. Provider ownership records are separate from user config and never appear in API responses. Coordination is process-local: remote APIs that lack compare-and-swap cannot guarantee atomicity against simultaneous unrelated external writers.
 
-## Upgrade and validation
+## Clean-slate initialization and validation
 
-Back up the database and matching `mishmesh-secret.key` before first startup with this branch. Startup atomically migrates legacy Cloudflare rows, service specs, endpoint public selections and parsed authorization actions. IDs, timers, readiness, Connect/UDP policies and unclaimed routes are preserved. Missing/wrong keys and malformed records fail before migration commits. Restore an old binary together with its matching pre-migration database and key; an old binary alone is insufficient.
+Initialize a fresh database for this release. There are no legacy-schema converters, ciphertext/AAD migrations, Cedar action rewrites, old API aliases or old-format import adapters. Unsupported old schemas are rejected without conversion or row changes. Current typed databases reopen with the same database/key pair. Missing keys for existing typed ciphertext and malformed authenticated secrets fail closed. Keep previous installations and their data/key pairs separate; no existing database is erased automatically.
 
 The first key is published atomically without replacing an existing key. The key directory must support hard links, as tested on NTFS and Linux. Unsupported filesystems fail closed; supply a valid key file in a supported private location before startup.
 

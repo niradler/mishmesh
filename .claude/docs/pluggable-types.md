@@ -1,8 +1,8 @@
 # Pluggable access — implementation checkpoint
 
-Updated 2026-10-14. Tasks13,14,3,15–20 are complete: implementation, validation, release preparation and independent whole-branch review. Validated product commit c63a46f. Nothing published or deployed.
+Updated 2026-10-14. Nir subsequently required a clean slate with no legacy/backward compatibility. Conversion/upgrade paths, old routes and import formats are removed; fresh/current typed databases only. Unsupported old databases remain unchanged. Follow-up validation is passing; final browser reopening and scoped independent review are in progress. clean-slate-report.md records the amendment. Nothing published or deployed.
 
-## Active continuation
+## Prior completed scope — superseded by clean-slate amendment above
 
 Tasks13/14/3 are committed b9b1b2, d772082, 199e67a with backend follow-up308e04e. Typed services, explicit atomic Save and restart, fail-closed postcommit invalidation, provider-owned hostname/protocol capabilities, scoped Access refs, durable generation-fenced aliases and Connect preservation are implemented. Legacy schema/ciphertext/key/Cedar migration is atomic. Concurrent first-key publication now stages/syncs before atomic no-overwrite publication; NTFS/Linux regressions pass.
 

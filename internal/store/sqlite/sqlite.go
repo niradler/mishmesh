@@ -11,7 +11,6 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -22,10 +21,6 @@ type Store struct {
 var _ store.DataStore = (*Store)(nil)
 
 func Open(dsn string) (*Store, error) {
-	return OpenWithBox(dsn, nil)
-}
-
-func OpenWithBox(dsn string, box *secrets.Box) (*Store, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %q: %w", dsn, err)
@@ -34,6 +29,12 @@ func OpenWithBox(dsn string, box *secrets.Box) (*Store, error) {
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 	db.SetConnMaxIdleTime(0)
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer probeCancel()
+	if err := validateSchema(probeCtx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=5000",
@@ -48,7 +49,7 @@ func OpenWithBox(dsn string, box *secrets.Box) (*Store, error) {
 	s := &Store{db: db}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.migrate(ctx, box); err != nil {
+	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -57,12 +58,15 @@ func OpenWithBox(dsn string, box *secrets.Box) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) migrate(ctx context.Context, box *secrets.Box) error {
+func (s *Store) migrate(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := validateSchema(ctx, tx); err != nil {
+		return err
+	}
 	const schema = `
 CREATE TABLE IF NOT EXISTS orgs (
   id         TEXT PRIMARY KEY,
@@ -95,7 +99,8 @@ CREATE TABLE IF NOT EXISTS endpoints (
   domain     TEXT,
   port       INTEGER NOT NULL DEFAULT 0,
   policy     TEXT,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  method     TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_endpoints_subdomain
   ON endpoints(subdomain) WHERE subdomain IS NOT NULL AND subdomain <> '';
@@ -173,26 +178,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
 	if _, err := tx.ExecContext(ctx, schema+networkSchema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
-	for _, alter := range []string{
-		`ALTER TABLE endpoints ADD COLUMN domain TEXT`,
-		`ALTER TABLE endpoints ADD COLUMN policy TEXT`,
-		`ALTER TABLE endpoints ADD COLUMN method TEXT`,
-		`ALTER TABLE services ADD COLUMN config TEXT`,
-		`ALTER TABLE services ADD COLUMN ready TEXT`,
-		`ALTER TABLE connections ADD COLUMN state TEXT`,
-	} {
-		if _, err := tx.ExecContext(ctx, alter); err != nil && !isDuplicateColumn(err) {
-			return fmt.Errorf("migrate alter: %w", err)
-		}
-	}
-	if err := migratePluggable(ctx, tx, box); err != nil {
-		return fmt.Errorf("migrate legacy records: %w", err)
-	}
 	return tx.Commit()
-}
-
-func isDuplicateColumn(err error) bool {
-	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column")
 }
 
 func (s *Store) CreateOrg(ctx context.Context, o *store.Org) error {

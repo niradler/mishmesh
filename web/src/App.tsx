@@ -30,9 +30,6 @@ const Services = lazy(() =>
 const ServiceDetail = lazy(() =>
   import("@/pages/ServiceDetail").then((m) => ({ default: m.ServiceDetail })),
 );
-const Cloudflare = lazy(() =>
-  import("@/pages/Cloudflare").then((m) => ({ default: m.Cloudflare })),
-);
 const Connections = lazy(() =>
   import("@/pages/Connections").then((m) => ({ default: m.Connections })),
 );
@@ -77,7 +74,6 @@ function AppRoutes() {
             path="services/:id"
             element={<Page component={ServiceDetail} />}
           />
-          <Route path="cloudflare" element={<Page component={Cloudflare} />} />
           <Route
             path="connections"
             element={<Page component={Connections} />}

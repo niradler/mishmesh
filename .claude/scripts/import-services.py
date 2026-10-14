@@ -2,7 +2,6 @@
 import argparse
 import json
 import os
-import re
 import sys
 import urllib.error
 import urllib.request
@@ -12,19 +11,12 @@ try:
 except ModuleNotFoundError:
     yaml = None
 
-DURATION = re.compile(r"^(\d+)(s|m|h)?$")
-UNIT_SECONDS = {None: 1, "s": 1, "m": 60, "h": 3600}
-
-
 def seconds(value):
     if value is None:
         return 0
-    if isinstance(value, int):
-        return value
-    match = DURATION.match(str(value).strip())
-    if not match:
-        raise ValueError(f"unsupported duration {value!r} (use 90s, 30m or 2h)")
-    return int(match.group(1)) * UNIT_SECONDS[match.group(2)]
+    if type(value) is not int:
+        raise ValueError("timeouts must be integer seconds")
+    return value
 
 
 def auth_headers():
@@ -48,25 +40,18 @@ def call(base, method, path, body=None):
 def config_for(name, raw):
     driver = raw.get("driver", "")
     config = raw.get("config")
-    if config is not None:
-        return "command" if driver == "exec" else driver, config
-    if driver == "docker":
-        docker = raw.get("docker") or {}
-        config = {k: docker[k] for k in ("containers", "label") if docker.get(k)}
-    elif driver == "compose":
-        compose = raw.get("compose") or {}
-        config = {k: compose[k] for k in ("project", "file", "bin", "services") if compose.get(k)}
-    elif driver in ("exec", "command"):
-        command = raw.get(driver) or {}
-        config = {k: command[k] for k in ("start", "stop", "status", "dir", "env") if command.get(k)}
-        driver = "command"
-    else:
-        raise SystemExit(f"service {name}: unknown driver {driver!r}")
+    if not isinstance(driver, str) or not driver or driver == "exec" or not isinstance(config, dict):
+        raise ValueError(f"service {name}: use a typed driver and config object")
+    forbidden = {"spec", "docker", "compose", "exec", "command", "ready_tcp", "idle_timeout", "start_timeout"}
+    if forbidden.intersection(raw):
+        raise ValueError(f"service {name}: unsupported service format")
     return driver, config
 
 
 def desired_services(doc):
     defaults = doc.get("defaults") or {}
+    if set(defaults) - {"idle_timeout_seconds", "start_timeout_seconds"}:
+        raise ValueError("unsupported service defaults")
     out = {}
     for name, raw in (doc.get("services") or {}).items():
         driver, config = config_for(name, raw)
@@ -76,8 +61,8 @@ def desired_services(doc):
             "config": config,
             "ready": raw.get("ready") or {},
             "requires": raw.get("requires") or [],
-            "idle_timeout_seconds": seconds(raw.get("idle_timeout", defaults.get("idle_timeout"))),
-            "start_timeout_seconds": seconds(raw.get("start_timeout", defaults.get("start_timeout"))),
+            "idle_timeout_seconds": seconds(raw.get("idle_timeout_seconds", defaults.get("idle_timeout_seconds"))),
+            "start_timeout_seconds": seconds(raw.get("start_timeout_seconds", defaults.get("start_timeout_seconds"))),
         }
     return out
 
@@ -95,11 +80,8 @@ def same(existing, want):
 
 
 def printable(body):
-    env = (body.get("config") or {}).get("env")
-    if not env:
-        return json.dumps(body)
     shown = json.loads(json.dumps(body))
-    shown["config"]["env"] = {k: "<redacted>" for k in env}
+    shown["config"] = {key: "<redacted>" for key in shown.get("config") or {}}
     return json.dumps(shown)
 
 
@@ -121,8 +103,8 @@ def import_services(base, want, dry_run):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Import a legacy MISHMESH_SERVICES_FILE into the services API (idempotent by name). Link endpoints by setting policy.service_id. Set MISHMESH_API_AUTH_TOKEN when the API requires auth.")
-    parser.add_argument("file", help="path to the legacy services.yml")
+    parser = argparse.ArgumentParser(description="Import typed service YAML into the services API (idempotent by name). Link endpoints by setting policy.service_id. Set MISHMESH_API_AUTH_TOKEN when the API requires auth.")
+    parser.add_argument("file", help="path to typed services YAML")
     parser.add_argument("api", nargs="?", default="http://127.0.0.1:8081")
     parser.add_argument("--dry-run", action="store_true")
     opts = parser.parse_args()

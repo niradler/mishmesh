@@ -11,7 +11,6 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -65,10 +64,6 @@ func (p PoolConfig) apply(db *sql.DB) {
 }
 
 func Open(dsn string, pool PoolConfig) (*Store, error) {
-	return OpenWithBox(dsn, pool, nil)
-}
-
-func OpenWithBox(dsn string, pool PoolConfig, box *secrets.Box) (*Store, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
@@ -77,7 +72,7 @@ func OpenWithBox(dsn string, pool PoolConfig, box *secrets.Box) (*Store, error) 
 	s := &Store{db: db, queryTimeout: pool.withDefaults().QueryTimeout}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.migrate(ctx, box); err != nil {
+	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -88,7 +83,7 @@ func (s *Store) Close() error { return s.db.Close() }
 
 const migrationLockKey int64 = 0x6d6973686d657368
 
-func (s *Store) migrate(ctx context.Context, box *secrets.Box) error {
+func (s *Store) migrate(ctx context.Context) error {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("postgres migrate: acquire connection: %w", err)
@@ -100,15 +95,18 @@ func (s *Store) migrate(ctx context.Context, box *secrets.Box) error {
 	defer func() {
 		_, _ = conn.ExecContext(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrationLockKey)
 	}()
-	return runMigrations(ctx, conn, box)
+	return runMigrations(ctx, conn)
 }
 
-func runMigrations(ctx context.Context, conn *sql.Conn, boxes ...*secrets.Box) error {
+func runMigrations(ctx context.Context, conn *sql.Conn) error {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := validateSchema(ctx, tx); err != nil {
+		return err
+	}
 	const schema = `
 CREATE TABLE IF NOT EXISTS orgs (
   id         TEXT PRIMARY KEY,
@@ -141,7 +139,8 @@ CREATE TABLE IF NOT EXISTS endpoints (
   domain     TEXT,
   port       INTEGER NOT NULL DEFAULT 0,
   policy     TEXT,
-  created_at BIGINT NOT NULL
+  created_at BIGINT NOT NULL,
+  method     TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_endpoints_subdomain
   ON endpoints(subdomain) WHERE subdomain IS NOT NULL AND subdomain <> '';
@@ -218,25 +217,6 @@ CREATE TABLE IF NOT EXISTS org_policies (
 `
 	if _, err := tx.ExecContext(ctx, schema+networkSchema); err != nil {
 		return fmt.Errorf("postgres migrate: %w", err)
-	}
-	for _, alter := range []string{
-		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS domain TEXT`,
-		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS policy TEXT`,
-		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS method TEXT`,
-		`ALTER TABLE services ADD COLUMN IF NOT EXISTS config TEXT`,
-		`ALTER TABLE services ADD COLUMN IF NOT EXISTS ready TEXT`,
-		`ALTER TABLE connections ADD COLUMN IF NOT EXISTS state TEXT`,
-	} {
-		if _, err := tx.ExecContext(ctx, alter); err != nil {
-			return fmt.Errorf("postgres migrate alter: %w", err)
-		}
-	}
-	var box *secrets.Box
-	if len(boxes) > 0 {
-		box = boxes[0]
-	}
-	if err := migratePluggable(ctx, tx, box); err != nil {
-		return fmt.Errorf("postgres migrate legacy records: %w", err)
 	}
 	return tx.Commit()
 }

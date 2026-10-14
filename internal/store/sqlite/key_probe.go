@@ -37,8 +37,10 @@ func HasEncryptedConnections(ctx context.Context, dsn string) (bool, error) {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
+	if err := validateSchema(ctx, db); err != nil {
+		return false, err
+	}
 	for _, probe := range []struct{ table, query string }{
-		{"cloudflare_connections", `SELECT EXISTS(SELECT 1 FROM cloudflare_connections WHERE length(tunnel_token_enc)>0 OR length(api_token_enc)>0)`},
 		{"connections", `SELECT EXISTS(SELECT 1 FROM connections WHERE length(secrets_enc)>0)`},
 	} {
 		var exists bool

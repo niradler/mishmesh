@@ -233,11 +233,11 @@ func (f *networkFixture) createEndpoint(t *testing.T, body string) endpointDTO {
 
 func (f *networkFixture) connectCloudflare(t *testing.T) {
 	t.Helper()
-	sealed, err := f.api.secretBox.Seal([]byte(`{"tunnel_token":"`+testTunnelToken("acct1", "tun1")+`"}`), connections.SecretContext(defaultOrgID, "legacy-trigger"))
+	sealed, err := f.api.secretBox.Seal([]byte(`{"tunnel_token":"`+testTunnelToken("acct1", "tun1")+`"}`), connections.SecretContext(defaultOrgID, "public-connection"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.api.data.CreateConnection(context.Background(), &store.Connection{ID: "legacy-trigger", OrgID: defaultOrgID, Name: "legacy-trigger", Type: "cloudflare", Config: json.RawMessage(`{}`), SecretsEnc: sealed, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+	if err := f.api.data.CreateConnection(context.Background(), &store.Connection{ID: "public-connection", OrgID: defaultOrgID, Name: "public-connection", Type: "cloudflare", Config: json.RawMessage(`{}`), SecretsEnc: sealed, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -489,10 +489,10 @@ func TestNetworkPolicyValidation(t *testing.T) {
 		{"service of this org", false, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"$SVC"}}`, http.StatusCreated, ""},
 		{"service unknown", false, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"svc_nope"}}`, http.StatusBadRequest, "not a service of this org"},
 		{"service of another org", false, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"$OTHER"}}`, http.StatusBadRequest, "not a service of this org"},
-		{"public access without connection", false, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusBadRequest, "connection in this organization"},
-		{"public access without domain", true, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusBadRequest, "full DNS domain"},
+		{"public access without connection", false, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusBadRequest, "connection in this organization"},
+		{"public access without domain", true, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusBadRequest, "full DNS domain"},
 		{"public access unknown", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"missing"}]}}`, http.StatusBadRequest, "connection in this organization"},
-		{"public access with domain", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusCreated, ""},
+		{"public access with domain", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusCreated, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -510,7 +510,7 @@ func TestNetworkPolicyValidation(t *testing.T) {
 				f.connectCloudflare(t)
 			}
 			body := strings.NewReplacer("$SVC", svc.ID, "$OTHER", other.ID).Replace(tc.body)
-			before := f.hub.triggerCount("legacy-trigger")
+			before := f.hub.triggerCount("public-connection")
 			code, resp := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/endpoints", body)
 			if code != tc.wantCode {
 				t.Fatalf("status %d want %d: %s", code, tc.wantCode, resp)
@@ -518,7 +518,7 @@ func TestNetworkPolicyValidation(t *testing.T) {
 			if tc.wantMsg != "" && !strings.Contains(resp, tc.wantMsg) {
 				t.Fatalf("body %q missing %q", resp, tc.wantMsg)
 			}
-			if triggered := f.hub.triggerCount("legacy-trigger") > before; triggered != (code == http.StatusCreated && tc.connect) {
+			if triggered := f.hub.triggerCount("public-connection") > before; triggered != (code == http.StatusCreated && tc.connect) {
 				t.Fatalf("triggered=%v for status %d", triggered, code)
 			}
 		})
@@ -528,16 +528,16 @@ func TestNetworkPolicyValidation(t *testing.T) {
 func TestPatchRevalidatesNetworkPolicy(t *testing.T) {
 	f := newNetworkFixture(t)
 	f.connectCloudflare(t)
-	ep := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`)
+	ep := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`)
 	code, body := statusAndBody(t, f.srv, http.MethodPatch, "/api/v1/endpoints/"+ep.ID, `{"domain":""}`)
 	if code != http.StatusOK {
 		t.Fatalf("explicit access hostname was lost when canonical domain was cleared: %d %s", code, body)
 	}
-	before := f.hub.triggerCount("legacy-trigger")
+	before := f.hub.triggerCount("public-connection")
 	if code, _ := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/endpoints/"+ep.ID, ""); code != http.StatusNoContent {
 		t.Fatalf("delete: %d", code)
 	}
-	if f.hub.triggerCount("legacy-trigger") <= before {
+	if f.hub.triggerCount("public-connection") <= before {
 		t.Fatal("delete did not trigger a cloudflare sync")
 	}
 }
@@ -545,9 +545,9 @@ func TestPatchRevalidatesNetworkPolicy(t *testing.T) {
 func TestPublicEndpointStaysEditableAfterDisconnect(t *testing.T) {
 	f := newNetworkFixture(t)
 	f.connectCloudflare(t)
-	public := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`)
+	public := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`)
 	private := f.createEndpoint(t, `{"method":"proxy","domain":"other.example.org","policy":{"proxy_targets":["93.184.216.34:80"]}}`)
-	record, err := f.api.data.GetConnection(context.Background(), "legacy-trigger")
+	record, err := f.api.data.GetConnection(context.Background(), "public-connection")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,11 +561,11 @@ func TestPublicEndpointStaysEditableAfterDisconnect(t *testing.T) {
 		body string
 		want int
 	}{
-		{"edit targets of a public endpoint", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusOK},
+		{"edit targets of a public endpoint", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusOK},
 		{"edit port of a public endpoint", public.ID, `{"port":8443}`, http.StatusOK},
 		{"turn public access off", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[]}}`, http.StatusOK},
-		{"turn public access back on", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusBadRequest},
-		{"newly public endpoint", private.ID, `{"policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`, http.StatusBadRequest},
+		{"turn public access back on", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusBadRequest},
+		{"newly public endpoint", private.ID, `{"policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -574,7 +574,7 @@ func TestPublicEndpointStaysEditableAfterDisconnect(t *testing.T) {
 			}
 		})
 	}
-	if code, body := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/endpoints", `{"method":"proxy","domain":"new.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"legacy-trigger"}]}}`); code != http.StatusBadRequest {
+	if code, body := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/endpoints", `{"method":"proxy","domain":"new.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`); code != http.StatusBadRequest {
 		t.Fatalf("create public endpoint without a connection: %d %s", code, body)
 	}
 }
@@ -585,9 +585,9 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 	f.api.SetHealth(h)
 	f.connectCloudflare(t)
 	svc := f.createService(t, `{"name":"syncthing","driver":"compose","config":{"project":"syncthing"}}`)
-	ep := f.createEndpoint(t, `{"method":"proxy","domain":"sync.example.org","policy":{"proxy_targets":["93.184.216.34:8384","https://93.184.216.35:8384"],"service_id":"`+svc.ID+`","access":[{"connection_id":"legacy-trigger"}]}}`)
+	ep := f.createEndpoint(t, `{"method":"proxy","domain":"sync.example.org","policy":{"proxy_targets":["93.184.216.34:8384","https://93.184.216.35:8384"],"service_id":"`+svc.ID+`","access":[{"connection_id":"public-connection"}]}}`)
 	f.hub.mu.Lock()
-	f.hub.statuses["legacy-trigger"] = connections.Status{
+	f.hub.statuses["public-connection"] = connections.Status{
 		Level: "imported", Health: "up",
 
 		Hostnames: []connections.HostStatus{
@@ -614,13 +614,13 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 		nodes[n.ID] = n
 	}
 	want := map[string]string{
-		"connection:legacy-trigger":                 health.StateUp,
-		"hostname:legacy-trigger:sync.example.org":  health.StateUp,
-		"hostname:legacy-trigger:spare.example.org": health.StateUnknown,
-		"endpoint:" + ep.ID:                         health.StateDegraded,
-		"target:http://93.184.216.34:8384":          health.StateUp,
-		"target:https://93.184.216.35:8384":         health.StateDown,
-		"service:" + svc.ID:                         health.StateSleeping,
+		"connection:public-connection":                 health.StateUp,
+		"hostname:public-connection:sync.example.org":  health.StateUp,
+		"hostname:public-connection:spare.example.org": health.StateUnknown,
+		"endpoint:" + ep.ID:                            health.StateDegraded,
+		"target:http://93.184.216.34:8384":             health.StateUp,
+		"target:https://93.184.216.35:8384":            health.StateDown,
+		"service:" + svc.ID:                            health.StateSleeping,
 	}
 	for id, st := range want {
 		if n, ok := nodes[id]; !ok || n.State != st {
@@ -628,27 +628,27 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 		}
 	}
 	refs := map[string]topologyRef{
-		"connection:legacy-trigger":                {Kind: "connection", ID: "legacy-trigger"},
-		"hostname:legacy-trigger:sync.example.org": {Kind: "connection", ID: "legacy-trigger"},
-		"endpoint:" + ep.ID:                        {Kind: "endpoint", ID: ep.ID},
-		"service:" + svc.ID:                        {Kind: "service", ID: svc.ID},
+		"connection:public-connection":                {Kind: "connection", ID: "public-connection"},
+		"hostname:public-connection:sync.example.org": {Kind: "connection", ID: "public-connection"},
+		"endpoint:" + ep.ID:                           {Kind: "endpoint", ID: ep.ID},
+		"service:" + svc.ID:                           {Kind: "service", ID: svc.ID},
 	}
 	for id, ref := range refs {
 		if n := nodes[id]; n.Ref == nil || *n.Ref != ref {
 			t.Fatalf("node %s ref = %+v want %+v", id, n.Ref, ref)
 		}
 	}
-	if nodes["service:"+svc.ID].Label != "syncthing" || nodes["connection:legacy-trigger"].Label != "legacy-trigger" {
-		t.Fatalf("labels: %q %q", nodes["service:"+svc.ID].Label, nodes["connection:legacy-trigger"].Label)
+	if nodes["service:"+svc.ID].Label != "syncthing" || nodes["connection:public-connection"].Label != "public-connection" {
+		t.Fatalf("labels: %q %q", nodes["service:"+svc.ID].Label, nodes["connection:public-connection"].Label)
 	}
 	edges := map[topologyEdge]bool{}
 	for _, e := range topo.Edges {
 		edges[e] = true
 	}
 	for _, e := range []topologyEdge{
-		{From: "connection:legacy-trigger", To: "hostname:legacy-trigger:sync.example.org", Kind: edgeRoutes},
-		{From: "connection:legacy-trigger", To: "hostname:legacy-trigger:spare.example.org", Kind: edgeRoutes},
-		{From: "hostname:legacy-trigger:sync.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes},
+		{From: "connection:public-connection", To: "hostname:public-connection:sync.example.org", Kind: edgeRoutes},
+		{From: "connection:public-connection", To: "hostname:public-connection:spare.example.org", Kind: edgeRoutes},
+		{From: "hostname:public-connection:sync.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes},
 		{From: "endpoint:" + ep.ID, To: "target:http://93.184.216.34:8384", Kind: edgeProxies},
 		{From: "endpoint:" + ep.ID, To: "service:" + svc.ID, Kind: edgeWakes},
 	} {
@@ -683,7 +683,7 @@ func TestTopologyLinksUnclaimedHostnameToPrivateEndpoint(t *testing.T) {
 	f.connectCloudflare(t)
 	ep := f.createEndpoint(t, `{"method":"proxy","domain":"wiki.example.org","policy":{"proxy_targets":["93.184.216.34:80"]}}`)
 	f.hub.mu.Lock()
-	f.hub.statuses["legacy-trigger"] = connections.Status{
+	f.hub.statuses["public-connection"] = connections.Status{
 		Level: "imported", Health: "up",
 
 		Hostnames: []connections.HostStatus{
@@ -697,18 +697,18 @@ func TestTopologyLinksUnclaimedHostnameToPrivateEndpoint(t *testing.T) {
 	for _, n := range topo.Nodes {
 		refs[n.ID] = n.Ref
 	}
-	if r := refs["hostname:legacy-trigger:wiki.example.org"]; r == nil || *r != (topologyRef{Kind: "endpoint", ID: ep.ID}) {
+	if r := refs["hostname:public-connection:wiki.example.org"]; r == nil || *r != (topologyRef{Kind: "endpoint", ID: ep.ID}) {
 		t.Fatalf("matched hostname ref = %+v", r)
 	}
-	if r := refs["hostname:legacy-trigger:spare.example.org"]; r == nil || *r != (topologyRef{Kind: "connection", ID: "legacy-trigger"}) {
+	if r := refs["hostname:public-connection:spare.example.org"]; r == nil || *r != (topologyRef{Kind: "connection", ID: "public-connection"}) {
 		t.Fatalf("orphan hostname ref = %+v", r)
 	}
 	found := false
 	for _, e := range topo.Edges {
-		if e == (topologyEdge{From: "hostname:legacy-trigger:wiki.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes}) {
+		if e == (topologyEdge{From: "hostname:public-connection:wiki.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes}) {
 			found = true
 		}
-		if e.From == "hostname:legacy-trigger:spare.example.org" {
+		if e.From == "hostname:public-connection:spare.example.org" {
 			t.Fatalf("orphan hostname has an outgoing edge %+v", e)
 		}
 	}

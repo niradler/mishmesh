@@ -51,14 +51,6 @@ func TestDecodeSpecRejectsUnknownFields(t *testing.T) {
 	if _, err := FromRecord(&store.Service{Name: "web", Driver: "docker", Config: json.RawMessage(`{"containers":["a"],"extra":1}`)}); err == nil {
 		t.Fatal("unknown field accepted")
 	}
-	driver, config, ready, err := store.MigrateService("compose", json.RawMessage(`{"compose":{"project":"p","services":["web"]},"ready_tcp":"127.0.0.1:80"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	def, err := FromRecord(&store.Service{Name: "web", Driver: driver, Config: config, Ready: ready})
-	if err != nil || def.Ready.TCP != "127.0.0.1:80" || !strings.Contains(string(config), `"web"`) {
-		t.Fatalf("converted=%+v %v", def, err)
-	}
 	if _, err := FromRecord(&store.Service{Name: "web", Driver: "docker"}); err == nil {
 		t.Fatal("missing config accepted")
 	}
@@ -70,8 +62,8 @@ func TestShouldPreserveTypedConfigWithoutLegacyNormalization(t *testing.T) {
 	if err != nil || string(def.Config) != string(config) {
 		t.Fatalf("config changed: %s %v", def.Config, err)
 	}
-	if _, _, _, err := store.MigrateService("docker", json.RawMessage(`{"docker":{"containers":["a"]},"exec":{}}`)); err == nil {
-		t.Fatal("ambiguous legacy blocks accepted")
+	if _, err := FromRecord(&store.Service{Name: "web", Driver: "exec", Config: config}); err == nil {
+		t.Fatal("obsolete driver accepted")
 	}
 }
 
@@ -110,20 +102,12 @@ func TestFromRecord(t *testing.T) {
 	}
 }
 
-func TestShouldConvertLegacyCommandRecordAndPreferGenericConfig(t *testing.T) {
-	driver, config, ready, err := store.MigrateService("exec", json.RawMessage(`{"exec":{"start":["a"],"stop":["b"]},"ready_tcp":"127.0.0.1:8080"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := &store.Service{ID: "svc_1", OrgID: "org_a", Name: "job", Driver: driver, Config: config, Ready: ready}
-	definition, err := FromRecord(record)
-	if err != nil || definition.Driver != DriverCommand || definition.Ready.TCP != "127.0.0.1:8080" {
-		t.Fatalf("definition=%+v %v", definition, err)
-	}
+func TestShouldLoadOnlyTypedCommandRecord(t *testing.T) {
+	record := &store.Service{ID: "svc_1", OrgID: "org_a", Name: "job", Driver: DriverCommand}
 	record.Config = json.RawMessage(`{"start":["new"],"stop":["stop"]}`)
 	record.Ready = json.RawMessage(`{"tcp":"127.0.0.1:9090"}`)
 	record.Requires = []string{"svc_2"}
-	definition, err = FromRecordWithRegistry(record, testRegistry(t))
+	definition, err := FromRecordWithRegistry(record, testRegistry(t))
 	if err != nil || string(definition.Config) != string(record.Config) || readyTarget(definition, "") != "127.0.0.1:9090" {
 		t.Fatalf("definition=%+v %v", definition, err)
 	}

@@ -46,7 +46,7 @@ The default origin is derived from `MISHMESH_INGRESS_ADDR`. An unspecified host 
 
 Tokens are encrypted together with AES-256-GCM, bound to organization and connection ID. API reads return `has_api_token` and `has_tunnel_token`, never their values. User config and private ownership state are stored separately.
 
-The key lives in `MISHMESH_SECRET_KEY_FILE`, by default `mishmesh-secret.key` beside SQLite or in the working directory for PostgreSQL/in-memory stores. First creation publishes a complete key atomically with restrictive file permissions. Back up the matching key with the database. Missing/wrong keys fail before migration commits; restore the matching key rather than creating a replacement over ciphertext.
+The key lives in `MISHMESH_SECRET_KEY_FILE`, by default `mishmesh-secret.key` beside SQLite or in the working directory for PostgreSQL/in-memory stores. First creation publishes a complete key atomically. Protect OS permissions/ACL and back up the matching key with the database. Missing/wrong keys fail closed when opening typed connection ciphertext; restore the matching key rather than creating a replacement over ciphertext.
 
 ## API token permissions (managed level)
 
@@ -101,4 +101,4 @@ The binary is `cloudflared` on the PATH, or `MISHMESH_CLOUDFLARED_BIN`. The tunn
 3. Check `unclaimed` hostnames: turn on Public access for the endpoint named in `endpoint_id`, add an endpoint, or accept that prune will remove the ones no endpoint serves.
 4. Add an API token to manage the tunnel. Leave `prune` off until no unexpected `unclaimed` routes to the origin remain.
 
-The new connection API, encrypted key migration, multi-network refs and private Tailscale provider are documented in [connections.md](connections.md). Historical REST singleton routes and `public_access` writes are rejected.
+The new connection API, encrypted connection-secret persistence, multi-network refs and private Tailscale provider are documented in [connections.md](connections.md). Historical REST singleton routes and `public_access` writes are rejected.

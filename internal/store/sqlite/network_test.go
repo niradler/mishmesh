@@ -374,7 +374,7 @@ func createTypedConnection(t *testing.T, s *Store, orgID string) *store.Connecti
 	t.Helper()
 	id := store.NewID("conn")
 	now := time.Now().UTC()
-	connection := &store.Connection{ID: id, OrgID: orgID, Name: id, Type: "kubernetes", Config: json.RawMessage(`{}`), CreatedAt: now, UpdatedAt: now}
+	connection := &store.Connection{ID: id, OrgID: orgID, Name: id, Type: "example-runtime", Config: json.RawMessage(`{}`), CreatedAt: now, UpdatedAt: now}
 	if err := s.CreateConnection(context.Background(), connection); err != nil {
 		t.Fatal(err)
 	}

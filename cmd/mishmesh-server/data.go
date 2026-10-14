@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/config"
+	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/postgres"
@@ -56,13 +57,38 @@ func openDataStoreWithBox(cfg config.Server) (store.DataStore, *secrets.Box, err
 	var data store.DataStore
 	switch cfg.EffectiveDataBackend() {
 	case "sqlite":
-		data, err = sqlite.OpenWithBox(cfg.DataDSN, box)
+		data, err = sqlite.Open(cfg.DataDSN)
 	case "postgres":
-		data, err = postgres.OpenWithBox(cfg.DataDSN, dataPool(cfg), box)
+		data, err = postgres.Open(cfg.DataDSN, dataPool(cfg))
 	default:
 		err = fmt.Errorf("unknown DATA_BACKEND %q (want sqlite or postgres)", cfg.EffectiveDataBackend())
 	}
 	if err != nil {
+		return nil, nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	orgs, err := data.ListOrgs(ctx)
+	if err == nil {
+		for _, org := range orgs {
+			var records []*store.Connection
+			records, err = data.ListConnections(ctx, org.ID)
+			if err != nil {
+				break
+			}
+			for _, record := range records {
+				_, err = connections.OpenConfig(*record, box, cfg.HostCommands)
+				if err != nil {
+					break
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		_ = data.Close()
 		return nil, nil, err
 	}
 	return data, box, nil

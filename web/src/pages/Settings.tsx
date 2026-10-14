@@ -2,14 +2,32 @@ import { useEffect, useState, type FormEvent } from "react";
 import { CheckCircle2, XCircle } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { ErrorState, LoadingState } from "@/components/common/States";
-import { usePolicy, useQuota, useUpdatePolicy, useUpdateQuota } from "@/api/hooks";
+import {
+  usePolicy,
+  useQuota,
+  useUpdatePolicy,
+  useUpdateQuota,
+} from "@/api/hooks";
 import { useSession } from "@/context/SessionContext";
 import { toast } from "@/hooks/use-toast";
 import { ApiError } from "@/api/client";
@@ -17,22 +35,65 @@ import { formatBytes } from "@/lib/utils";
 import type { Policy, Quota, QuotaUpdate } from "@/api/types";
 
 const ACTION_LABELS: Record<string, { label: string; description: string }> = {
-  "agent:read": { label: "View agents", description: "List agents and their connection state." },
-  "agent:write": { label: "Manage agents", description: "Create, rename, revoke and delete agents and rotate tokens." },
-  "endpoint:read": { label: "View endpoints", description: "List endpoints, the network map and the Cloudflare status." },
-  "endpoint:write": { label: "Manage endpoints", description: "Reserve, edit, publish and delete endpoints, and sync Cloudflare." },
+  "agent:read": {
+    label: "View agents",
+    description: "List agents and their connection state.",
+  },
+  "agent:write": {
+    label: "Manage agents",
+    description: "Create, rename, revoke and delete agents and rotate tokens.",
+  },
+  "endpoint:read": {
+    label: "View endpoints",
+    description: "List endpoints, the network map and the Cloudflare status.",
+  },
+  "endpoint:write": {
+    label: "Manage endpoints",
+    description:
+      "Reserve, edit, publish and delete endpoints, and sync Cloudflare.",
+  },
   "quota:read": { label: "View quota", description: "See limits and usage." },
-  "quota:write": { label: "Change quota", description: "Change agent, endpoint and bandwidth limits." },
-  "member:read": { label: "View members", description: "List members and invites." },
-  "member:manage": { label: "Manage members", description: "Invite, remove and change member roles." },
-  "audit:read": { label: "View audit log", description: "Read the audit trail." },
-  "status:read": { label: "View status", description: "See the dashboard counters." },
-  "policy:read": { label: "View permissions", description: "Read this permission matrix." },
-  "policy:write": { label: "Change permissions", description: "Edit this permission matrix." },
-  "service:read": { label: "View services", description: "List services and their state." },
-  "service:write": { label: "Manage services", description: "Create, edit, start, stop and delete services." },
-  "cloudflare:manage": { label: "Manage Cloudflare", description: "Connect, edit and disconnect the Cloudflare tunnel and its tokens." },
-  "host:exec": { label: "Run host commands", description: "Define services that run commands on the server host. Off for everyone by default." },
+  "quota:write": {
+    label: "Change quota",
+    description: "Change agent, endpoint and bandwidth limits.",
+  },
+  "member:read": {
+    label: "View members",
+    description: "List members and invites.",
+  },
+  "member:manage": {
+    label: "Manage members",
+    description: "Invite, remove and change member roles.",
+  },
+  "audit:read": {
+    label: "View audit log",
+    description: "Read the audit trail.",
+  },
+  "status:read": {
+    label: "View status",
+    description: "See the dashboard counters.",
+  },
+  "policy:read": {
+    label: "View permissions",
+    description: "Read this permission matrix.",
+  },
+  "policy:write": {
+    label: "Change permissions",
+    description: "Edit this permission matrix.",
+  },
+  "service:read": {
+    label: "View services",
+    description: "List services and their state.",
+  },
+  "service:write": {
+    label: "Manage services",
+    description: "Create, edit, start, stop and delete services.",
+  },
+  "host:exec": {
+    label: "Run host commands",
+    description:
+      "Define services that run commands on the server host. Off for everyone by default.",
+  },
 };
 
 function Flag({ label, on }: { label: string; on: boolean }) {
@@ -70,15 +131,20 @@ function QuotaForm({ orgId, quota }: { orgId?: string; quota: Quota }) {
     [quota],
   );
 
-  const num = (k: keyof QuotaUpdate) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm((f) => ({ ...f, [k]: Number(e.target.value) }));
+  const num =
+    (k: keyof QuotaUpdate) => (e: React.ChangeEvent<HTMLInputElement>) =>
+      setForm((f) => ({ ...f, [k]: Number(e.target.value) }));
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
     update.mutate(form, {
       onSuccess: () => toast({ title: "Quota saved" }),
       onError: (err) =>
-        toast({ variant: "destructive", title: "Save failed", description: err instanceof ApiError ? err.message : "Unknown error" }),
+        toast({
+          variant: "destructive",
+          title: "Save failed",
+          description: err instanceof ApiError ? err.message : "Unknown error",
+        }),
     });
   };
 
@@ -87,17 +153,34 @@ function QuotaForm({ orgId, quota }: { orgId?: string; quota: Quota }) {
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Max agents</Label>
-          <Input type="number" value={form.max_agents} onChange={num("max_agents")} disabled={!isOperator} />
+          <Input
+            type="number"
+            value={form.max_agents}
+            onChange={num("max_agents")}
+            disabled={!isOperator}
+          />
         </div>
         <div className="space-y-1.5">
           <Label>Max endpoints</Label>
-          <Input type="number" value={form.max_endpoints} onChange={num("max_endpoints")} disabled={!isOperator} />
+          <Input
+            type="number"
+            value={form.max_endpoints}
+            onChange={num("max_endpoints")}
+            disabled={!isOperator}
+          />
         </div>
         <div className="space-y-1.5">
           <Label>Max bandwidth</Label>
-          <Input type="number" value={form.max_bandwidth_bytes} onChange={num("max_bandwidth_bytes")} disabled={!isOperator} />
+          <Input
+            type="number"
+            value={form.max_bandwidth_bytes}
+            onChange={num("max_bandwidth_bytes")}
+            disabled={!isOperator}
+          />
           <p className="text-xs text-muted-foreground">
-            {form.max_bandwidth_bytes > 0 ? formatBytes(form.max_bandwidth_bytes) : "unlimited"}
+            {form.max_bandwidth_bytes > 0
+              ? formatBytes(form.max_bandwidth_bytes)
+              : "unlimited"}
           </p>
         </div>
       </div>
@@ -112,25 +195,41 @@ function QuotaForm({ orgId, quota }: { orgId?: string; quota: Quota }) {
   );
 }
 
-function PermissionMatrix({ orgId, policy }: { orgId?: string; policy: Policy }) {
+function PermissionMatrix({
+  orgId,
+  policy,
+}: {
+  orgId?: string;
+  policy: Policy;
+}) {
   const update = useUpdatePolicy(orgId);
   const { isOwnerOrAdmin } = useSession();
   const [matrix, setMatrix] = useState(policy.matrix);
   useEffect(() => setMatrix(policy.matrix), [policy]);
 
   const toggle = (role: string, action: string) =>
-    setMatrix((m) => ({ ...m, [role]: { ...m[role], [action]: !m[role]?.[action] } }));
+    setMatrix((m) => ({
+      ...m,
+      [role]: { ...m[role], [action]: !m[role]?.[action] },
+    }));
 
   const onSave = () => {
     const body = {
       matrix: Object.fromEntries(
-        policy.roles.map((role) => [role, policy.actions.filter((a) => matrix[role]?.[a])]),
+        policy.roles.map((role) => [
+          role,
+          policy.actions.filter((a) => matrix[role]?.[a]),
+        ]),
       ),
     };
     update.mutate(body, {
       onSuccess: () => toast({ title: "Permissions saved" }),
       onError: (err) =>
-        toast({ variant: "destructive", title: "Save failed", description: err instanceof ApiError ? err.message : "Unknown error" }),
+        toast({
+          variant: "destructive",
+          title: "Save failed",
+          description: err instanceof ApiError ? err.message : "Unknown error",
+        }),
     });
   };
 
@@ -142,7 +241,9 @@ function PermissionMatrix({ orgId, policy }: { orgId?: string; policy: Policy })
         ) : (
           <Badge>Customized</Badge>
         )}
-        <p className="text-xs text-muted-foreground">Cedar-backed. Members are read-only by default.</p>
+        <p className="text-xs text-muted-foreground">
+          Cedar-backed. Members are read-only by default.
+        </p>
       </div>
       <div className="overflow-x-auto">
         <Table>
@@ -150,7 +251,9 @@ function PermissionMatrix({ orgId, policy }: { orgId?: string; policy: Policy })
             <TableRow>
               <TableHead>Action</TableHead>
               {policy.roles.map((role) => (
-                <TableHead key={role} className="text-center capitalize">{role}</TableHead>
+                <TableHead key={role} className="text-center capitalize">
+                  {role}
+                </TableHead>
               ))}
             </TableRow>
           </TableHeader>
@@ -158,10 +261,13 @@ function PermissionMatrix({ orgId, policy }: { orgId?: string; policy: Policy })
             {policy.actions.map((action) => (
               <TableRow key={action}>
                 <TableCell>
-                  <p className="text-sm font-medium">{ACTION_LABELS[action]?.label ?? action}</p>
+                  <p className="text-sm font-medium">
+                    {ACTION_LABELS[action]?.label ?? action}
+                  </p>
                   <p className="text-xs text-muted-foreground">
                     <span className="font-mono">{action}</span>
-                    {ACTION_LABELS[action] && ` · ${ACTION_LABELS[action].description}`}
+                    {ACTION_LABELS[action] &&
+                      ` · ${ACTION_LABELS[action].description}`}
                   </p>
                 </TableCell>
                 {policy.roles.map((role) => (
@@ -196,12 +302,17 @@ export function Settings() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Settings" description="Server configuration and organization quota." />
+      <PageHeader
+        title="Settings"
+        description="Server configuration and organization quota."
+      />
 
       <Card>
         <CardHeader>
           <CardTitle>Effective configuration</CardTitle>
-          <CardDescription>Feature flags reported by the server.</CardDescription>
+          <CardDescription>
+            Feature flags reported by the server.
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-2 sm:grid-cols-3">
           <Flag label="Authentication" on={authConfig.auth_enabled} />
@@ -229,7 +340,9 @@ export function Settings() {
       <Card>
         <CardHeader>
           <CardTitle>Permissions</CardTitle>
-          <CardDescription>Role × action matrix enforced on the control API.</CardDescription>
+          <CardDescription>
+            Role × action matrix enforced on the control API.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {policy.isLoading ? (

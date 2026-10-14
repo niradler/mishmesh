@@ -71,13 +71,13 @@ services:
 
 The proxy only exposes container list, start and stop. Compose `up -d` for a stack with no containers yet needs the Docker CLI and the real socket, so with a proxy create the stack once beforehand and let mishmesh start and stop the existing containers.
 
-## Importing legacy services YAML
+## Importing typed services YAML
 
 ```text
 python .claude/scripts/import-services.py <private-services.yml> http://127.0.0.1:8081 --dry-run
 python .claude/scripts/import-services.py <private-services.yml> http://127.0.0.1:8081
 ```
 
-PyYAML is needed only for reading YAML. The helper converts nested legacy Docker/Compose/exec definitions to typed config and Command, preserving readiness, argv, Requires and timers. It uses names for idempotency, prints environment values redacted and never silently restarts a running service. Omit `--dry-run` only after reviewing its desired rows. Set `MISHMESH_API_AUTH_TOKEN` privately when bearer authentication is needed.
+PyYAML is needed only for reading YAML. The helper accepts typed driver/config/ready/requires fields and integer `_seconds` timers only. Nested driver blocks, `spec`, `exec` and old timer fields are rejected. It uses names for idempotency, masks configuration values in output and never silently restarts a running service. Omit `--dry-run` only after reviewing its desired rows. Set `MISHMESH_API_AUTH_TOKEN` privately when bearer authentication is needed.
 
-For database upgrades and matching-key backups see [Connections and migration](connections.md#upgrade-and-validation).
+For fresh initialization and current database/key persistence see [Connections](connections.md#clean-slate-initialization-and-validation).
