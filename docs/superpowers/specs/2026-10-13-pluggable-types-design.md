@@ -9,14 +9,14 @@ Status: approved 2026-10-13; app-access scope confirmed 2026-10-14 · follows `2
 Two parts of mishmesh are hardcoded to one implementation each.
 
 - **Cloudflare is a page, not a type.** There is one Cloudflare connection per org, its own table, its own API (`/api/v1/cloudflare`) and its own sidebar entry. Endpoints store `public_access: "cloudflare"`. Adding Tailscale today means copying all of it.
-- **Services know three drivers by name.** `services.Spec` is a closed struct (`Docker`, `Compose`, `Exec`), validation and `UsesHostCommands` switch on the driver, and the UI form, the service page card and `web/src/lib/services.ts` each branch on `docker | compose | exec`. Adding Kubernetes touches about six places. The service page shows Compose words ("Compose file", "Services") as if they were the service's own.
+- **Services know three drivers by name.** `services.Spec` is a closed struct (`Docker`, `Compose`, `Exec`), validation and `UsesHostCommands` switch on the driver, and the UI form, the service page card and `web/src/lib/services.ts` each branch on `docker | compose | exec`. Adding another driver touches about six places. The service page shows Compose words ("Compose file", "Services") as if they were the service's own.
 
 A third need came up: some services depend on others. Guacamole is only useful while the desktop (`gdm` + `gnome-remote-desktop`) runs, and the desktop should only run while Guacamole does.
 
 ## Goals
 
-1. Connections are added by type. Cloudflare Tunnel, Tailscale and Kubernetes cluster ship as the first three types; a new type is one Go package plus registration.
-2. Service drivers are added by type. Each driver describes its own fields; the UI renders forms and detail cards from those descriptions with no per-driver code. Docker, Compose, Command and Kubernetes ship.
+1. Connections are added by type. Cloudflare Tunnel and Tailscale ship as the first two access types; a new type is one Go package plus registration.
+2. Service drivers are added by type. Each driver describes its own fields; the UI renders forms and detail cards from those descriptions with no per-driver code. Docker, Compose and Command ship.
 3. A service can require other services. Waking it wakes its requirements first; when it sleeps, requirements nobody else needs sleep too.
 4. Readiness is generic: TCP or HTTP, owned by the service, not the driver.
 
@@ -28,7 +28,7 @@ Non-goals: Tailscale Funnel (see Tailscale), Docker on remote hosts, React UI re
 |---|---|
 | Connection | An external system mishmesh talks to, of one **type**. Has a role: **access** (carries traffic to endpoints) or **runtime** (runs services). |
 | Access | An endpoint reachable through an access connection. Scope is **public** or **private**. Replaces "Public access" as the section name; provider-specific tailnet facts belong to the Tailscale panel. |
-| Driver | How a service is started, stopped and inspected. Driver fields use the driver's own words (Compose services, Kubernetes workload). |
+| Driver | How a service is started, stopped and inspected. Driver fields use the driver's own words (Compose services, Command arguments). |
 | Requires | Service A requires service B: B runs whenever A runs. |
 
 ## Connections
@@ -39,7 +39,7 @@ Non-goals: Tailscale Funnel (see Tailscale), Docker on remote hosts, React UI re
 connections (
   id          TEXT PRIMARY KEY,           -- conn_xxx
   org_id      TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  type        TEXT NOT NULL,              -- cloudflare | tailscale | kubernetes
+  type        TEXT NOT NULL,              -- registered provider type ID
   name        TEXT NOT NULL,
   config      TEXT NOT NULL,              -- JSON, type-owned, no secrets
   secrets_enc BLOB,                       -- secrets.Box sealed JSON, type-owned
@@ -141,12 +141,6 @@ Today's behaviour, moved behind the interface: levels imported and managed, clou
 - **Preconditions shown as fixes:** tailscaled ≥ 1.86 reachable on the socket, the node is tagged (Services cannot be hosted by a user-owned node), the host is approved for each Service or an autoApprover covers the tag.
 - **Funnel is out of scope.** Funnel only serves the node's own hostname on ports 443, 8443 and 10000, so it cannot give each endpoint its own name. Cloudflare stays the public path.
 
-### Type: Kubernetes cluster (runtime)
-
-- Config: `mode` `in_cluster | kubeconfig`, `context`, `default_namespace`. Secret: `kubeconfig` (sealed).
-- Uses `k8s.io/client-go`. A kubeconfig whose user runs an `exec` credential plugin is a host command and is refused unless host access (`MISHMESH_HOST_COMMANDS` + `host:exec`) is available, matching the existing rule.
-- Status: API server reachable, server version, permission check (`SelfSubjectAccessReview` for `get/patch` on `deployments/scale` and `statefulsets/scale` in the default namespace).
-
 ## Service drivers
 
 ### Field descriptions (shared with connections)
@@ -177,7 +171,7 @@ type DriverType interface {
 }
 ```
 
-`Driver` stays `Start`, `Stop`, `State`. `Deps` gives the Docker client and the connection resolver (Kubernetes looks up its connection). The manager builds drivers through a registry keyed by type; `hostDrivers.build`'s switch disappears.
+`Driver` stays `Start`, `Stop`, `State`. `Deps` gives the organization identity, Docker client factory and host-command authorization. The manager builds drivers through a registry keyed by type; `hostDrivers.build`'s switch disappears.
 
 ### Data
 
@@ -198,11 +192,8 @@ The migration splits existing `spec` rows. Driver id `exec` is renamed `command`
 | Docker | Containers (list) or Label | as today |
 | Compose | Project, Compose services (list, empty = whole project), Compose file*, Binary* | as today |
 | Command | Start*, Stop*, Status*, Working dir, Environment (keyvalue, secret values redacted) | as today (`exec`) |
-| Kubernetes | Cluster (connection), Namespace, Kind (Deployment, StatefulSet), Name, Replicas when awake (default 1) | scale subresource to N / to 0; Running when ready replicas ≥ N > 0, Stopped when spec and ready are 0, Partial otherwise |
 
 \* host-command field.
-
-For Kubernetes the endpoint's proxy target must be reachable from mishmesh (cluster service DNS when mishmesh runs in-cluster, otherwise a NodePort, an ingress or an agent). The service page says so when the target is a cluster-internal name and mishmesh is not in-cluster.
 
 ### API
 
@@ -222,7 +213,7 @@ For Kubernetes the endpoint's proxy target must be reachable from mishmesh (clus
 
 - **Sidebar:** Dashboard · Network · Endpoints · Services · Connections · Agents · Members · Audit · Settings. "Cloudflare" is removed.
 - **Connections page:** table (name, type badge, role, level, health, served hostnames). "Add connection" opens a type picker (cards from descriptors), then a form rendered from fields, with Detect where the type supports it.
-- **Connection detail:** generic header (type, level, health, last sync, Sync now), the hostnames table (today's `HostnamesTable`, generalised), then a type panel. Cloudflare keeps its management section as its type panel; Tailscale and Kubernetes get small panels for node or cluster facts.
+- **Connection detail:** generic header (type, level, health, last sync, Sync now), the hostnames table (today's `HostnamesTable`, generalised), then a type panel. Cloudflare keeps its management section as its type panel; Tailscale shows nonsecret node and service facts.
 - **Endpoint detail, Access section:** one row per access ref ("Public access · Cloudflare lab · niradler.com hostname", "Tailnet access · Tailscale home · notes.tail1234.ts.net") with add/remove; adding picks from access connections.
 - **Add service:** driver picker, then the form from fields; generic sections below (Readiness, Requires, Idle timeout, Start timeout).
 - **Service detail:** generic header, a "Driver: Compose" card rendered from fields, a Requires card (requires and required-by, both linked), linked endpoints.
@@ -234,17 +225,16 @@ For Kubernetes the endpoint's proxy target must be reachable from mishmesh (clus
 1. Deploy and migrate: the Cloudflare connection and the 12 access refs carry over; `lab-e2e.py` passes unchanged except for the new routes.
 2. **Desktop for Guacamole** (needs your approval): a Command service `desktop-gui` with start `sudo systemctl start gdm gnome-remote-desktop`, stop `sudo systemctl stop gnome-remote-desktop gdm`, status `systemctl is-active gnome-remote-desktop`, idle "With dependents"; guacamole requires it. Needs `MISHMESH_HOST_COMMANDS=true` and a sudoers drop-in allowing only those two commands for `nir` without a password.
 3. **Tailscale** (needs your action): tailscale is not installed on the lab. Install it, join with a tagged auth key, approve the host (or add an autoApprover for the tag); then add a Tailscale connection and turn on tailnet access for one endpoint.
-4. **Kubernetes:** no cluster on the lab. Validate with a throwaway `kind` cluster in Docker running a one-replica nginx Deployment, removed afterwards.
 
 ## Testing
 
 - Store: connections and services round-trip on SQLite and Postgres; migration from the current schema with real lab-shaped rows.
-- Connections: Cloudflare tests move unchanged behind the interface; Tailscale tested against a fake LocalAPI and fake Tailscale API; Kubernetes connection status against client-go fake.
-- Drivers: registry builds each driver; descriptor fields match `Validate`; host-command fields enforced; Kubernetes driver against client-go fake clientset (scale up/down, partial, missing workload).
+- Connections: Cloudflare tests move unchanged behind the interface; Tailscale tested against a fake LocalAPI and fake Tailscale API.
+- Drivers: registry builds each driver; descriptor fields match `Validate`; host-command fields enforced.
 - Requires: cycle detection, wake order, failed requirement, keep-awake hold, release and stop, 409 guards, shared requirement stays up while one dependent runs.
 - API: authz matrix updated (`connection:manage`), tenancy tests for every new route.
 - Web: forms rendered from descriptors for each driver and connection type.
-- Lab: `lab-e2e.py` extended with connections, a Requires wake (guacamole wakes desktop-gui) and the kind cluster wake.
+- Lab: `lab-e2e.py` extended with connections and a Requires wake (guacamole wakes desktop-gui).
 
 ## Open points for review
 

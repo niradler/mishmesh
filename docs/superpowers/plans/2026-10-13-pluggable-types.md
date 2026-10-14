@@ -344,7 +344,7 @@ func TestShouldRefuseExecCredentialPluginBeforeClientConstruction(t *testing.T) 
 
 **Interfaces:** Produce `tailscaleconnection.NewProvider(options Options) connections.Provider`. Inject the LocalAPI and HTTP adapters rather than shelling out. Config fields: `level`, `socket`, `tailnet`, `service_tags`; secrets `oauth_client_id`, `oauth_client_secret`. Provider-owned `owned_services` in private `Connection.State` maps `svc:` names to owning endpoint IDs/fingerprints and cannot be supplied by clients; use atomic state-only persistence from Task9.
 
-- [ ] Add tests for imported zero-writes, managed HTTPS 443 mapping, default service name, socket-down, old version, untagged node, approval pending, OAuth/API failure, foreign entry preservation, ownership persistence, deleted ref cleanup, ETag retry, and two connections to one socket. Anchor the pure reconciliation contract:
+- [x] Add tests for imported zero-writes, managed HTTPS 443 mapping, default service name, socket-down, old version, untagged node, approval pending, OAuth/API failure, foreign entry preservation, ownership persistence, deleted ref cleanup, ETag retry, and two connections to one socket. Anchor the pure reconciliation contract:
 
 ```go
 func TestShouldPreserveForeignServeEntries(t *testing.T) {
@@ -354,11 +354,11 @@ func TestShouldPreserveForeignServeEntries(t *testing.T) {
 }
 ```
 
-- [ ] Produce `ReconcileServices(current, owned, desired map[string]string) (map[string]string, error)` in `reconcile.go`, using the map anchor to test identity/ownership decisions before adapting actual `ipn.ServeConfig`. Run `./internal/connections/tailscale`; expected missing reconcile/provider.
-- [ ] Pin a compatible `tailscale.com` module. Use LocalAPI status plus Serve config get/set, preserving returned ETag; lock by socket, reread on conflicts, retry at most three times, then expose a degraded status. Use bounded OAuth client-credentials requests, cache token until expiry, and never place tokens in errors/status.
-- [ ] Define managed Services with the authenticated Tailscale API; persist ownership only for entries this connection successfully creates. On an existing foreign resource, report conflict, do not overwrite. Remove only owned resources no longer referenced, preserving foreign Serve, Funnel, node-level, and service entries. Ordinary Close cancels work; it does not erase published configuration.
-- [ ] Preserve original Host to ingress and return effective aliases only from observed connection status. Report pending approval/access-policy prerequisites instead of published. Imported mode never writes either API. Test API and LocalAPI with HTTP fake servers, not fake successful callbacks.
-- [ ] Run provider/registry suites, dependency vulnerability checks, and cross-platform compilation. Commit `feat: add tailscale tailnet access connections`.
+- [x] Produce `ReconcileServices(current, owned, desired map[string]string) (map[string]string, error)` in `reconcile.go`, using the map anchor to test identity/ownership decisions before adapting actual `ipn.ServeConfig`. Run `./internal/connections/tailscale`; expected missing reconcile/provider.
+- [x] Pin a compatible `tailscale.com` module. Use LocalAPI status plus Serve config get/set, preserving returned ETag; lock by socket, reread on conflicts, retry at most three times, then expose a degraded status. Use bounded OAuth client-credentials requests, cache token until expiry, and never place tokens in errors/status.
+- [x] Define managed Services with the authenticated Tailscale API; persist ownership only for entries this connection successfully creates. On an existing foreign resource, report conflict, do not overwrite. Remove only owned resources no longer referenced, preserving foreign Serve, Funnel, node-level, and service entries. Ordinary Close cancels work; it does not erase published configuration.
+- [x] Preserve original Host to ingress and return effective aliases only from observed connection status. Report pending approval/access-policy prerequisites instead of published. Imported mode never writes either API. Test API and LocalAPI with HTTP fake servers, not fake successful callbacks.
+- [x] Run provider/registry suites, dependency vulnerability checks, and cross-platform compilation. Commit `feat: add tailscale tailnet access connections`.
 
 ### Task 12: Generic connection API, authz, and reference guards
 

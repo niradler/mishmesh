@@ -1,100 +1,68 @@
 # Pluggable access — implementation checkpoint
 
-Updated: 2026-10-14. Nir renewed authorization to finish, validate and review the refactor. Subagent-driven execution remains selected. The overall feature/release is **not finished**.
+Updated 2026-10-14. Nir authorized finishing, validation and review. Implementation/release is **not finished**.
 
-## Confirmed use case (2026-10-14)
+## Direction and done definition
 
-- Nir selected **app access over existing networks**. Finish Cloudflare public access and Tailscale private access; preserve extensibility for NetBird and existing WireGuard networks. VPN peers, keys, routes and network policies are externally managed and outside this release.
-- NetBird/WireGuard are architectural extension cases, not implemented provider claims. An existing private network may transport traffic to Mishmesh ingress without Mishmesh managing that network. Provider status must distinguish observed publication, prerequisites and conflicts; merely configuring a network is not proof an app is reachable.
-- Nir cancelled Kubernetes: his deployment platform owns workload lifecycle. Keep Docker/Compose/Command, Requires, readiness, migration, generic APIs/UI and validation. Do not implement Kubernetes credential commands, expose Kubernetes options or require kind validation.
-- Root checkout topic file was stale on 2026-10-14; the worktree checkpoint and SDD ledger remain authoritative.
+- App access over existing networks. Ship Cloudflare public access and Tailscale private HTTPS app access. NetBird/existing WireGuard networks are extension cases, not implemented-provider claims. No VPN peers, keys, routes or policies management.
+- Nir cancelled Kubernetes: the deployment platform owns workload lifecycle. No Kubernetes provider/driver, credential executor, UI option or kind gate. Partial Task10 source is preserved untouched in the old pluggable-types worktree and must not be imported.
+- Keep generic Docker/Compose/Command drivers, readiness, Requires and explicit **Save and restart**. Normal runtime-config changes require stopped service; restart action checks permissions/dependents, reserves lifecycle admission across stop/save/apply/start, and reports failures by phase. No silent restart or dependent cascade.
+- Finish generic connection/service APIs, safe legacy migration, descriptor UI and topology; prove save/reopen, SQLite and live PostgreSQL migration, security and compatibility with current main; independent whole-branch review before release.
 
-## Current state and where to work
+## Where and source of truth
 
-- Active implementation: `C:/Projects/products/mishmesh/.claude/worktrees/pluggable-access`, branch `feat/pluggable-access`.
-- Current checkpoint HEAD: `62922298e34ff171b1e247365cd068fe67c0074d`; reviewed Task9 code: `7c9a39640bbd3b63a2b5a233d8f8385c96dda7d4`.
-- Tasks **1, 2, 4, 5, 6, 7, 8, 9** completed with independent review. Task9 fix round1 addressed both Important findings; scoped spec/quality review passed with no new findings. Task10 was cancelled; its uncommitted work remains untouched in the old worktree. Task11 is next in this clean fork of the reviewed checkpoint.
-- Original checkout `C:/Projects/products/mishmesh` is currently on `main` at `124e5b1`. Do all feature code work in the linked worktree; preserve other worktrees and historical browser artifacts.
-- Lab was reported running `v0.1.0-beta.4`. This implementation has not pushed, created a PR, merged, published, deployed or changed lab configuration.
-- Physical schema/data cutover (Task 3) deliberately follows Go consumers 4–14. Legacy adapters are temporary; none may ship in beta.5.
+- Current implementation: C:/Projects/products/mishmesh/.claude/worktrees/pluggable-access, feat/pluggable-access. Reviewed provider code HEAD: 0bf452f.
+- Main is 124e5b1 with newer UDP/agent Connect support and local-only lab artifacts. Integrate before API/migration work, preserving both Connect and Access fields. Read-only merge preview found two document conflicts and store.go's struct conflict; no private lab files resurrected.
+- Parked cancelled Kubernetes: ../pluggable-types on feat/pluggable-types, uncommitted Task10 code and task-10-report.md retained. No reset/revert/delete/cleanup executed.
+- Spec: docs/superpowers/specs/2026-10-13-pluggable-types-design.md. Plan: docs/superpowers/plans/2026-10-13-pluggable-types.md; its 2026-10-14 cancellation amendment overrides historical Kubernetes text.
+- Authoritative execution ledger and amended task briefs/reports/reviews: .superpowers/sdd/2026-10-13-pluggable-types/progress.md and adjacent files. Do not redispatch completed tasks. Root checkout topic file mirrors this checkpoint.
+- Private lab scripts/notes remain .claude/local, ignored and preserved. Generic scripts are public; do not republish machine-specific artifacts.
 
-## Source of truth for resuming
+## Reviewed completed work
 
-Within the active worktree:
-
-- Spec: `docs/superpowers/specs/2026-10-13-pluggable-types-design.md`.
-- Plan: `docs/superpowers/plans/2026-10-13-pluggable-types.md` (checkboxes updated after review gates).
-- Recovery ledger: `.superpowers/sdd/2026-10-13-pluggable-types/progress.md`. Read it first; it records task bases, commits, rulings, deferred findings and live-agent state.
-- Per-task briefs, reports, review packages and verdicts are in the same ignored SDD directory. They are retained, not deleted.
-- This topic file is mirrored in the original checkout for convenience. The active worktree ledger/plan controls execution; do not redispatch completed tasks.
-
-## Completed work
-
-| Task | What changed | Code commits / evidence |
+| Task | Result | Code |
 |---|---|---|
-| 1 | Eight shared field kinds; strict JSON/default/required validation, host-command metadata and secret/sensitive-value redaction | `af1a3ad`; focused race coverage 97.2%, compile/vet/format and review passed |
-| 2 | Additive typed connection/service stores, runtime references, requirements, access aliases and transactional same-org/delete/collision guards | `9ff522a`; SQLite/store/legacy races and six live isolated PostgreSQL cases passed; review approved |
-| 4 | Injected service-driver registry, Docker/Compose/Command descriptors, generic config definitions, pure legacy converter; pinned matching Kubernetes modules v0.35.4 | `ce31f02`; compatibility races, compile/vet, govulncheck and review passed. Removed command output from public errors; fixed host authorization before normalization |
-| 5 | Strict TCP/HTTP service readiness, bounded probes, redirect/body handling, legacy TCP validation and TCP cancellation | `26b4f7f` + `a7c6a41`; services/health/ingress races passed. Review found raw TCP diagnostics; sanitized them, reproduced red/green, scoped review approved |
-| 6 | Prospective same-org DAG validation inside store transactions, deterministic dependents lookup and cross-handle concurrency protection | `9aa668a` + `c7a8c6c`; SQLite and live PG opposing updates passed. Review found Repeatable Read stale snapshots before lock wait; live four-node cycle reproduced, Read Committed fix/regression approved |
-| 7 | Parallel requirements-before-dependent wakes, idempotent holds, manual-stop/idle admission, external/reload reconciliation, -1 With dependents and linked readiness fallback | `e3d3a5c` + `62ab79c`; affected services/ingress/health/controlplane races passed. Review found refresh idle resets, failed-addition hold leak and reload starvation; all three reproduced/fixed and scoped review approved |
-| 8 | Generic connection registry/hub, identity-bound sealed secrets, serialized/coalesced sync, generation retirement and bounded close | `74b2141` + `d78d997`; 21 connection race tests and consumer gates passed. Review found deletion blocked by stalled retirement; fixed and scoped review approved |
+| 1 | Strict shared fields/defaults/validation and sensitive-value redaction | af1a3ad |
+| 2 | Typed connection/service stores, access aliases, transactional reference guards | 9ff522a |
+| 4 | Generic Docker/Compose/Command registry and pure legacy converter; unused Kubernetes forward contracts removed by11 | ce31f02 |
+| 5 | Bounded TCP/HTTP readiness and sanitized diagnostics | 26b4f7f, a7c6a41 |
+| 6 | Same-org prospective DAG validation and PG isolation correction | 9aa668a, c7a8c6c |
+| 7 | Requirements-before-dependent wakes, holds/release, stop guards and finite reload admission | e3d3a5c, 62ab79c |
+| 8 | Generic connection registry/hub, sealed secrets, serialized sync, bounded retirement/deletion | 74b2141, d78d997 |
+| 9 | Per-connection Cloudflare provider; durable per-resource ownership; no unchanged-resource adoption; post-retirement whole-record refresh | dc13343, 7c9a396 |
+| 11 | Tailscale LocalAPI/OAuth/Services, Serve+advertisement, observed approval, ownership/foreign preservation, private scope and naming capability | 2bcc709, 0bf452f |
 
-## Task 9 — completed after independent fix review
+Task9 independent review found two Important issues, both fixed; scoped spec/quality PASS. Replacement waits for Run+Sync+Close, otherwise bounded ErrDrainPending; no overlapping state writers. Deletion remains allowed while draining.
 
-Commit `dc13343` implements the Cloudflare provider and startup registration. Access refs select hosts by connection ID; full-org observation preserves unclaimed reporting. Same-org instances have independent publishers/supervisors. Legacy API/hub wiring stays until Task 12.
+Task11 review found one Important cleanup issue after partial API creation/Serve failure and an operator-added advertisement. Fix0bf452f protects observed foreign advertisements during cleanup/retries/final observation. Exact RED/GREEN retained; scoped spec/quality PASS, no new findings. Task10 is cancelled, not completed.
 
-Origin matching alone was unsafe for pruning with shared connections. A durable ownership candidate/default now records successful, observed ingress/DNS/host-specific Access fingerprints. Pruning requires matching ownership/fingerprints and no other current claim; unknown orphans and modified foreign resources remain untouched. Selected unchanged sync cannot adopt operator edits. Shared remote target updates use ordered, context-aware process-local locks.
+## Evidence and limits
 
-Added private `Connection.State` (`json:"-"`), nullable state storage and atomic same-org state-only updates in both backends. Ordinary config updates preserve state; state writes preserve config/edit timestamps. Hub copies clone state. Tailscale Task 11 will reuse this private state. No new wire field.
+- Task9 affected CF/connections/server races, all-consumer compilation, vet/format and earlier isolated live PG state/config concurrency proof passed. Deterministic initial-adoption and late-state-writer regressions included.
+- Task11 full available Go race suite: 29 tested packages, 3 no-test packages; final affected race/vet/Linux+Windows amd64 builds passed after final changes. HTTP fixtures implement actual published /services schema and LocalAPI Serve/ETag/preferences/approval contracts. Zero k8s.io and OpenPGP imports in actual server/agent dependency graph.
+- govulncheck: zero affected symbols/imported packages; existing module-only GO-2026-5932 for unused unmaintained x/crypto/openpgp, no fixed version. Unsuppressed logs retained. This is not an absolute zero-advisory claim.
+- Cloudflare and Tailscale locks are process-local. Remote unconditional PUT/DELETE and advertisement preferences lack full CAS; observed fingerprints/claims protect known edits but cannot promise atomicity against unrelated external writers.
+- No live Cloudflare/tailnet, full PG migration, browser feature flow, publication or deployment claim yet. Fake APIs, compile-only and skipped PG tests are not live evidence.
+- Prior PostgreSQL fixture mishmesh-types-pg-1791842027 is stopped/retained and has a deliberate RED-test cycle. Use a fresh isolated fixture for full validation. Retain fixtures; avoid destructive cleanup.
 
-TDD red/green includes source selection, provider contracts, state persistence, ownership, selected-resource edits and normalized read-back. Final affected Cloudflare/connections/SQLite/server race suites, consumer compilation, vet/format and the focused live PG state/config test passed. Tests use fake HTTP APIs/helper executables; this is not live Cloudflare evidence. Review package: `review-e51084e..dc13343.diff`; report: `task-9-report.md`; verdict goes to `task-9-review.md`.
+## Remaining execution order
 
-The independent review found initial unchanged-resource adoption and stale ownership on reload. Both were fixed in `7c9a396` and scoped re-review passed. Ownership requires successful per-resource application. Replacement waits for full Run+Sync+Close retirement, returns bounded ErrDrainPending if stalled, and refreshes/revalidates the authoritative whole record before Open. Reports: `task-9-r1-report.md`, `task-9-rereview-1.md`.
+1. Integrate current main; validate Connect/UDP plus reviewed provider code.
+2. Task12 generic connections API/authz/secret/reference guards and remove live old Cloudflare wiring.
+3. Task13 generic services API and explicit restart lifecycle; Task14 provider-owned naming/protocol capabilities, access aliases and preserved Connect/UDP.
+4. Task3 atomic schema/key/ciphertext/policy migration and removal of temporary adapters, reopen and missing/wrong-key proof.
+5. Tasks15–17 descriptor forms/details, Connections/Access UI, topology/Requires and bounded full-screen Network layout; real API/browser save/reopen.
+6. Task18 generic regressions/imports/docs and private local lab scripts.
+7. Task19 full race/build/security/dependency/OS-arch/browser and live isolated PG migration gates. Retain PG databases instead of DROP cleanup; no test suppression. No kind gate.
+8. Task20 reviewed release notes/runbook/metadata; final independent whole-branch review before merge/tag/publication or lab rollout.
 
-## Remaining work — execution order
+## Human gates
 
-1. Task9 is reviewed complete. Task10 Kubernetes is cancelled and parked; do not import its uncommitted code.
-2. Integrate current main's private agent Connect/UDP support and local-only lab artifact policy before API/migration work.
-3. Task 11: Tailscale LocalAPI + OAuth/API provider, durable ownership, foreign-resource preservation, approvals and aliases.
-4. Task 12: generic connection CRUD/detect/sync/descriptor APIs, tenancy/auth/secret guards; replace `cloudflare:manage` with `connection:manage`, remove old Cloudflare routes/wiring.
-5. Task 13: generic service APIs/config/readiness/Requires, recursive host permission checks, stop/delete 409s and edit-policy integration.
-6. Task 14: access refs, aliases/ingress precedence, agent stripping, link-refresh integration and deferred collision fixture correction.
-7. Task 3: atomic legacy DB/key/secret/policy/action migration and removal of temporary adapters; missing/corrupt-key, rollback and reopen proof in both stores.
-8. Task 15: descriptor-based service UI, readiness/Requires/idle controls and stop-dependent flows.
-9. Task 16: connections UI, type panels and endpoint access editor.
-10. Task 17: typed topology nodes/Requires edges plus the requested full-screen map and hidden outer overflow. Carry the tested layout into this feature worktree without changing the original checkout; browser-test dense maps at desktop/tablet/phone sizes.
-11. Task 18: regression/import/scripts/docs updates.
-12. Task 19: full backend/security/dependency/browser validation and live PostgreSQL migration gates. No kind proof after Kubernetes cancellation.
-13. Task 20: release docs/runbook/metadata preparation; task review and whole-branch review **before** merge/tag/publication. Then PR/CI/merge, `v0.1.0-beta.5`, verified artifacts, backed-up lab rollout and baseline/extended E2E.
-
-## Decisions and human gates
-
-- Live driver/config edits: Nir selected explicit **Save and restart** on 2026-10-14. Normal Save requires stopped runtime for driver/startup changes; the explicit action validates old/proposed/transitive permissions and dependents before stopping, reserves lifecycle admission across stop/save/apply/start, and reports each failure phase accurately. Tasks 13/15 own API/runtime/UI and deterministic concurrency/browser proof. Requires-only edits retain existing behavior.
-- Cloudflare prune preference: asked durable ownership versus keeping all unclaimed routes. No answer recorded; durable ownership is a reversible implementation candidate/default, not authorization for live deletion. It can still be adjusted before release.
-- **Confirm with Nir before** lab sudoers for exact `systemctl start/stop gdm/gnome-remote-desktop` and `MISHMESH_HOST_COMMANDS=true`. Prepare exact reviewed contents/commands first.
-- **Nir installs/joins Tailscale himself**, tags the node and approves Service hosting. Live tailnet proof remains pending until those prerequisites exist.
-- Destructive cleanup/restore commands must be printed with effects for Nir unless he explicitly authorizes execution. No direct master push.
-- Runtime host-command permission applies to Command/Compose descriptor fields: API writes require operator flag plus request `host:exec`; background startup uses the operator flag for previously authorized stored definitions. Recursive wake API tests remain Task13. Kubernetes plugin handling is out of scope.
-
-## Deferred checks and limitations
-
-- Task 2 minor, owned by Task 14: canonical-collision fixtures use underscores and may fail hostname validation first; replace with valid hyphenated hosts and assert the intended collision path in both stores.
-- Task 5 minor, owned by Task 19/final review: real TCP cancellation test should assert peer EOF and explicit test-owned cleanup completion.
-- Hub callbacks must cooperate with cancellation. Contextless Open/Validate/Status remain synchronous; recursive Reload from admission callbacks is unsupported. Stalled retired generations block additional replacements; active deletion is covered. Providers 9–11 must respect these lifecycle boundaries.
-- Cloudflare target locks are process-local; out-of-band remote edits are guarded by observed fingerprints, not claimed remote transaction atomicity. Target identity changes leave historical remote resources untouched.
-- Full repository integration, real PG legacy migration, live providers/tailnet, kind traffic, browser save/reopen and lab rollout are still outstanding. Compile-only/skipped tests are not runtime evidence.
-
-## Validation fixtures and original network fix
-
-- Test PostgreSQL container `mishmesh-types-pg-1791842027` is **stopped and retained**, network none/no published ports. Focused DAG/isolation/private-state tests ran live. Its unique isolation RED-test org deliberately retains a cycle; use a fresh isolated fixture for whole-DB validation.
-- Go validation containers are retained; no destructive cleanup was run. Docker Go 1.26.9 uses read-only worktree mounts and named module/build caches. Every command uses explicit process/test timeouts.
-- Earlier network layout fix remains local on `work/network-layout`: bounded full-height AppShell/Network/TopologyMap, internal map scrolling and visible legend. Web lint/build and dense 61-node/60-edge Playwright checks passed at 1920×1080, 1440×900, 1024×768, 390×844 and 844×390. Live page was Cloudflare-login gated; no deployment claim. Its script/artifacts remain preserved.
+- No direct master/main push without fresh exact consent. No release/deployment claim before reviewed concrete artifacts and external-action authorization.
+- Nir installs/joins Tailscale and approves tagged Service hosting. Verify current prerequisites before live-tailnet proof; credentials enter secret form/environment, never chat/logs.
+- Exact lab sudoers and MISHMESH_HOST_COMMANDS changes require Nir's explicit confirmation before application. Do not change GUI/default target independently.
+- Destructive commands/cleanup/restore must be printed with effects for Nir to run unless explicitly authorized. Private files and unrelated worktrees are preserved.
 
 ## Immediate next action
 
-Resume Task11 Tailscale in this clean active worktree from reviewed Task9. Task10 is cancelled by Nir; its partial code and security report remain in `../pluggable-types` without reset/deletion. Remove unused committed Kubernetes forward contracts/dependencies as part of active scope cleanup. Follow amended briefs/global constraints; existing platform lifecycle, app access scope and explicit Save and restart decisions control execution. Do not repeat Tasks1/2/4–9 or redispatch Task10.
-
-## 2026-10-14 Task9 fix evidence
-
-Both original Important findings addressed in 7c9a396: ownership only after successful per-resource application; reload waits for Run+Sync+Close and refreshes/revalidates the authoritative whole record. No overlapping state writers. Bounded ErrDrainPending preserves independent-connection progress and deletion while draining. Deterministic RED/GREEN regressions include fully pre-existing and mixed resources, real Cloudflare ownership/reload, late writers, repeated retry, config/secrets refresh and identity mismatch. Affected CF/connections/server race, all-consumer compile, vet/format passed. task-9-r1-report.md and task-9-rereview-1.md contain evidence; scoped spec/quality PASS, zero open findings. Historical review-pending paragraphs above describe the pre-fix checkpoint and are superseded. No live provider/lab or full repository runtime claim.
+Task11 is reviewed complete. Commit this controller checkpoint/spec cleanup, integrate current main into a clean main-based worktree while retaining this reviewed branch and cancelled Kubernetes work, validate the combined code, then dispatch Task12 from its amended brief/context. Carry active worktree/branch/source commit into the ledger and this file; no reimplementation of completed tasks.
