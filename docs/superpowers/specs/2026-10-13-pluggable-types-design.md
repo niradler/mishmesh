@@ -2,7 +2,7 @@
 
 Status: approved 2026-10-13; app-access scope confirmed 2026-10-14 · follows `2026-10-12-network-control-ux-design.md`
 
-2026-10-14 direction: expose applications over existing networks. Cloudflare and Tailscale ship as access providers; NetBird and existing WireGuard networks are extension cases. VPN peer/key/route/policy management is outside this release. Generic private scope is `private`; provider-specific tailnet configuration remains owned by Tailscale. Existing agent-to-agent and UDP access on main must survive integration.
+2026-10-14 direction: expose applications over existing networks. Cloudflare and Tailscale ship as access providers; NetBird and existing WireGuard networks are extension cases. VPN peer/key/route/policy management is outside this release. Generic private scope is `private`; provider-specific tailnet configuration remains owned by Tailscale. Existing agent-to-agent and UDP access on main must survive integration. Nir explicitly cancelled Kubernetes runtime/provider/driver work: his deployment platform owns workload lifecycle. Historical Kubernetes sections below are superseded and must not produce provider/driver/UI options or release claims. Docker/Compose/Command, Requires, readiness and explicit Save and restart remain in scope.
 
 ## Why
 

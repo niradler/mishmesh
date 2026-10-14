@@ -1,3 +1,5 @@
+2026-10-14 ACTIVE SCOPE AMENDMENT: Kubernetes Task10 CANCELLED by Nir; no Kubernetes provider, driver, exec credentials, UI or kind gate ships. Historical Kubernetes requirements below are superseded. Active branch/worktree feat/pluggable-access / .claude/worktrees/pluggable-access; partial Task10 retained separately untouched. Cloudflare+Tailscale app access over existing networks, Docker/Compose/Command, Requires/readiness and explicit Save and restart remain. Generic access scope public/private and provider-owned hostname normalization.
+
 # Pluggable Types Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

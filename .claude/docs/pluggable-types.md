@@ -1,4 +1,4 @@
-# Pluggable types — implementation checkpoint
+# Pluggable access — implementation checkpoint
 
 Updated: 2026-10-14. Nir renewed authorization to finish, validate and review the refactor. Subagent-driven execution remains selected. The overall feature/release is **not finished**.
 
@@ -6,14 +6,14 @@ Updated: 2026-10-14. Nir renewed authorization to finish, validate and review th
 
 - Nir selected **app access over existing networks**. Finish Cloudflare public access and Tailscale private access; preserve extensibility for NetBird and existing WireGuard networks. VPN peers, keys, routes and network policies are externally managed and outside this release.
 - NetBird/WireGuard are architectural extension cases, not implemented provider claims. An existing private network may transport traffic to Mishmesh ingress without Mishmesh managing that network. Provider status must distinguish observed publication, prerequisites and conflicts; merely configuring a network is not proof an app is reachable.
-- Kubernetes runtime, service drivers, Requires, migration, generic APIs/UI and validation remain in the approved refactor scope.
+- Nir cancelled Kubernetes: his deployment platform owns workload lifecycle. Keep Docker/Compose/Command, Requires, readiness, migration, generic APIs/UI and validation. Do not implement Kubernetes credential commands, expose Kubernetes options or require kind validation.
 - Root checkout topic file was stale on 2026-10-14; the worktree checkpoint and SDD ledger remain authoritative.
 
 ## Current state and where to work
 
-- Active implementation: `C:/Projects/products/mishmesh/.claude/worktrees/pluggable-types`, branch `feat/pluggable-types`.
-- Current code HEAD: `dc1334344cc840efad7db323641bc86d7c66772a` — Cloudflare provider implementation.
-- Tasks **1, 2, 4, 5, 6, 7, 8** completed with independent review. Task **9** review returned Needs fixes: initial adoption of external resources and stale ownership on reload. Fix round 1 dispatched to `/root/fix09` from `dc13343`; independent scoped review follows.
+- Active implementation: `C:/Projects/products/mishmesh/.claude/worktrees/pluggable-access`, branch `feat/pluggable-access`.
+- Current checkpoint HEAD: `62922298e34ff171b1e247365cd068fe67c0074d`; reviewed Task9 code: `7c9a39640bbd3b63a2b5a233d8f8385c96dda7d4`.
+- Tasks **1, 2, 4, 5, 6, 7, 8, 9** completed with independent review. Task9 fix round1 addressed both Important findings; scoped spec/quality review passed with no new findings. Task10 was cancelled; its uncommitted work remains untouched in the old worktree. Task11 is next in this clean fork of the reviewed checkpoint.
 - Original checkout `C:/Projects/products/mishmesh` is currently on `main` at `124e5b1`. Do all feature code work in the linked worktree; preserve other worktrees and historical browser artifacts.
 - Lab was reported running `v0.1.0-beta.4`. This implementation has not pushed, created a PR, merged, published, deployed or changed lab configuration.
 - Physical schema/data cutover (Task 3) deliberately follows Go consumers 4–14. Legacy adapters are temporary; none may ship in beta.5.
@@ -50,12 +50,12 @@ Added private `Connection.State` (`json:"-"`), nullable state storage and atomic
 
 TDD red/green includes source selection, provider contracts, state persistence, ownership, selected-resource edits and normalized read-back. Final affected Cloudflare/connections/SQLite/server race suites, consumer compilation, vet/format and the focused live PG state/config test passed. Tests use fake HTTP APIs/helper executables; this is not live Cloudflare evidence. Review package: `review-e51084e..dc13343.diff`; report: `task-9-report.md`; verdict goes to `task-9-review.md`.
 
-Review in progress has flagged two potential Important gaps: initial sync can adopt pre-existing resources without applying a write, and reload can capture stale private state before an old sync finishes saving ownership. Verdict/report still pending; these require assessment and likely a fix/review loop before Task 9 approval.
+The independent review found initial unchanged-resource adoption and stale ownership on reload. Both were fixed in `7c9a396` and scoped re-review passed. Ownership requires successful per-resource application. Replacement waits for full Run+Sync+Close retirement, returns bounded ErrDrainPending if stalled, and refreshes/revalidates the authoritative whole record before Open. Reports: `task-9-r1-report.md`, `task-9-rereview-1.md`.
 
 ## Remaining work — execution order
 
-1. Finish Task 9 independent review and any bounded fix/re-review loop.
-2. Task 10: Kubernetes connection/config/exec guard, permissions and scale driver; fake API/client tests and cross-platform compilation.
+1. Task9 is reviewed complete. Task10 Kubernetes is cancelled and parked; do not import its uncommitted code.
+2. Integrate current main's private agent Connect/UDP support and local-only lab artifact policy before API/migration work.
 3. Task 11: Tailscale LocalAPI + OAuth/API provider, durable ownership, foreign-resource preservation, approvals and aliases.
 4. Task 12: generic connection CRUD/detect/sync/descriptor APIs, tenancy/auth/secret guards; replace `cloudflare:manage` with `connection:manage`, remove old Cloudflare routes/wiring.
 5. Task 13: generic service APIs/config/readiness/Requires, recursive host permission checks, stop/delete 409s and edit-policy integration.
@@ -65,7 +65,7 @@ Review in progress has flagged two potential Important gaps: initial sync can ad
 9. Task 16: connections UI, type panels and endpoint access editor.
 10. Task 17: typed topology nodes/Requires edges plus the requested full-screen map and hidden outer overflow. Carry the tested layout into this feature worktree without changing the original checkout; browser-test dense maps at desktop/tablet/phone sizes.
 11. Task 18: regression/import/scripts/docs updates.
-12. Task 19: full backend/security/dependency/browser validation, live PostgreSQL migration gates and a throwaway kind wake/traffic proof.
+12. Task 19: full backend/security/dependency/browser validation and live PostgreSQL migration gates. No kind proof after Kubernetes cancellation.
 13. Task 20: release docs/runbook/metadata preparation; task review and whole-branch review **before** merge/tag/publication. Then PR/CI/merge, `v0.1.0-beta.5`, verified artifacts, backed-up lab rollout and baseline/extended E2E.
 
 ## Decisions and human gates
@@ -74,8 +74,8 @@ Review in progress has flagged two potential Important gaps: initial sync can ad
 - Cloudflare prune preference: asked durable ownership versus keeping all unclaimed routes. No answer recorded; durable ownership is a reversible implementation candidate/default, not authorization for live deletion. It can still be adjusted before release.
 - **Confirm with Nir before** lab sudoers for exact `systemctl start/stop gdm/gnome-remote-desktop` and `MISHMESH_HOST_COMMANDS=true`. Prepare exact reviewed contents/commands first.
 - **Nir installs/joins Tailscale himself**, tags the node and approves Service hosting. Live tailnet proof remains pending until those prerequisites exist.
-- Kubernetes live validation uses a throwaway kind cluster. Destructive cleanup/restore commands must be printed with effects for Nir unless he explicitly authorizes execution. No direct master push.
-- Runtime host-command permission matches Command: API writes require operator flag plus request `host:exec`; background startup uses the operator flag for previously authorized stored definitions. Plugin-backed management/recursive wake API tests remain Tasks 10/12/13.
+- Destructive cleanup/restore commands must be printed with effects for Nir unless he explicitly authorizes execution. No direct master push.
+- Runtime host-command permission applies to Command/Compose descriptor fields: API writes require operator flag plus request `host:exec`; background startup uses the operator flag for previously authorized stored definitions. Recursive wake API tests remain Task13. Kubernetes plugin handling is out of scope.
 
 ## Deferred checks and limitations
 
@@ -93,7 +93,7 @@ Review in progress has flagged two potential Important gaps: initial sync can ad
 
 ## Immediate next action
 
-Task 9 fix round 1 is active (`/root/fix09`). Review its committed fix with a scoped independent reviewer, update Task 9 plan checkbox only after approval, then dispatch Task 10 from its prepared brief/context. Do not start from the original checkout or repeat Tasks 1/2/4–8.
+Resume Task11 Tailscale in this clean active worktree from reviewed Task9. Task10 is cancelled by Nir; its partial code and security report remain in `../pluggable-types` without reset/deletion. Remove unused committed Kubernetes forward contracts/dependencies as part of active scope cleanup. Follow amended briefs/global constraints; existing platform lifecycle, app access scope and explicit Save and restart decisions control execution. Do not repeat Tasks1/2/4–9 or redispatch Task10.
 
 ## 2026-10-14 Task9 fix evidence
 
