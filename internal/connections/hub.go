@@ -265,6 +265,10 @@ func (h *Hub) reload(ctx context.Context, connectionID string, expected *store.C
 		h.retire(run)
 		return ErrHubStopped
 	}
+	h.epochs[connectionID]++
+	if failure, exists := h.reloadFailures[connectionID]; exists && store.SameConnectionInput(failure.expected, run.record) {
+		delete(h.reloadFailures, connectionID)
+	}
 	h.runs[connectionID] = run
 	h.statuses[connectionID] = initial
 	h.all[run] = false
