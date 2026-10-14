@@ -153,9 +153,16 @@ func (a *API) connectionView(record *store.Connection, status connections.Status
 
 func (a *API) connectionStatus(id string) connections.Status {
 	if a.connections == nil {
-		return connections.Status{Health: "down", LastError: "connection runtime unavailable; save and restart after enabling network control"}
+		return connections.WithHostDiagnostic(connections.Status{Health: "down"}, connections.HostRuntimeUnavailable)
 	}
 	return a.connections.Status(id)
+}
+
+func (a *API) connectionRecordStatus(record *store.Connection) connections.Status {
+	if source, ok := a.connections.(ConnectionSnapshotStatus); ok {
+		return source.StatusIfCurrent(*record)
+	}
+	return a.connectionStatus(record.ID)
 }
 
 func (a *API) writeConnection(w http.ResponseWriter, record *store.Connection, status connections.Status, code int) {
@@ -173,7 +180,7 @@ func (a *API) listConnectionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]map[string]any, 0, len(records))
 	for _, record := range records {
-		view, err := a.connectionView(record, a.connectionStatus(record.ID))
+		view, err := a.connectionView(record, a.connectionRecordStatus(record))
 		if a.handleErr(w, err) {
 			return
 		}
@@ -184,7 +191,7 @@ func (a *API) listConnectionsHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) getConnectionHandler(w http.ResponseWriter, r *http.Request) {
 	if record, ok := a.scopedConnection(w, r); ok {
-		a.writeConnection(w, record, a.connectionStatus(record.ID), http.StatusOK)
+		a.writeConnection(w, record, a.connectionRecordStatus(record), http.StatusOK)
 	}
 }
 
@@ -324,15 +331,18 @@ func (a *API) saveConnection(w http.ResponseWriter, r *http.Request, existing *s
 	a.audit(r, action, record.ID, record.Type)
 	ctx, cancel := context.WithTimeout(r.Context(), connectionOperationTimeout)
 	defer cancel()
-	status := a.connectionStatus(record.ID)
+	status := a.connectionRecordStatus(&record)
 	if err := a.connections.ReloadIfCurrent(ctx, record); err != nil {
+		status = a.connectionRecordStatus(&record)
 		status.Health = "down"
-		status.LastError = "saved connection could not reload; retry sync or save and restart"
+		if status.LastError == "" {
+			status = connections.WithHostDiagnostic(status, connections.HostSavedReloadFailed)
+		}
 	} else {
 		status, err = a.connections.SyncIfCurrent(ctx, record)
 		if err != nil {
 			status.Health = "degraded"
-			status.LastError = "saved connection could not sync; retry sync or save and restart"
+			status = connections.WithHostDiagnostic(status, connections.HostSavedSyncFailed)
 		}
 	}
 	view, err := a.connectionView(&record, status)
@@ -435,7 +445,7 @@ func (a *API) syncConnectionHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		code = http.StatusBadGateway
 		status.Health = "degraded"
-		status.LastError = "sync failed; retry sync or save and restart"
+		status = connections.WithHostDiagnostic(status, connections.HostSyncRetry)
 	}
 	a.writeConnection(w, record, status, code)
 }

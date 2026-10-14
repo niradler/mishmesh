@@ -68,10 +68,11 @@ type HostStatus struct {
 }
 
 type Status struct {
-	Level     string         `json:"level"`
-	Health    string         `json:"health"`
-	LastError string         `json:"last_error"`
-	LastSync  time.Time      `json:"last_sync"`
-	Hostnames []HostStatus   `json:"hostnames"`
-	Details   map[string]any `json:"details"`
+	hostDiagnostic HostDiagnostic
+	Level          string         `json:"level"`
+	Health         string         `json:"health"`
+	LastError      string         `json:"last_error"`
+	LastSync       time.Time      `json:"last_sync"`
+	Hostnames      []HostStatus   `json:"hostnames"`
+	Details        map[string]any `json:"details"`
 }

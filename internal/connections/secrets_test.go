@@ -19,6 +19,36 @@ func TestShouldKeepNumericConfigPrecisionDuringRedaction(t *testing.T) {
 	}
 }
 
+func TestShouldPreserveOnlyTrustedDiagnosticProvenanceAndRedactItsValues(t *testing.T) {
+	cfg := Config{Secrets: map[string]string{"token": "retry"}}
+	trusted := WithHostDiagnostic(Status{Health: "down"}, HostOpenFailed)
+	if got := SanitizeStatus(cfg, Descriptor{}, trusted); got.LastError != "open connection failed" {
+		t.Fatalf("trusted diagnostic=%+v", got)
+	}
+	trusted = WithHostDiagnostic(Status{Health: "down"}, HostReloadCanceled)
+	if got := SanitizeStatus(cfg, Descriptor{}, trusted); strings.Contains(got.LastError, "retry") || !strings.Contains(got.LastError, "canceled before admission") {
+		t.Fatalf("trusted redaction=%+v", got)
+	}
+	forged := newRedactor(Config{}, nil, nil).status(WithHostDiagnostic(Status{Health: "down"}, HostOpenFailed))
+	if forged.hostDiagnostic != "" || SanitizeStatus(Config{}, Descriptor{}, forged).LastError != "connection provider reported an error" {
+		t.Fatalf("provider forged host provenance=%+v", forged)
+	}
+	var payload Status
+	if err := json.Unmarshal([]byte(`{"hostDiagnostic":"open connection failed","last_error":"open connection failed"}`), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got := SanitizeStatus(Config{}, Descriptor{}, payload); got.LastError != "connection provider reported an error" || got.hostDiagnostic != "" {
+		t.Fatalf("JSON forged provenance=%+v", got)
+	}
+	if got := WithHostDiagnostic(Status{}, HostDiagnostic("credential-value")); strings.Contains(got.LastError, "credential-value") {
+		t.Fatal("non-allowlisted host text escaped")
+	}
+	raw, err := json.Marshal(trusted)
+	if err != nil || strings.Contains(string(raw), "hostDiagnostic") || strings.Contains(string(raw), "host_diagnostic") {
+		t.Fatalf("private provenance exposed=%s %v", raw, err)
+	}
+}
+
 func TestShouldBindSecretsToConnectionAndOrg(t *testing.T) {
 	box, err := secrets.New(make([]byte, 32))
 	if err != nil {

@@ -25,17 +25,25 @@ type HubOptions struct {
 }
 
 type Hub struct {
-	opts      HubOptions
-	mu        sync.RWMutex
-	ctx       context.Context
-	cancel    context.CancelFunc
-	closed    bool
-	started   bool
-	stop      chan struct{}
-	admission chan struct{}
-	runs      map[string]*instanceRun
-	statuses  map[string]Status
-	all       map[*instanceRun]bool
+	opts           HubOptions
+	mu             sync.RWMutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	closed         bool
+	started        bool
+	stop           chan struct{}
+	admission      chan struct{}
+	runs           map[string]*instanceRun
+	statuses       map[string]Status
+	statusRecords  map[string]store.Connection
+	reloadFailures map[string]failedReload
+	epochs         map[string]uint64
+	all            map[*instanceRun]bool
+}
+
+type failedReload struct {
+	expected store.Connection
+	status   Status
 }
 
 type instanceRun struct {
@@ -76,7 +84,7 @@ func NewHub(opts HubOptions) *Hub {
 	if opts.DrainTimeout <= 0 {
 		opts.DrainTimeout = 5 * time.Second
 	}
-	return &Hub{opts: opts, stop: make(chan struct{}), admission: make(chan struct{}, 1), runs: make(map[string]*instanceRun), statuses: make(map[string]Status), all: make(map[*instanceRun]bool)}
+	return &Hub{opts: opts, stop: make(chan struct{}), admission: make(chan struct{}, 1), runs: make(map[string]*instanceRun), statuses: make(map[string]Status), statusRecords: make(map[string]store.Connection), reloadFailures: make(map[string]failedReload), epochs: make(map[string]uint64), all: make(map[*instanceRun]bool)}
 }
 
 func (h *Hub) Start(ctx context.Context) error {
@@ -143,7 +151,13 @@ func (h *Hub) ReloadIfCurrent(ctx context.Context, expected store.Connection) er
 }
 
 func (h *Hub) reload(ctx context.Context, connectionID string, expected *store.Connection) error {
+	h.mu.RLock()
+	epoch := h.epochs[connectionID]
+	h.mu.RUnlock()
 	if err := h.enter(ctx); err != nil {
+		if expected != nil {
+			h.recordAdmissionFailure(*expected, epoch, err)
+		}
 		return err
 	}
 	defer h.leave()
@@ -170,6 +184,9 @@ func (h *Hub) reload(ctx context.Context, connectionID string, expected *store.C
 		return errors.New("load connection failed")
 	}
 	if errors.Is(err, store.ErrNotFound) || record == nil {
+		h.mu.Lock()
+		delete(h.statusRecords, connectionID)
+		h.mu.Unlock()
 		old := h.replace(connectionID, nil, downStatus(ErrNotConnected.Error()))
 		h.waitClosed(loadCtx, old)
 		return loadCtx.Err()
@@ -178,6 +195,7 @@ func (h *Hub) reload(ctx context.Context, connectionID string, expected *store.C
 		return store.ErrConflict
 	}
 	if pending {
+		h.bindStatusRecord(*record)
 		h.mu.Lock()
 		h.statuses[connectionID] = downStatus("previous connection generation is still draining; retry sync or restart the server")
 		h.mu.Unlock()
@@ -187,6 +205,7 @@ func (h *Hub) reload(ctx context.Context, connectionID string, expected *store.C
 		return h.failLoad(connectionID, "invalid connection identity")
 	}
 	old := h.replace(connectionID, nil, Status{Health: "unknown"})
+	h.bindStatusRecord(*record)
 	if err := h.waitRetired(loadCtx, old); err != nil {
 		h.mu.Lock()
 		h.statuses[connectionID] = downStatus("connection reload could not drain the previous generation; retry sync or restart the server")
@@ -209,6 +228,7 @@ func (h *Hub) reload(ctx context.Context, connectionID string, expected *store.C
 	if expected != nil && !store.SameConnectionInput(*record, *expected) {
 		return store.ErrConflict
 	}
+	h.bindStatusRecord(*record)
 	entry, ok := h.opts.Registry.lookup(record.Type)
 	if !ok {
 		return h.failLoad(connectionID, "unknown connection type")
@@ -260,10 +280,53 @@ func (h *Hub) failLoad(id, message string) error {
 	return errors.New(message)
 }
 
-func downStatus(message string) Status { return Status{Health: "down", LastError: message} }
+func downStatus(message string) Status {
+	return WithHostDiagnostic(Status{Health: "down"}, HostDiagnostic(message))
+}
+
+func (h *Hub) recordAdmissionFailure(expected store.Connection, epoch uint64, cause error) {
+	if h.opts.Deps.Data == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), h.opts.DrainTimeout)
+	defer cancel()
+	current, err := h.opts.Deps.Data.GetConnection(ctx, expected.ID)
+	if err != nil || current == nil || !store.SameConnectionInput(*current, expected) {
+		return
+	}
+	diagnostic := HostReloadUnavailable
+	if errors.Is(cause, context.Canceled) {
+		diagnostic = HostReloadCanceled
+	} else if errors.Is(cause, context.DeadlineExceeded) {
+		diagnostic = HostReloadTimedOut
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	run := h.runs[expected.ID]
+	if h.closed || h.epochs[expected.ID] != epoch || run != nil && store.SameConnectionInput(run.record, expected) {
+		return
+	}
+	expected.Config = append([]byte(nil), expected.Config...)
+	expected.SecretsEnc = append([]byte(nil), expected.SecretsEnc...)
+	expected.State = nil
+	h.reloadFailures[expected.ID] = failedReload{expected: expected, status: WithHostDiagnostic(Status{Health: "down"}, diagnostic)}
+}
+
+func (h *Hub) bindStatusRecord(record store.Connection) {
+	record.Config = append([]byte(nil), record.Config...)
+	record.SecretsEnc = append([]byte(nil), record.SecretsEnc...)
+	record.State = nil
+	h.mu.Lock()
+	if !h.closed {
+		h.statusRecords[record.ID] = record
+	}
+	h.mu.Unlock()
+}
 
 func (h *Hub) replace(id string, next *instanceRun, status Status) *instanceRun {
 	h.mu.Lock()
+	h.epochs[id]++
+	delete(h.reloadFailures, id)
 	old := h.runs[id]
 	delete(h.runs, id)
 	if next != nil {
@@ -385,7 +448,7 @@ func (h *Hub) syncLoop(run *instanceRun) {
 		}
 		if err != nil {
 			status.Health = "down"
-			status.LastError = ErrSyncFailed.Error()
+			status = WithHostDiagnostic(status, HostSyncFailed)
 		}
 		status.LastSync = time.Now().UTC()
 		h.mu.Lock()
@@ -444,9 +507,13 @@ func (h *Hub) sync(ctx context.Context, connectionID string, expected *store.Con
 
 func (h *Hub) Status(connectionID string) Status {
 	h.mu.RLock()
+	failure, failedReload := h.reloadFailures[connectionID]
 	run := h.runs[connectionID]
 	cached, exists := h.statuses[connectionID]
 	h.mu.RUnlock()
+	if failedReload {
+		return cloneSafeStatus(&redactor{}, failure.status)
+	}
 	if run == nil {
 		if exists {
 			return cloneSafeStatus(&redactor{}, cached)
@@ -465,17 +532,43 @@ func (h *Hub) Status(connectionID string) Status {
 		status.LastSync = cached.LastSync
 		if cached.LastError != "" {
 			status.LastError = cached.LastError
+			status.hostDiagnostic = cached.hostDiagnostic
 			status.Health = cached.Health
 		}
 	}
 	return status
 }
 
-func cloneSafeStatus(redactor *redactor, status Status) Status {
-	lastError := status.LastError
-	status = redactor.status(status)
-	status.LastError = lastError
+func (h *Hub) StatusIfCurrent(expected store.Connection) Status {
+	h.mu.RLock()
+	run := h.runs[expected.ID]
+	failure, failed := h.reloadFailures[expected.ID]
+	statusRecord, recorded := h.statusRecords[expected.ID]
+	cached := h.statuses[expected.ID]
+	loaded := run != nil && store.SameConnectionInput(run.record, expected)
+	h.mu.RUnlock()
+	if !loaded {
+		if failed && store.SameConnectionInput(failure.expected, expected) {
+			return cloneSafeStatus(&redactor{}, failure.status)
+		}
+		if recorded && store.SameConnectionInput(statusRecord, expected) && cached.hostDiagnostic != "" {
+			return cloneSafeStatus(&redactor{}, cached)
+		}
+		return WithHostDiagnostic(Status{Health: "down"}, HostConfigurationPending)
+	}
+	status := h.Status(expected.ID)
+	h.mu.RLock()
+	run = h.runs[expected.ID]
+	loaded = run != nil && store.SameConnectionInput(run.record, expected)
+	h.mu.RUnlock()
+	if !loaded {
+		return WithHostDiagnostic(Status{Health: "down"}, HostConfigurationPending)
+	}
 	return status
+}
+
+func cloneSafeStatus(redactor *redactor, status Status) Status {
+	return redactor.hostStatus(status)
 }
 
 func (h *Hub) Trigger(connectionID string) {
@@ -507,6 +600,8 @@ func (h *Hub) Close() {
 	}
 	h.runs = make(map[string]*instanceRun)
 	h.statuses = make(map[string]Status)
+	h.statusRecords = make(map[string]store.Connection)
+	h.reloadFailures = make(map[string]failedReload)
 	h.mu.Unlock()
 	if cancel != nil {
 		cancel()

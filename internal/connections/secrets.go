@@ -31,7 +31,7 @@ func CloneConfig(cfg Config) Config {
 }
 
 func SanitizeStatus(cfg Config, descriptor Descriptor, status Status) Status {
-	return newRedactor(cfg, nil, descriptor.Fields).status(status)
+	return newRedactor(cfg, nil, descriptor.Fields).hostStatus(status)
 }
 
 func SanitizeJSON(cfg Config, descriptor Descriptor, raw json.RawMessage) (json.RawMessage, error) {
@@ -189,6 +189,7 @@ func (r *redactor) value(value any) any {
 }
 
 func (r *redactor) status(status Status) Status {
+	status.hostDiagnostic = ""
 	status.Level = r.text(status.Level)
 	status.Health = r.text(status.Health)
 	if status.LastError != "" {
@@ -213,10 +214,20 @@ func (r *redactor) status(status Status) Status {
 		}
 		if err != nil {
 			status.Details = nil
-			status.LastError = "invalid connection provider status"
+			status = WithHostDiagnostic(status, HostInvalidProviderStatus)
 		} else {
 			status.Details = r.value(details).(map[string]any)
 		}
+	}
+	return status
+}
+
+func (r *redactor) hostStatus(status Status) Status {
+	diagnostic := status.hostDiagnostic
+	status = r.status(status)
+	if diagnostic != "" {
+		status = WithHostDiagnostic(status, diagnostic)
+		status.LastError = r.text(status.LastError)
 	}
 	return status
 }

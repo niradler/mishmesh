@@ -449,11 +449,25 @@ func (s *Store) deleteConnection(ctx context.Context, id string, expected *store
 			}
 		}
 	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM connections WHERE id = $1`, id)
+	query := `DELETE FROM connections WHERE id = $1`
+	arguments := []any{id}
+	if expected != nil {
+		query = `DELETE FROM connections WHERE id = $1 AND org_id = $2 AND type = $3 AND name = $4 AND config = $5 AND secrets_enc IS NOT DISTINCT FROM $6 AND updated_at = $7`
+		arguments = []any{expected.ID, expected.OrgID, expected.Type, expected.Name, string(expected.Config), nullBytes(expected.SecretsEnc), ns(expected.UpdatedAt)}
+	}
+	res, err := tx.ExecContext(ctx, query, arguments...)
 	if err != nil {
 		return wrap("delete connection", err)
 	}
-	if err := affected("delete connection", res); err != nil {
+	if expected != nil {
+		count, err := res.RowsAffected()
+		if err != nil {
+			return wrap("delete connection", err)
+		}
+		if count == 0 {
+			return store.ErrConflict
+		}
+	} else if err := affected("delete connection", res); err != nil {
 		return err
 	}
 	return wrap("delete connection", tx.Commit())

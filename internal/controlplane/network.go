@@ -43,6 +43,10 @@ type ConnectionControl interface {
 	Trigger(connectionID string)
 }
 
+type ConnectionSnapshotStatus interface {
+	StatusIfCurrent(expected store.Connection) connections.Status
+}
+
 func (a *API) SetServices(s ServiceControl) {
 	a.services = s
 }
