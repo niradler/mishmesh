@@ -345,6 +345,9 @@ func (i *instance) manage(ctx context.Context, state *ownershipState, desired ma
 	if err != nil || prefs == nil {
 		return errors.New("Tailscale Service advertisement observation failed")
 	}
+	if err := protectAdvertisements(prefs, state, desired); err != nil {
+		return err
+	}
 	for name, endpoint := range desired {
 		if owned := state.OwnedServices[name]; owned != "" && owned != endpoint {
 			return errors.New("Tailscale service belongs to another endpoint")
@@ -352,9 +355,6 @@ func (i *instance) manage(ctx context.Context, state *ownershipState, desired ma
 		current := serve.Services[tailcfg.ServiceName(name)]
 		if current != nil && (state.Serve[name] == "" || state.Serve[name] != fingerprint(current)) {
 			return errors.New("Tailscale Serve entry is owned externally or was edited externally")
-		}
-		if slices.Contains(prefs.AdvertiseServices, name) && !state.Advertised[name] {
-			return errors.New("Tailscale Service advertisement is owned externally")
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(desired)) {
@@ -442,12 +442,17 @@ func (i *instance) manage(ctx context.Context, state *ownershipState, desired ma
 			if err := i.api.CheckServiceHosts(ctx, tailnet, name, stableID); err != nil {
 				return err
 			}
+			if err := i.protectAdvertisements(ctx, state, desired); err != nil {
+				return err
+			}
 			if err := i.api.DeleteService(ctx, tailnet, name); err != nil {
 				return err
 			}
 			if observed, err := i.api.GetService(ctx, tailnet, name); err != nil || observed != nil {
 				return errors.New("Tailscale Service deletion was not observed")
 			}
+		} else if err := i.protectAdvertisements(ctx, state, desired); err != nil {
+			return err
 		}
 		delete(state.OwnedServices, name)
 		delete(state.API, name)
@@ -468,6 +473,9 @@ func (i *instance) applyServe(ctx context.Context, state *ownershipState, desire
 		}
 		if current.ETag == "" {
 			return errors.New("Tailscale Serve ETag is required")
+		}
+		if err := i.protectAdvertisements(ctx, state, desired); err != nil {
+			return err
 		}
 		next := current.Clone()
 		if next.Services == nil {
@@ -529,6 +537,9 @@ func (i *instance) applyAdvertisements(ctx context.Context, state *ownershipStat
 	if err != nil || current == nil {
 		return errors.New("Tailscale Service advertisement observation failed")
 	}
+	if err := protectAdvertisements(current, state, desired); err != nil {
+		return err
+	}
 	next := append([]string(nil), current.AdvertiseServices...)
 	added, removed := []string{}, []string{}
 	for _, name := range slices.Sorted(maps.Keys(state.OwnedServices)) {
@@ -568,6 +579,25 @@ func (i *instance) applyAdvertisements(ctx context.Context, state *ownershipStat
 		}
 	}
 	return nil
+}
+
+func protectAdvertisements(prefs *ipn.Prefs, state *ownershipState, desired map[string]string) error {
+	for _, name := range prefs.AdvertiseServices {
+		_, owned := state.OwnedServices[name]
+		_, wanted := desired[name]
+		if (owned || wanted) && !state.Advertised[name] {
+			return errors.New("Tailscale Service advertisement is owned externally; resolve its ownership in Tailscale before publication or cleanup")
+		}
+	}
+	return nil
+}
+
+func (i *instance) protectAdvertisements(ctx context.Context, state *ownershipState, desired map[string]string) error {
+	prefs, err := i.local.GetPrefs(ctx)
+	if err != nil || prefs == nil {
+		return errors.New("Tailscale Service advertisement observation failed")
+	}
+	return protectAdvertisements(prefs, state, desired)
 }
 
 func ReconcileServices(current, owned, desired map[string]string) (map[string]string, error) {

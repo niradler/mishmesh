@@ -51,6 +51,8 @@ type fakeTailscale struct {
 	apiPutFailure                            bool
 	apiReadEdit                              bool
 	servePostFailure                         bool
+	prefsPatchFailure                        bool
+	prefsReads, advertiseAtPrefsRead         int
 }
 
 func newFakeTailscale(t *testing.T) *fakeTailscale {
@@ -106,8 +108,18 @@ func (f *fakeTailscale) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(f.serve)
 	case "/localapi/v0/prefs":
+		if r.Method == http.MethodGet {
+			f.prefsReads++
+			if f.advertiseAtPrefsRead > 0 && f.prefsReads == f.advertiseAtPrefsRead {
+				f.prefs.AdvertiseServices = append(f.prefs.AdvertiseServices, "svc:notes")
+			}
+		}
 		if r.Method == http.MethodPatch {
 			f.prefsPatches++
+			if f.prefsPatchFailure {
+				http.Error(w, "advertisement failed", 500)
+				return
+			}
 			var masked ipn.MaskedPrefs
 			if json.NewDecoder(r.Body).Decode(&masked) != nil || !masked.AdvertiseServicesSet {
 				http.Error(w, "invalid", 400)
@@ -471,6 +483,110 @@ func TestShouldProtectOtherOrganizationReferenceDuringOwnedCleanup(t *testing.T)
 	status, err := instance.Sync(context.Background())
 	if err == nil || !strings.Contains(status.LastError, "claimed") || fake.writes != before || fake.services["svc:notes"].Name == "" || fake.serve.Services["svc:notes"] == nil {
 		t.Fatalf("status=%+v err=%v", status, err)
+	}
+}
+
+func TestShouldProtectForeignAdvertisementDuringPartialCleanup(t *testing.T) {
+	fake, _, data, config, instance := newFixture(t, "managed")
+	fake.servePostFailure = true
+	if _, err := instance.Sync(context.Background()); err == nil {
+		t.Fatal("expected partial creation failure")
+	}
+	fake.servePostFailure = false
+	fake.prefs.AdvertiseServices = append(fake.prefs.AdvertiseServices, "svc:notes")
+	data.endpoints[0].Policy.Access = nil
+	before := fake.writes
+	status, err := instance.Sync(context.Background())
+	if !slices.Contains(fake.prefs.AdvertiseServices, "svc:notes") {
+		t.Fatal("foreign advertisement changed")
+	}
+	if fake.services["svc:notes"].Name == "" {
+		t.Fatalf("deleted service despite observed foreign advertisement; sync error=%v", err)
+	}
+	if err == nil || status.Health != "degraded" || fake.writes != before {
+		t.Fatalf("status=%+v err=%v writes=%d/%d", status, err, fake.writes, before)
+	}
+	record, _ := data.GetConnection(context.Background(), config.Record.ID)
+	var state ownershipState
+	_ = json.Unmarshal(record.State, &state)
+	if state.OwnedServices["svc:notes"] != "ep-notes" || state.API["svc:notes"] == "" || state.Advertised["svc:notes"] {
+		t.Fatalf("ownership changed: %s", record.State)
+	}
+}
+
+func TestShouldProtectForeignAdvertisementAfterFailedCleanup(t *testing.T) {
+	fake, _, data, config, instance := newFixture(t, "managed")
+	fake.servePostFailure = true
+	if _, err := instance.Sync(context.Background()); err == nil {
+		t.Fatal("expected partial creation failure")
+	}
+	fake.servePostFailure = false
+	data.endpoints[0].Policy.Access = nil
+	fake.serviceHosts = map[string][]ServiceHost{"svc:notes": nil}
+	if _, err := instance.Sync(context.Background()); err == nil {
+		t.Fatal("expected unknown membership cleanup failure")
+	}
+	fake.serviceHosts = nil
+	fake.prefs.AdvertiseServices = append(fake.prefs.AdvertiseServices, "svc:notes")
+	before := fake.writes
+	status, err := instance.Sync(context.Background())
+	if err == nil || status.Health != "degraded" || fake.writes != before || fake.services["svc:notes"].Name == "" || !slices.Contains(fake.prefs.AdvertiseServices, "svc:notes") {
+		t.Fatalf("foreign advertisement did not protect retry: status=%+v err=%v", status, err)
+	}
+	record, _ := data.GetConnection(context.Background(), config.Record.ID)
+	var state ownershipState
+	_ = json.Unmarshal(record.State, &state)
+	if state.OwnedServices["svc:notes"] != "ep-notes" || state.API["svc:notes"] == "" {
+		t.Fatalf("ownership lost: %s", record.State)
+	}
+}
+
+func TestShouldRereadForeignAdvertisementBeforeEveryCleanupStage(t *testing.T) {
+	for _, read := range []int{2, 3, 4} {
+		t.Run(fmt.Sprint(read), func(t *testing.T) {
+			fake, _, data, config, instance := newFixture(t, "managed")
+			fake.servePostFailure = true
+			if _, err := instance.Sync(context.Background()); err == nil {
+				t.Fatal("expected partial creation failure")
+			}
+			fake.servePostFailure = false
+			data.endpoints[0].Policy.Access = nil
+			fake.prefsReads, fake.advertiseAtPrefsRead = 0, read
+			before := fake.writes
+			status, err := instance.Sync(context.Background())
+			if err == nil || status.Health != "degraded" || fake.writes != before || fake.services["svc:notes"].Name == "" || !slices.Contains(fake.prefs.AdvertiseServices, "svc:notes") {
+				t.Fatalf("cleanup ignored observed foreign claim: status=%+v err=%v reads=%d", status, err, fake.prefsReads)
+			}
+			record, _ := data.GetConnection(context.Background(), config.Record.ID)
+			var state ownershipState
+			_ = json.Unmarshal(record.State, &state)
+			if state.OwnedServices["svc:notes"] != "ep-notes" || state.API["svc:notes"] == "" {
+				t.Fatalf("ownership lost: %s", record.State)
+			}
+		})
+	}
+}
+
+func TestShouldRefuseLocalCleanupWhenForeignAdvertisementClaimsOwnedServeEntry(t *testing.T) {
+	fake, _, data, config, instance := newFixture(t, "managed")
+	fake.prefsPatchFailure = true
+	if _, err := instance.Sync(context.Background()); err == nil {
+		t.Fatal("expected advertisement creation failure")
+	}
+	fake.prefsPatchFailure = false
+	serve := fake.serve.Clone()
+	fake.prefs.AdvertiseServices = append(fake.prefs.AdvertiseServices, "svc:notes")
+	data.endpoints[0].Policy.Access = nil
+	before := fake.writes
+	status, err := instance.Sync(context.Background())
+	if err == nil || status.Health != "degraded" || fake.writes != before || !reflect.DeepEqual(fake.serve, serve) || fake.services["svc:notes"].Name == "" || !slices.Contains(fake.prefs.AdvertiseServices, "svc:notes") {
+		t.Fatalf("local cleanup disrupted foreign claim: status=%+v err=%v", status, err)
+	}
+	record, _ := data.GetConnection(context.Background(), config.Record.ID)
+	var state ownershipState
+	_ = json.Unmarshal(record.State, &state)
+	if state.API["svc:notes"] == "" || state.Serve["svc:notes"] == "" || state.Advertised["svc:notes"] {
+		t.Fatalf("ownership changed: %s", record.State)
 	}
 }
 
