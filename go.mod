@@ -4,7 +4,7 @@ go 1.26.9
 
 require (
 	github.com/alicebob/miniredis/v2 v2.39.0
-	github.com/cedar-policy/cedar-go v1.0.0
+	github.com/cedar-policy/cedar-go v1.8.0
 	github.com/coder/websocket v1.8.14
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.10.0
