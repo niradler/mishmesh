@@ -192,3 +192,43 @@ func TestShouldRejectWrongKeyForCurrentTypedConnection(t *testing.T) {
 		t.Fatalf("ciphertext changed: %v", err)
 	}
 }
+
+func TestShouldRejectIncompleteKnownSchemasBeforeCreatingKey(t *testing.T) {
+	for _, schema := range []string{
+		`CREATE TABLE orgs(id TEXT PRIMARY KEY,name TEXT)`,
+		`CREATE TABLE service_requires(service_id TEXT,requires_id TEXT)`,
+		`CREATE TABLE endpoint_aliases(hostname TEXT,endpoint_id TEXT)`,
+	} {
+		t.Run(schema, func(t *testing.T) {
+			directory := t.TempDir()
+			dsn := filepath.Join(directory, "incomplete.db")
+			db, err := sql.Open("sqlite", dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(schema); err != nil {
+				t.Fatal(err)
+			}
+			db.Close()
+			before, err := os.ReadFile(dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Server{DataDSN: dsn, SecretKeyFile: filepath.Join(directory, "absent.key")}
+			data, _, err := openDataStoreWithBox(cfg)
+			if data != nil {
+				data.Close()
+			}
+			if !errors.Is(err, store.ErrUnsupportedSchema) {
+				t.Fatalf("incomplete schema accepted or failed late: %v", err)
+			}
+			after, err := os.ReadFile(dsn)
+			if err != nil || string(before) != string(after) {
+				t.Fatalf("database changed: %v", err)
+			}
+			if _, err := os.Stat(cfg.SecretKeyFile); !os.IsNotExist(err) {
+				t.Fatalf("key created: %v", err)
+			}
+		})
+	}
+}

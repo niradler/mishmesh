@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -46,5 +47,42 @@ func TestShouldProbeCurrentCiphertextWithoutChangingPostgres(t *testing.T) {
 	cancel()
 	if _, err := HasEncryptedConnections(canceled, dsn, PoolConfig{}); err == nil {
 		t.Fatal("canceled probe succeeded")
+	}
+}
+
+func TestShouldRejectIncompleteKnownPostgresSchemasWithoutChangingThem(t *testing.T) {
+	for _, schema := range []string{
+		`CREATE TABLE orgs(id TEXT PRIMARY KEY,name TEXT)`,
+		`CREATE TABLE service_requires(service_id TEXT,requires_id TEXT)`,
+		`CREATE TABLE endpoint_aliases(hostname TEXT,endpoint_id TEXT)`,
+	} {
+		t.Run(schema, func(t *testing.T) {
+			dsn := freshDatabaseDSN(t)
+			db, err := sql.Open("pgx", dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(schema); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := HasEncryptedConnections(context.Background(), dsn, PoolConfig{}); !errors.Is(err, store.ErrUnsupportedSchema) {
+				t.Fatalf("incomplete schema probe: %v", err)
+			}
+			data, err := Open(dsn, PoolConfig{})
+			if data != nil {
+				data.Close()
+			}
+			if !errors.Is(err, store.ErrUnsupportedSchema) {
+				t.Fatalf("incomplete schema open: %v", err)
+			}
+			var tables, columns int
+			if err := db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema()`).Scan(&tables); err != nil || tables != 1 {
+				t.Fatalf("schema changed: tables=%d err=%v", tables, err)
+			}
+			if err := db.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema()`).Scan(&columns); err != nil || columns != 2 {
+				t.Fatalf("columns changed: columns=%d err=%v", columns, err)
+			}
+		})
 	}
 }

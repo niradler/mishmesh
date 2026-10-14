@@ -1,0 +1,15 @@
+# Clean-slate amendment independent review
+
+Initial verdict: **changes_requested** for amendment `635a7ad..eaa41ce07cd98e9993f0285573b62833d249537b`. Review is scoped to Nir's explicit clean-slate override; cancelled legacy conversion is not an acceptance requirement.
+
+## Blocking finding
+
+`internal/store/schema.go:15-18` guards existing columns only for endpoints/services/connections, leaving every other recognized Mishmesh table unchecked. Trigger: an existing SQLite database containing `orgs(id,name)` without `created_at`, or an incomplete `service_requires` table. ValidateSchema accepts it; the readonly ciphertext/key probe returns no encrypted connections and allows missing-key creation. SQLite Open then enables WAL and creates missing typed tables before ListOrgs fails on its missing column (or Requires operations fail later). This violates unsupported-schema refusal before journal/schema/key mutation. PostgreSQL shares the incomplete predicate, so its transaction can likewise initialize missing tables around an incompatible existing known table. Smallest correction: validate required columns for every known existing Mishmesh table while allowing absent tables for fresh initialization; add incomplete-org/Requires regressions proving unchanged database and no new key before refusal. Root confirmed the guard contract and owns reproduction/fix.
+
+## Other review results
+
+Inspected actual source diff for schema initialization/probes, shared-box current secret validation, deleted converters/Cedar rewrites, typed service imports/snapshots/comparisons, route/action remnants, authorization labels, current API fixtures and release/docs overrides. No other blocking amendment defect found. Fresh/current typed initialization/reopen remains in scope; unsupported historical schemas and literal fixtures are rejection evidence only. Sensitive import output remains masked; sealed current connection secrets still use strict OpenConfig with organization/connection AAD and matching shared key. Original historical reports remain explicitly superseded rather than claimed as current conversion behavior.
+
+Independently executed exact SQLite literal unsupported-schema rejection PASS0.735s and current startup unsupported/key/strict malformed-secret tests PASS1.528s; diff whitespace PASS. Existing tests do not cover the omitted table guard. Root's fresh/current races, no-skip isolated PostgreSQL, Python typed-format regressions, builds/vet/web checks were reused. Root additionally reports actual final-binary current database/key browser reopen and retired API/page checks PASS; this is current persistence evidence, not migration proof.
+
+Effective ORC context/reviewer guidance refreshed; manual task tojef4. No implementation edits, extra agents, production changes, publication, deployment, cleanup, memory/wiki write or fabricated flow_report. Prior scheduler dispatch gap persists. Final scoped correction review follows the root fix; original verdict remains recorded here.
