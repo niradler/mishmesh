@@ -16,4 +16,4 @@ Independent whole-branch review of124e5b1..54e1c56 requested three concrete chan
 - Fresh browser session and rebuilt final Windows binary reopen the retained database/key and verify config/secret/Access/Connect/Requires/UDP persistence. task-20-browser-final.log PASS. Actual Cloudflare detail guidance check task-20-browser-permissions.log PASS.
 - No storage/migration changes: reuse full isolated live PostgreSQL/SQLite migration evidence, no redundant database rerun or cleanup.
 
-Scoped independent rereview pending after this correction commit. ORC flow dispatch stayed pending with loop off; own run halted, effective reviewer scope executed manually. No fabricated flow verdict, shared daemon/config mutation or production operation.
+Scoped independent rereview APPROVED c63a46f; all three findings addressed and no new blocking defect. Exact new regressions independently PASS1.473s, correction diffcheck PASS. task-20-rereview.md records the verdict. ORC flow dispatch stayed pending with loop off; own run halted, effective reviewer scope executed manually. No fabricated flow verdict, shared daemon/config mutation or production operation.

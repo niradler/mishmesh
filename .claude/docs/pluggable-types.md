@@ -1,6 +1,6 @@
 # Pluggable access — implementation checkpoint
 
-Updated 2026-10-14. Implementation and validation through Task19 are complete. Task20 release artifacts are prepared; final independent whole-branch review is pending. Nothing published or deployed.
+Updated 2026-10-14. Tasks13,14,3,15–20 are complete: implementation, validation, release preparation and independent whole-branch review. Validated product commit c63a46f. Nothing published or deployed.
 
 ## Active continuation
 
@@ -10,7 +10,7 @@ Tasks15–17 committed d9a562e: descriptor-driven services/Connections/Access UI
 
 Task18 committed817dd10: typed operational scripts, readonly snapshots, literal beta4 regression fixtures and API/service/connection docs. Five Python regressions pass. Private scripts stay ignored. Task19 committed6b50b6b: all Windows/Linux Go packages pass race checks using full-suite evidence plus corrected affected E2E reruns; vet, module tidy and12server/agent crossbuilds pass. Web build/lint/npm audit pass with0advisories. Dual-OS govulncheck has0reachable/imported-package findings and one unsuppressed unused OpenPGP module-only advisory. Fresh isolated PostgreSQL17 full suite passes without skips3.787s; final literal migration/concurrent-open/rollback/key/secret-shape matrix passes2.735s. Retained fixtures and exact reports/logs remain available.
 
-Task20 prepares proposed unused v0.1.0-beta.7, CHANGELOG, release-candidate.json, local draft PR body and lab-rollout.md. Exact remote tag/release absence was verified2026-10-14. Final independent review remains the only local completion step. Live account traffic, joined/tagged Tailscale host approvals/grants and second-client HTTPS proof, authorized publication/CI/tagging and target-specific rollout remain external gates.
+Task20 preparation54e1c56 includes proposed unused v0.1.0-beta.7, CHANGELOG, release-candidate.json, local draft PR body and lab-rollout.md. Exact remote tag/release absence was verified2026-10-14. Independent whole-branch review found three concrete issues: unavailable-provider config/runtime redaction, raw service topology diagnostics and missing Cloudflare Zone Read guidance. Root reproduced both disclosures, corrected all three in c63a46f and passed affected Windows/Linux races,12crossbuilds/vet/web build plus fresh browser/final-binary persistence reopening and the actual permission guidance check. Scoped independent rereview APPROVED c63a46f; no blocking findings remain. See task-20-review.md, task-20-fix-report.md and task-20-rereview.md. Live account traffic, joined/tagged Tailscale host approvals/grants and second-client HTTPS proof, authorized publication/CI/tagging and target-specific rollout remain external gates.
 
 ## Direction and done definition
 
@@ -21,7 +21,7 @@ Task20 prepares proposed unused v0.1.0-beta.7, CHANGELOG, release-candidate.json
 
 ## Where and source of truth
 
-- Current implementation: C:/Projects/products/mishmesh/.claude/worktrees/pluggable-access-main, feat/pluggable-access. Current validated product/test commit6b50b6b; review base124e5b10738587c2114a533fb43088a1c377f903.
+- Current implementation: C:/Projects/products/mishmesh/.claude/worktrees/pluggable-access-main, feat/pluggable-access. Current validated and independently approved product/test commit c63a46f84c6e01b70c4c79898189534eb89ae338; review base124e5b10738587c2114a533fb43088a1c377f903.
 - Main124e5b1 integrated with reviewed providers and service foundations. Conflicts resolved retaining both Connect+Access and privacy policy. Full combined Go race, vet and server/agent compile passed; no tracked file deletion or private lab file resurrection.
 - Integration390f77a independent merge-resolution spec/quality PASS. Task12 completedb52a297: original3+N1+N2 verified addressed; final scoped spec/quality PASS,0newfindings. Nir subsequently renewed execution through20; Tasks13–19 are now complete.
 - Parked cancelled Kubernetes: ../pluggable-types on feat/pluggable-types, uncommitted Task10 code and task-10-report.md retained. No reset/revert/delete/cleanup executed.
@@ -58,9 +58,9 @@ Task11 review found one Important cleanup issue after partial API creation/Serve
 - Live isolated PG migration and real browser feature/persistence flows pass. Cloudflare/tailnet HTTP fixtures prove contracts, not live account traffic. No publication/deployment or live second-client HTTPS claim.
 - Prior PostgreSQL fixture mishmesh-types-pg-1791842027 is stopped/retained and has a deliberate RED-test cycle. Use a fresh isolated fixture for full validation. Retain fixtures; avoid destructive cleanup.
 
-## Final local step
+## Completion and delivery
 
-Complete Task20 independent whole-branch review of the actual committed branch, fix demonstrated defects and rerun only affected checks. Record the verdict and final SHA here and in the SDD ledger. Reuse passing13–19 evidence. No kind gate or external write is part of local completion.
+Implementation, validation, release artifacts and final independent review are complete. There is no remaining local implementation step. The branch and draft PR/runbook are ready for an authorized publication/CI/release/rollout sequence. No kind gate or external write was part of local completion.
 
 ## Execution correction from Nir
 
@@ -90,4 +90,4 @@ Task19 reach-in regression preparation: existing streamAgent fake used full TCP 
 
 ## Immediate next action
 
-Finish Task20 review against the validated branch and prepared artifacts. ORC MCP and effective guidance are available; review-only flow is available and backend readiness was checked. agentapi localhost:3284 is unavailable; supported claude/codex backends are available. No native hook-enforcement parity is claimed. Retained fixtures/worktrees are preserved; nothing published or deployed.
+No further local implementation is pending. ORC MCP/effective guidance were available; its accepted review-only run remained queued while the agent loop was off and was halted without daemon/config changes. The declared independent review scope was completed manually using the native reviewer; no flow outcome was fabricated. agentapi localhost:3284 was unavailable. Native hook-enforcement parity is not claimed. Retained fixtures/worktrees are preserved; nothing published or deployed.
