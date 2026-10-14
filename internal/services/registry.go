@@ -40,6 +40,10 @@ func NewRegistry() *Registry {
 	return &Registry{types: make(map[string]DriverType)}
 }
 
+func NewBuiltinRegistry() *Registry {
+	return builtinRegistry()
+}
+
 func (r *Registry) Register(driver DriverType) error {
 	if driver == nil || (reflect.ValueOf(driver).Kind() == reflect.Pointer && reflect.ValueOf(driver).IsNil()) {
 		return errors.New("driver type is required")

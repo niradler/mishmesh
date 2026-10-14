@@ -596,8 +596,8 @@ func TestApplyKeepsRuntimeStateAndDropsRemoved(t *testing.T) {
 	renamed.Name = "website"
 	renamed.IdleTimeout = time.Hour
 	m.Apply([]Definition{renamed})
-	if builds != 2 {
-		t.Fatalf("changed definition must rebuild the driver: %d builds", builds)
+	if builds != 1 {
+		t.Fatalf("metadata-only edit rebuilt the runtime driver: %d builds", builds)
 	}
 	st, ok := m.Status("svc_1")
 	if !ok || st.State != StateRunning || st.Active != 1 || st.Name != "website" || st.IdleTimeout != time.Hour {

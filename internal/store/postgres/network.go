@@ -95,6 +95,13 @@ func (s *Store) CreateService(ctx context.Context, svc *store.Service) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := createServiceTx(ctx, tx, svc); err != nil {
+		return err
+	}
+	return wrap("create service", tx.Commit())
+}
+
+func createServiceTx(ctx context.Context, tx *sql.Tx, svc *store.Service) error {
 	spec, config, ready, err := serviceDocuments(svc)
 	if err != nil {
 		return err
@@ -109,7 +116,7 @@ func (s *Store) CreateService(ctx context.Context, svc *store.Service) error {
 	if err := replaceServiceReferences(ctx, tx, svc); err != nil {
 		return err
 	}
-	return wrap("create service", tx.Commit())
+	return nil
 }
 
 func serviceDocuments(svc *store.Service) (string, any, any, error) {
@@ -182,6 +189,13 @@ func (s *Store) UpdateService(ctx context.Context, svc *store.Service) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := updateServiceTx(ctx, tx, svc); err != nil {
+		return err
+	}
+	return wrap("update service", tx.Commit())
+}
+
+func updateServiceTx(ctx context.Context, tx *sql.Tx, svc *store.Service) error {
 	spec, config, ready, err := serviceDocuments(svc)
 	if err != nil {
 		return err
@@ -199,7 +213,7 @@ func (s *Store) UpdateService(ctx context.Context, svc *store.Service) error {
 	if err := replaceServiceReferences(ctx, tx, svc); err != nil {
 		return err
 	}
-	return wrap("update service", tx.Commit())
+	return nil
 }
 
 func replaceServiceReferences(ctx context.Context, tx *sql.Tx, svc *store.Service) error {
@@ -267,6 +281,13 @@ func (s *Store) DeleteService(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := deleteServiceTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return wrap("delete service", tx.Commit())
+}
+
+func checkServiceDeleteTx(ctx context.Context, tx *sql.Tx, id string) error {
 	var references int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM service_requires WHERE requires_id = $1`, id).Scan(&references); err != nil {
 		return wrap("check required service", err)
@@ -283,6 +304,13 @@ func (s *Store) DeleteService(ctx context.Context, id string) error {
 			return store.ErrConflict
 		}
 	}
+	return nil
+}
+
+func deleteServiceTx(ctx context.Context, tx *sql.Tx, id string) error {
+	if err := checkServiceDeleteTx(ctx, tx, id); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM services WHERE id = $1`, id)
 	if err != nil {
 		return wrap("delete service", err)
@@ -290,7 +318,7 @@ func (s *Store) DeleteService(ctx context.Context, id string) error {
 	if err := affected("delete service", res); err != nil {
 		return err
 	}
-	return wrap("delete service", tx.Commit())
+	return nil
 }
 
 func scanService(row interface{ Scan(...any) error }) (*store.Service, error) {

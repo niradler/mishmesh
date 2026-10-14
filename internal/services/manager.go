@@ -119,6 +119,8 @@ type Manager struct {
 	readyHold    time.Duration
 
 	applyMu       sync.Mutex
+	applyVersion  uint64
+	reserved      bool
 	reloadDone    chan struct{}
 	refreshSlot   chan struct{}
 	refreshing    bool
@@ -326,7 +328,9 @@ func (m *Manager) notify(changed bool) {
 }
 
 func (m *Manager) Acquire(id string) func() {
-	m.mu.Lock()
+	if err := m.lockAdmission(context.Background()); err != nil {
+		return func() {}
+	}
 	s, ok := m.services[id]
 	if !ok {
 		m.mu.Unlock()
@@ -439,6 +443,9 @@ func (m *Manager) runEnsure(s *service, call *ensureCall, def Definition, driver
 		state, stateErr := driver.State(stateCtx)
 		cancel()
 		retain = stateErr != nil || state != Stopped
+		if _, broken := driver.(brokenDriver); broken {
+			retain = false
+		}
 		failedState = state
 	}
 	var release []func()
@@ -447,7 +454,7 @@ func (m *Manager) runEnsure(s *service, call *ensureCall, def Definition, driver
 		release = m.detachRequirementsLocked(s, def.Requires)
 	} else {
 		s.lastError = err.Error()
-		if failedState == Running || failedState == Partial {
+		if retain || failedState == Running || failedState == Partial {
 			s.runtimeAlive = true
 		}
 		if !retain {
@@ -642,6 +649,10 @@ func (m *Manager) stopServiceIfEligible(ctx context.Context, s *service, idle bo
 			}
 		} else {
 			m.mu.Lock()
+			if idle && m.reserved {
+				m.mu.Unlock()
+				return nil
+			}
 		}
 		if m.services[s.def.ID] != s {
 			m.mu.Unlock()
@@ -733,15 +744,31 @@ func runtimeProtected(s *service) bool {
 }
 
 func driverDefinitionEqual(a, b Definition) bool {
-	return a.OrgID == b.OrgID && a.Driver == b.Driver && reflect.DeepEqual(a.Config, b.Config) && reflect.DeepEqual(a.Spec, b.Spec)
+	var left, right any
+	configEqual := reflect.DeepEqual(a.Config, b.Config)
+	if json.Unmarshal(a.Config, &left) == nil && json.Unmarshal(b.Config, &right) == nil {
+		configEqual = reflect.DeepEqual(left, right)
+	}
+	return a.OrgID == b.OrgID && a.Driver == b.Driver && configEqual && reflect.DeepEqual(a.Spec, b.Spec)
 }
 
 func (m *Manager) Apply(defs []Definition) {
+	m.mu.Lock()
+	version := m.applyVersion
+	m.mu.Unlock()
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 	m.mu.Lock()
+	if version != m.applyVersion {
+		m.mu.Unlock()
+		return
+	}
 	m.reloadDone = make(chan struct{})
 	m.mu.Unlock()
+	_ = m.applyReserved(context.Background(), defs, true)
+}
+
+func (m *Manager) applyReserved(ctx context.Context, defs []Definition, releaseAdmission bool) error {
 	type prepared struct {
 		def    Definition
 		driver Driver
@@ -751,7 +778,7 @@ func (m *Manager) Apply(defs []Definition) {
 	for _, def := range defs {
 		m.mu.Lock()
 		existing := m.services[def.ID]
-		same := existing != nil && reflect.DeepEqual(existing.def, def)
+		same := existing != nil && driverDefinitionEqual(existing.def, def)
 		m.mu.Unlock()
 		if same {
 			updates = append(updates, prepared{def: def})
@@ -777,7 +804,11 @@ func (m *Manager) Apply(defs []Definition) {
 			break
 		}
 		m.mu.Unlock()
-		<-wait
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	next := make(map[string]*service, len(defs))
 	changed := len(defs) != len(m.services)
@@ -801,7 +832,9 @@ func (m *Manager) Apply(defs []Definition) {
 		}
 		existing.def = def
 		existing.definitionError = ""
-		existing.driver = update.driver
+		if update.driver != nil {
+			existing.driver = update.driver
+		}
 		existing.version++
 		if update.err != nil {
 			err := fmt.Errorf("service %q: %w", def.Name, update.err)
@@ -820,6 +853,7 @@ func (m *Manager) Apply(defs []Definition) {
 		}
 	}
 	m.services = next
+	m.applyVersion++
 	for _, s := range next {
 		if s.state != StateRunning && s.state != StatePartial && len(s.requirements) == 0 {
 			continue
@@ -837,13 +871,20 @@ func (m *Manager) Apply(defs []Definition) {
 		reconcile = append(reconcile, call)
 		go m.runEnsure(s, call, s.def, s.driver, "", nil)
 	}
-	close(m.reloadDone)
-	m.reloadDone = nil
+	if releaseAdmission {
+		close(m.reloadDone)
+		m.reloadDone = nil
+	}
 	m.mu.Unlock()
 	m.notify(changed)
 	for _, call := range reconcile {
-		<-call.done
+		select {
+		case <-call.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+	return nil
 }
 
 func (m *Manager) Refresh(ctx context.Context) {

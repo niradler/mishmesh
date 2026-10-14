@@ -9,15 +9,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/services"
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/typedfields"
 )
 
 type serviceInput struct {
 	Name                string          `json:"name"`
 	Driver              string          `json:"driver"`
-	Spec                json.RawMessage `json:"spec"`
+	Config              json.RawMessage `json:"config"`
+	Ready               json.RawMessage `json:"ready"`
+	Requires            []string        `json:"requires"`
 	IdleTimeoutSeconds  int             `json:"idle_timeout_seconds"`
 	StartTimeoutSeconds int             `json:"start_timeout_seconds"`
 }
@@ -35,7 +37,10 @@ type serviceDTO struct {
 	ID                  string           `json:"id"`
 	Name                string           `json:"name"`
 	Driver              string           `json:"driver"`
-	Spec                services.Spec    `json:"spec"`
+	Config              json.RawMessage  `json:"config"`
+	Ready               json.RawMessage  `json:"ready"`
+	Requires            []string         `json:"requires"`
+	RequiredBy          []string         `json:"required_by"`
 	IdleTimeoutSeconds  int              `json:"idle_timeout_seconds"`
 	StartTimeoutSeconds int              `json:"start_timeout_seconds"`
 	CreatedAt           time.Time        `json:"created_at"`
@@ -46,23 +51,11 @@ type serviceDTO struct {
 
 const redactedEnvValue = "<redacted>"
 
-func redactExecEnv(spec services.Spec) services.Spec {
-	if spec.Exec == nil || len(spec.Exec.Env) == 0 {
-		return spec
-	}
-	execSpec := *spec.Exec
-	execSpec.Env = make(map[string]string, len(spec.Exec.Env))
-	for key := range spec.Exec.Env {
-		execSpec.Env[key] = redactedEnvValue
-	}
-	spec.Exec = &execSpec
-	return spec
-}
-
 func (a *API) toServiceDTO(r *http.Request, rec *store.Service, linked []*store.Endpoint) serviceDTO {
-	spec, err := services.DecodeSpec(rec.Spec)
-	if !a.permitted(r, authz.ActionHostExec) {
-		spec = redactExecEnv(spec)
+	def, err := services.FromRecordWithRegistry(rec, a.driverRegistry())
+	config := def.Config
+	if driver, found := a.driverRegistry().Lookup(def.Driver); found {
+		config, err = typedfields.Redact(driver.Describe().Fields, config)
 	}
 	status := serviceStatusDTO{State: services.StateUnknown, UpdatedAt: rec.UpdatedAt}
 	if err != nil {
@@ -74,12 +67,23 @@ func (a *API) toServiceDTO(r *http.Request, rec *store.Service, linked []*store.
 				LastError: st.LastError, StartedBy: st.StartedBy, UpdatedAt: st.UpdatedAt}
 		}
 	}
+	if status.LastError != "" {
+		status.LastError = "service operation failed; check the service configuration and server diagnostics"
+	}
 	ids := make([]string, 0, len(linked))
 	for _, ep := range linked {
 		ids = append(ids, ep.ID)
 	}
+	requiredBy := []string{}
+	if dependents, listErr := a.data.ListServiceDependents(r.Context(), rec.OrgID, rec.ID); listErr == nil {
+		for _, dependent := range dependents {
+			requiredBy = append(requiredBy, dependent.ID)
+		}
+	}
+	ready, _ := json.Marshal(def.Ready)
 	return serviceDTO{
-		ID: rec.ID, Name: rec.Name, Driver: rec.Driver, Spec: spec,
+		ID: rec.ID, Name: rec.Name, Driver: def.Driver, Config: config, Ready: ready,
+		Requires: append([]string{}, rec.Requires...), RequiredBy: requiredBy,
 		IdleTimeoutSeconds: rec.IdleTimeoutSeconds, StartTimeoutSeconds: rec.StartTimeoutSeconds,
 		CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, Status: status, Endpoints: ids,
 	}
@@ -103,8 +107,17 @@ func (a *API) reloadServices(ctx context.Context) error {
 	if a.services == nil {
 		return nil
 	}
-	a.servicesMu.Lock()
+	if err := a.lockServiceMutation(ctx); err != nil {
+		return err
+	}
 	defer a.servicesMu.Unlock()
+	return a.reloadServicesLocked(ctx)
+}
+
+func (a *API) reloadServicesLocked(ctx context.Context) error {
+	if a.services == nil {
+		return nil
+	}
 	recs, err := a.data.ListAllServices(ctx)
 	if err != nil {
 		return fmt.Errorf("list services: %w", err)
@@ -131,7 +144,7 @@ func (a *API) reloadServices(ctx context.Context) error {
 	}
 	defs := make([]services.Definition, 0, len(recs))
 	for _, rec := range recs {
-		def, err := services.FromRecord(rec)
+		def, err := services.FromRecordWithRegistry(rec, a.driverRegistry())
 		if err != nil {
 			a.log.Error("service skipped", "id", rec.ID, "org", rec.OrgID, "err", err)
 			continue
@@ -160,60 +173,62 @@ func (a *API) scopedService(w http.ResponseWriter, r *http.Request) (*store.Serv
 
 func (a *API) buildService(w http.ResponseWriter, r *http.Request, existing *store.Service) (*store.Service, bool) {
 	var in serviceInput
-	if !decodeJSON(w, r, &in) {
+	if !decodeConnectionJSON(w, r, &in) {
 		return nil, false
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	in.Driver = strings.TrimSpace(in.Driver)
-	spec, err := services.DecodeSpec(in.Spec)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return nil, false
-	}
-	hostCommands := services.UsesHostCommands(in.Driver, spec)
-	spec = services.Normalize(in.Driver, spec)
-	if err := services.Validate(in.Name, in.Driver, spec, in.IdleTimeoutSeconds, in.StartTimeoutSeconds); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return nil, false
-	}
-	if existing != nil && storedUsesHostCommands(existing) {
-		hostCommands = true
-	}
-	if hostCommands {
-		if err := a.hostAccess(r); err != nil {
-			writeError(w, http.StatusForbidden, err.Error())
-			return nil, false
-		}
-	}
-	raw, err := json.Marshal(spec)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "spec: "+err.Error())
-		return nil, false
-	}
 	now := a.now()
 	rec := &store.Service{
 		ID: store.NewID("svc"), OrgID: a.orgScope(r), CreatedAt: now,
-		Name: in.Name, Driver: in.Driver, Spec: raw,
+		Name: in.Name, Driver: in.Driver, Config: in.Config, Ready: in.Ready, Requires: in.Requires,
 		IdleTimeoutSeconds: in.IdleTimeoutSeconds, StartTimeoutSeconds: in.StartTimeoutSeconds, UpdatedAt: now,
 	}
 	if existing != nil {
 		rec.ID, rec.OrgID, rec.CreatedAt = existing.ID, existing.OrgID, existing.CreatedAt
+	}
+	driver, found := a.driverRegistry().Lookup(rec.Driver)
+	if !found {
+		writeError(w, http.StatusBadRequest, "unknown service driver")
+		return nil, false
+	}
+	if err := preserveServiceSecrets(driver.Describe().Fields, rec, existing); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, false
+	}
+	if _, err := services.FromRecordWithRegistry(rec, a.driverRegistry()); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid service definition: "+err.Error())
+		return nil, false
+	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Config, &values); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid service config")
+		return nil, false
+	}
+	for _, field := range driver.Describe().Fields {
+		if field.Kind != "connection" {
+			continue
+		}
+		var id string
+		if err := json.Unmarshal(values[field.Key], &id); err != nil || id == "" {
+			continue
+		}
+		connection, err := a.data.GetConnection(r.Context(), id)
+		if err != nil || connection.OrgID != rec.OrgID || connection.Type != field.ConnType {
+			writeError(w, http.StatusBadRequest, "connection must reference a matching connection in this organization")
+			return nil, false
+		}
+		rec.ConnectionIDs = append(rec.ConnectionIDs, id)
 	}
 	return rec, true
 }
 
 func (a *API) writeServiceErr(w http.ResponseWriter, err error, name string) bool {
 	if errors.Is(err, store.ErrConflict) {
-		writeError(w, http.StatusConflict, fmt.Sprintf("a service named %q already exists in this org", name))
+		writeError(w, http.StatusConflict, "service name already exists or references changed; reload and retry")
 		return true
 	}
 	return a.handleErr(w, err)
-}
-
-func (a *API) afterServiceChange(r *http.Request) {
-	if err := a.reloadServices(r.Context()); err != nil {
-		a.log.Error("reload services after change failed", "err", err)
-	}
 }
 
 func (a *API) respondService(w http.ResponseWriter, r *http.Request, status int, rec *store.Service) {
@@ -250,19 +265,61 @@ func (a *API) getServiceHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) createServiceHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
+		return
+	}
+	defer a.servicesMu.Unlock()
 	rec, ok := a.buildService(w, r, nil)
 	if !ok {
 		return
 	}
-	if a.writeServiceErr(w, a.data.CreateService(r.Context(), rec), rec.Name) {
+	expected, definitions, ok := a.authorizeServiceGraph(w, r, rec, nil)
+	if !ok {
+		return
+	}
+	err := a.reserveService(r, definitions, func(reservation services.LifecycleReservation) error {
+		snapshots, ok := a.data.(store.ServiceSnapshotStore)
+		if !ok {
+			return errors.New("service snapshot transactions are unavailable")
+		}
+		if err := snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, expected, func(mutation store.ServiceMutation) error {
+			return mutation.CreateService(r.Context(), rec)
+		}); err != nil {
+			return err
+		}
+		if reservation == nil {
+			return nil
+		}
+		return snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, append(expected, rec), func(mutation store.ServiceMutation) error {
+			records, err := mutation.ListAllServices(r.Context())
+			if err != nil {
+				return err
+			}
+			defs, err := a.serviceDefinitions(r.Context(), mutation, records)
+			if err != nil {
+				return err
+			}
+			return reservation.Apply(defs)
+		})
+	})
+	if a.writeServiceErr(w, err, rec.Name) {
 		return
 	}
 	a.audit(r, "service.create", rec.ID, rec.Name)
-	a.afterServiceChange(r)
 	a.respondService(w, r, http.StatusCreated, rec)
 }
 
 func (a *API) updateServiceHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
+		return
+	}
+	defer a.servicesMu.Unlock()
 	existing, ok := a.scopedService(w, r)
 	if !ok {
 		return
@@ -271,29 +328,106 @@ func (a *API) updateServiceHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if a.writeServiceErr(w, a.data.UpdateService(r.Context(), rec), rec.Name) {
+	expected, definitions, ok := a.authorizeServiceGraph(w, r, rec, existing)
+	if !ok {
+		return
+	}
+	proposed, _ := services.FromRecordWithRegistry(rec, a.driverRegistry())
+	restart := r.URL.Query().Get("restart") == "true"
+	if value := r.URL.Query().Get("restart"); value != "" && value != "true" && value != "false" {
+		writeError(w, http.StatusBadRequest, "restart must be true or false")
+		return
+	}
+	phase, saved := "validation", false
+	var operationErr error
+	err := a.reserveService(r, definitions, func(reservation services.LifecycleReservation) error {
+		if reservation != nil {
+			if err := reservation.CheckUpdate(rec.ID, proposed, restart); err != nil {
+				return err
+			}
+		}
+		snapshots, ok := a.data.(store.ServiceSnapshotStore)
+		if !ok {
+			return errors.New("service snapshot transactions are unavailable")
+		}
+		var authoritative []*store.Service
+		err := snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, expected, func(mutation store.ServiceMutation) error {
+			if restart && reservation != nil {
+				phase = "stop"
+				if err := reservation.Stop(rec.ID); err != nil {
+					return err
+				}
+			}
+			phase = "save"
+			if err := mutation.UpdateService(r.Context(), rec); err != nil {
+				return err
+			}
+			var err error
+			authoritative, err = mutation.ListAllServices(r.Context())
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		saved = true
+		if reservation == nil {
+			return nil
+		}
+		current := make([]*store.Service, 0, len(expected))
+		for _, snapshot := range expected {
+			for _, record := range authoritative {
+				if record.ID == snapshot.ID {
+					current = append(current, record)
+					break
+				}
+			}
+		}
+		phase = "apply"
+		return snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, current, func(mutation store.ServiceMutation) error {
+			records, err := mutation.ListAllServices(r.Context())
+			if err != nil {
+				return err
+			}
+			defs, err := a.serviceDefinitions(r.Context(), mutation, records)
+			if err != nil {
+				return err
+			}
+			if err := reservation.Apply(defs); err != nil {
+				return err
+			}
+			if restart {
+				phase = "start"
+				operationErr = reservation.Start(rec.ID, "")
+			}
+			return operationErr
+		})
+	})
+	if err == nil {
+		saved = true
+		err = operationErr
+	}
+	if a.serviceOperationError(w, err, phase, saved) {
 		return
 	}
 	a.audit(r, "service.update", rec.ID, rec.Name)
-	a.afterServiceChange(r)
 	a.respondService(w, r, http.StatusOK, rec)
 }
 
-func storedUsesHostCommands(rec *store.Service) bool {
-	spec, err := services.DecodeSpec(rec.Spec)
-	return err != nil || services.UsesHostCommands(rec.Driver, spec)
-}
-
 func (a *API) deleteServiceHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
+		return
+	}
+	defer a.servicesMu.Unlock()
 	rec, ok := a.scopedService(w, r)
 	if !ok {
 		return
 	}
-	if storedUsesHostCommands(rec) {
-		if err := a.hostAccess(r); err != nil {
-			writeError(w, http.StatusForbidden, err.Error())
-			return
-		}
+	expected, definitions, ok := a.authorizeServiceGraph(w, r, nil, rec)
+	if !ok {
+		return
 	}
 	linked, err := a.linkedEndpoints(r.Context(), rec.OrgID)
 	if a.handleErr(w, err) {
@@ -310,11 +444,59 @@ func (a *API) deleteServiceHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if a.handleErr(w, a.data.DeleteService(r.Context(), rec.ID)) {
+	dependents, err := a.data.ListServiceDependents(r.Context(), rec.OrgID, rec.ID)
+	if a.handleErr(w, err) {
+		return
+	}
+	if len(dependents) > 0 {
+		ids := []string{}
+		for _, dependent := range dependents {
+			ids = append(ids, dependent.ID)
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "service is required by other services; remove their requirements first", "required_by": ids})
+		return
+	}
+	err = a.reserveService(r, definitions, func(reservation services.LifecycleReservation) error {
+		snapshots, ok := a.data.(store.ServiceSnapshotStore)
+		if !ok {
+			return errors.New("service snapshot transactions are unavailable")
+		}
+		err := snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, expected, func(mutation store.ServiceMutation) error {
+			if err := mutation.CheckDeleteService(r.Context(), rec.ID); err != nil {
+				return err
+			}
+			if reservation != nil {
+				if err := reservation.Stop(rec.ID); err != nil {
+					return err
+				}
+			}
+			return mutation.DeleteService(r.Context(), rec.ID)
+		})
+		if err != nil || reservation == nil {
+			return err
+		}
+		remaining := []*store.Service{}
+		for _, record := range expected {
+			if record.ID != rec.ID {
+				remaining = append(remaining, record)
+			}
+		}
+		return snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, remaining, func(mutation store.ServiceMutation) error {
+			records, err := mutation.ListAllServices(r.Context())
+			if err != nil {
+				return err
+			}
+			defs, err := a.serviceDefinitions(r.Context(), mutation, records)
+			if err != nil {
+				return err
+			}
+			return reservation.Apply(defs)
+		})
+	})
+	if a.serviceOperationError(w, err, "delete", false) {
 		return
 	}
 	a.audit(r, "service.delete", rec.ID, rec.Name)
-	a.afterServiceChange(r)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -335,6 +517,13 @@ func (a *API) controllableService(w http.ResponseWriter, r *http.Request) (*stor
 }
 
 func (a *API) startServiceHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
+		return
+	}
+	defer a.servicesMu.Unlock()
 	rec, ok := a.controllableService(w, r)
 	if !ok {
 		return
@@ -350,8 +539,14 @@ func (a *API) startServiceHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if err := a.services.EnsureRunning(r.Context(), rec.ID, ready); err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+	expected, definitions, ok := a.authorizeServiceGraph(w, r, nil, rec)
+	if !ok {
+		return
+	}
+	err = a.withServiceMutation(r, expected, definitions, func(reservation services.LifecycleReservation, _ store.ServiceMutation) error {
+		return reservation.Start(rec.ID, ready)
+	})
+	if a.serviceOperationError(w, err, "start", false) {
 		return
 	}
 	a.audit(r, "service.start", rec.ID, rec.Name)
@@ -359,12 +554,25 @@ func (a *API) startServiceHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) stopServiceHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
+		return
+	}
+	defer a.servicesMu.Unlock()
 	rec, ok := a.controllableService(w, r)
 	if !ok {
 		return
 	}
-	if err := a.services.Stop(r.Context(), rec.ID); err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+	expected, definitions, ok := a.authorizeServiceGraph(w, r, nil, rec)
+	if !ok {
+		return
+	}
+	err := a.withServiceMutation(r, expected, definitions, func(reservation services.LifecycleReservation, _ store.ServiceMutation) error {
+		return reservation.Stop(rec.ID)
+	})
+	if a.serviceOperationError(w, err, "stop", false) {
 		return
 	}
 	a.audit(r, "service.stop", rec.ID, rec.Name)

@@ -30,6 +30,16 @@ func newAuthAPI(t *testing.T) *httptest.Server {
 	return srv
 }
 
+func TestShouldAuthorizeServiceDriverDiscovery(t *testing.T) {
+	srv := newAuthAPI(t)
+	if code, body := statusAndBody(t, srv, http.MethodGet, "/api/v1/service-drivers", ""); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated driver discovery: %d %s", code, body)
+	}
+	owner := registerClient(t, srv, "driver-owner@example.com", "owner")
+	member := inviteAndRegister(t, srv, owner, "driver-member@example.com", "member")
+	doc(t, member, srv, http.MethodGet, "/api/v1/service-drivers", "", http.StatusOK, nil)
+}
+
 func inviteAndRegister(t *testing.T, srv *httptest.Server, owner *http.Client, email, role string) *http.Client {
 	t.Helper()
 	var inv inviteDTO

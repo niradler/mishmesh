@@ -22,6 +22,7 @@ import (
 type networkControl struct {
 	log                *slog.Logger
 	services           *services.Manager
+	serviceRegistry    *services.Registry
 	prober             *health.Prober
 	connectionHub      *connections.Hub
 	connectionRegistry *connections.Registry
@@ -48,6 +49,7 @@ func newNetworkControl(cfg config.Server, data store.DataStore, conns store.Conn
 			return nil, fmt.Errorf("register service driver: %w", err)
 		}
 	}
+	nc.serviceRegistry = driverRegistry
 	nc.services = services.NewManager(services.Options{
 		Registry:     driverRegistry,
 		Log:          log,
@@ -84,6 +86,7 @@ func (nc *networkControl) attach(cp *controlplane.API) {
 	nc.cp = cp
 	cp.SetHealth(nc.prober)
 	cp.SetServices(nc.services)
+	cp.SetServiceRegistry(nc.serviceRegistry)
 	cp.SetConnections(nc.connectionHub, nc.connectionRegistry, nc.box)
 	cp.SetHostCommands(nc.hostCommands)
 }

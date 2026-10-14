@@ -110,7 +110,7 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	f.api.SetConnections(newFakeConnectionControl(), testConnectionRegistry(t), testSecretBox(t))
 	f.api.SetHostCommands(true)
 	var svc serviceDTO
-	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/services", `{"name":"alice-svc","driver":"docker","spec":{"docker":{"containers":["alice-c"]}}}`, http.StatusCreated, &svc)
+	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/services", `{"name":"alice-svc","driver":"docker","config":{"containers":["alice-c"]}}`, http.StatusCreated, &svc)
 	f.service = svc.ID
 	var connection struct {
 		ID string `json:"id"`
@@ -155,9 +155,10 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"GET /api/v1/status":                  {"", http.StatusOK},
 		"GET /api/v1/policy":                  {"", http.StatusOK},
 		"GET /api/v1/services":                {"", http.StatusOK},
-		"POST /api/v1/services":               {`{"name":"bob-svc","driver":"docker","spec":{"docker":{"containers":["bob"]}}}`, http.StatusCreated},
+		"GET /api/v1/service-drivers":         {"", http.StatusOK},
+		"POST /api/v1/services":               {`{"name":"bob-svc","driver":"docker","config":{"containers":["bob"]}}`, http.StatusCreated},
 		"GET /api/v1/services/{id}":           {"", notFound},
-		"PUT /api/v1/services/{id}":           {`{"name":"pwned","driver":"docker","spec":{"docker":{"containers":["x"]}}}`, notFound},
+		"PUT /api/v1/services/{id}":           {`{"name":"pwned","driver":"docker","config":{"containers":["x"]}}`, notFound},
 		"DELETE /api/v1/services/{id}":        {"", notFound},
 		"POST /api/v1/services/{id}/start":    {"", notFound},
 		"POST /api/v1/services/{id}/stop":     {"", notFound},

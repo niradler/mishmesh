@@ -22,6 +22,7 @@ type ServiceControl interface {
 	RunningDependents(id string) []services.Status
 	EnsureRunning(ctx context.Context, id, readyAddr string) error
 	Stop(ctx context.Context, id string) error
+	Reserve(context.Context, []services.Definition, func(services.LifecycleReservation) error) error
 }
 
 type HealthSource interface {
@@ -49,6 +50,13 @@ type ConnectionSnapshotStatus interface {
 
 func (a *API) SetServices(s ServiceControl) {
 	a.services = s
+	if a.serviceRegistry == nil {
+		a.serviceRegistry = services.NewBuiltinRegistry()
+	}
+}
+
+func (a *API) SetServiceRegistry(registry *services.Registry) {
+	a.serviceRegistry = registry
 }
 
 func (a *API) SetHealth(h HealthSource) {

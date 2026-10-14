@@ -32,6 +32,7 @@ type fakeServiceControl struct {
 	ensured  []string
 	stopped  []string
 	startErr error
+	stopErr  error
 }
 
 func newFakeServices() *fakeServiceControl {
@@ -76,10 +77,46 @@ func (f *fakeServiceControl) EnsureRunning(_ context.Context, id, ready string) 
 
 func (f *fakeServiceControl) RunningDependents(string) []services.Status { return nil }
 
+func (f *fakeServiceControl) Reserve(ctx context.Context, expected []services.Definition, action func(services.LifecycleReservation) error) error {
+	return action(&fakeServiceReservation{control: f, context: ctx})
+}
+
+type fakeServiceReservation struct {
+	control *fakeServiceControl
+	context context.Context
+}
+
+func (f *fakeServiceReservation) CheckUpdate(id string, proposed services.Definition, restart bool) error {
+	f.control.mu.Lock()
+	defer f.control.mu.Unlock()
+	for _, current := range f.control.applied {
+		if current.ID == id && !services.RuntimeDefinitionEqual(current, proposed) && f.control.statuses[id].State == services.StateRunning && !restart {
+			return services.ErrRestartRequired
+		}
+	}
+	return nil
+}
+
+func (f *fakeServiceReservation) Stop(id string) error {
+	return f.control.Stop(f.context, id)
+}
+
+func (f *fakeServiceReservation) Apply(defs []services.Definition) error {
+	f.control.Apply(defs)
+	return nil
+}
+
+func (f *fakeServiceReservation) Start(id, ready string) error {
+	return f.control.EnsureRunning(f.context, id, ready)
+}
+
 func (f *fakeServiceControl) Stop(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, id)
+	if f.stopErr != nil {
+		return f.stopErr
+	}
 	st := f.statuses[id]
 	st.State = services.StateSleeping
 	f.statuses[id] = st
@@ -274,7 +311,7 @@ func (f *networkFixture) connectCloudflare(t *testing.T) {
 	}
 }
 
-const dockerServiceBody = `{"name":"portainer","driver":"docker","spec":{"docker":{"containers":["portainer"]}},"idle_timeout_seconds":600}`
+const dockerServiceBody = `{"name":"portainer","driver":"docker","idle_timeout_seconds":600,"config":{"containers":["portainer"]}}`
 
 func TestServiceCRUD(t *testing.T) {
 	f := newNetworkFixture(t)
@@ -291,11 +328,11 @@ func TestServiceCRUD(t *testing.T) {
 	}
 
 	invalid := []string{
-		`{"name":"Bad Name","driver":"docker","spec":{"docker":{"containers":["x"]}}}`,
-		`{"name":"x","driver":"docker","spec":{}}`,
-		`{"name":"x","driver":"docker","spec":{"docker":{"containers":["x"]},"bogus":1}}`,
-		`{"name":"x","driver":"podman","spec":{}}`,
-		`{"name":"x","driver":"docker","spec":{"docker":{"containers":["x"]}},"idle_timeout_seconds":-2}`,
+		`{"name":"Bad Name","driver":"docker","config":{"containers":["x"]}}`,
+		`{"name":"x","driver":"docker","config":{}}`,
+		`{"name":"x","driver":"docker","config":{"containers":["x"],"bogus":1}}`,
+		`{"name":"x","driver":"podman","config":{}}`,
+		`{"name":"x","driver":"docker","idle_timeout_seconds":-2,"config":{"containers":["x"]}}`,
 	}
 	for _, body := range invalid {
 		if code, resp := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services", body); code != http.StatusBadRequest {
@@ -303,7 +340,7 @@ func TestServiceCRUD(t *testing.T) {
 		}
 	}
 
-	code, body := statusAndBody(t, f.srv, http.MethodPut, "/api/v1/services/"+created.ID, `{"name":"portainer-ce","driver":"compose","spec":{"compose":{"project":"portainer"}}}`)
+	code, body := statusAndBody(t, f.srv, http.MethodPut, "/api/v1/services/"+created.ID, `{"name":"portainer-ce","driver":"compose","config":{"project":"portainer"}}`)
 	if code != http.StatusOK || !strings.Contains(body, `"name":"portainer-ce"`) || !strings.Contains(body, `"id":"`+created.ID+`"`) {
 		t.Fatalf("update: %d %s", code, body)
 	}
@@ -333,8 +370,8 @@ func TestServiceCRUD(t *testing.T) {
 
 func TestServiceHostCommandsGate(t *testing.T) {
 	f := newNetworkFixture(t)
-	execBody := `{"name":"backup","driver":"exec","spec":{"exec":{"start":["systemctl","start","backup"],"stop":["systemctl","stop","backup"]}}}`
-	composeFileBody := `{"name":"stack","driver":"compose","spec":{"compose":{"project":"stack","file":"/srv/stack/compose.yml"}}}`
+	execBody := `{"name":"backup","driver":"command","config":{"start":["systemctl","start","backup"],"stop":["systemctl","stop","backup"]}}`
+	composeFileBody := `{"name":"stack","driver":"compose","config":{"project":"stack","file":"/srv/stack/compose.yml"}}`
 	execSvc := f.createService(t, execBody)
 	if !strings.Contains(statusBody(t, f, http.MethodGet, "/api/v1/capabilities"), `"host_commands":true`) {
 		t.Fatal("capabilities must report host commands when enabled")
@@ -349,14 +386,14 @@ func TestServiceHostCommandsGate(t *testing.T) {
 			t.Fatalf("host command service with host commands off: %d %s", code, resp)
 		}
 	}
-	downgrade := `{"name":"backup","driver":"docker","spec":{"docker":{"containers":["backup"]}}}`
+	downgrade := `{"name":"backup","driver":"docker","config":{"containers":["backup"]}}`
 	if code, resp := statusAndBody(t, f.srv, http.MethodPut, "/api/v1/services/"+execSvc.ID, downgrade); code != http.StatusForbidden {
 		t.Fatalf("editing an exec service without host access: %d %s", code, resp)
 	}
 	if code, resp := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/services/"+execSvc.ID, ""); code != http.StatusForbidden {
 		t.Fatalf("deleting an exec service without host access: %d %s", code, resp)
 	}
-	plain := f.createService(t, `{"name":"plain","driver":"compose","spec":{"compose":{"project":"plain"}}}`)
+	plain := f.createService(t, `{"name":"plain","driver":"compose","config":{"project":"plain"}}`)
 	if code, resp := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/services/"+plain.ID, ""); code != http.StatusNoContent {
 		t.Fatalf("deleting a plain service without host access: %d %s", code, resp)
 	}
@@ -370,7 +407,7 @@ func TestShouldGateExplicitComposeHostFieldsBeforeNormalization(t *testing.T) {
 	f := newNetworkFixture(t)
 	f.api.SetHostCommands(false)
 	for _, field := range []string{`"bin":"custom-docker"`, `"bin":" "`, `"file":" "`} {
-		body := `{"name":"stack","driver":"compose","spec":{"compose":{"project":"stack",` + field + `}}}`
+		body := `{"name":"stack","driver":"compose","config":{"project":"stack",` + field + `}}`
 		if code, resp := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services", body); code != http.StatusForbidden || !strings.Contains(resp, "MISHMESH_HOST_COMMANDS") {
 			t.Fatalf("explicit host field bypassed gate: %d %s", code, resp)
 		}
@@ -380,8 +417,8 @@ func TestShouldGateExplicitComposeHostFieldsBeforeNormalization(t *testing.T) {
 func TestShouldRejectInvalidTCPReadinessBeforePersistence(t *testing.T) {
 	f := newNetworkFixture(t)
 	for _, target := range []string{"localhost:http", "localhost:0", "localhost:65536", ":80"} {
-		body := `{"name":"invalid-ready","driver":"docker","spec":{"docker":{"containers":["web"]},"ready_tcp":"` + target + `"}}`
-		if code, response := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services", body); code != http.StatusBadRequest || !strings.Contains(response, "ready_tcp") {
+		body := `{"name":"invalid-ready","driver":"docker","config":{"containers":["web"]},"ready":{"tcp":"` + target + `"}}`
+		if code, response := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services", body); code != http.StatusBadRequest || !strings.Contains(response, "readiness") {
 			t.Fatalf("invalid readiness: %d %s", code, response)
 		}
 	}
@@ -611,7 +648,7 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 	h := &fakeHealth{results: map[string]health.EndpointHealth{}}
 	f.api.SetHealth(h)
 	f.connectCloudflare(t)
-	svc := f.createService(t, `{"name":"syncthing","driver":"compose","spec":{"compose":{"project":"syncthing"}}}`)
+	svc := f.createService(t, `{"name":"syncthing","driver":"compose","config":{"project":"syncthing"}}`)
 	ep := f.createEndpoint(t, `{"method":"proxy","domain":"sync.example.org","policy":{"proxy_targets":["93.184.216.34:8384","https://93.184.216.35:8384"],"service_id":"`+svc.ID+`","public_access":"cloudflare"}}`)
 	f.cf.setStatus(defaultOrgID, cloudflare.Status{
 		Level:  cloudflare.LevelImported,
@@ -784,7 +821,7 @@ func TestNetworkRolePermissions(t *testing.T) {
 	admin := inviteAndRegister(t, srv, owner, "admin@example.com", "admin")
 	member := inviteAndRegister(t, srv, owner, "member@example.com", "member")
 
-	execBody := `{"name":"backup","driver":"exec","spec":{"exec":{"start":["true"],"stop":["true"],"env":{"TOKEN":"s3cret"}}}}`
+	execBody := `{"name":"backup","driver":"command","config":{"start":["true"],"stop":["true"],"env":{"TOKEN":"s3cret"}}}`
 
 	var caps map[string]bool
 	doc(t, owner, srv, http.MethodGet, "/api/v1/capabilities", "", http.StatusOK, &caps)
@@ -813,20 +850,24 @@ func TestNetworkRolePermissions(t *testing.T) {
 		client *http.Client
 		want   string
 	}{
-		{"owner", owner, "s3cret"},
+		{"owner", owner, redactedEnvValue},
 		{"admin", admin, redactedEnvValue},
 		{"member", member, redactedEnvValue},
 	} {
 		var got serviceDTO
 		doc(t, tc.client, srv, http.MethodGet, "/api/v1/services/"+execSvc.ID, "", http.StatusOK, &got)
-		if got.Spec.Exec == nil || got.Spec.Exec.Env["TOKEN"] != tc.want {
-			t.Errorf("%s sees exec env %+v, want TOKEN=%q", tc.name, got.Spec.Exec, tc.want)
+		var gotConfig services.ExecSpec
+		_ = json.Unmarshal(got.Config, &gotConfig)
+		if gotConfig.Env["TOKEN"] != tc.want {
+			t.Errorf("%s sees command env %+v, want TOKEN=%q", tc.name, gotConfig.Env, tc.want)
 		}
 		var list []serviceDTO
 		doc(t, tc.client, srv, http.MethodGet, "/api/v1/services", "", http.StatusOK, &list)
 		for _, item := range list {
-			if item.ID == execSvc.ID && item.Spec.Exec.Env["TOKEN"] != tc.want {
-				t.Errorf("%s list sees exec env %+v, want TOKEN=%q", tc.name, item.Spec.Exec, tc.want)
+			var itemConfig services.ExecSpec
+			_ = json.Unmarshal(item.Config, &itemConfig)
+			if item.ID == execSvc.ID && itemConfig.Env["TOKEN"] != tc.want {
+				t.Errorf("%s list sees command env %+v, want TOKEN=%q", tc.name, itemConfig.Env, tc.want)
 			}
 		}
 	}

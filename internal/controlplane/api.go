@@ -17,6 +17,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/secrets"
+	"github.com/mishmesh/mishmesh/internal/services"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -42,6 +43,7 @@ type API struct {
 	maxOrgsPerUser     int
 	services           ServiceControl
 	servicesMu         sync.Mutex
+	serviceRegistry    *services.Registry
 	endpointHealth     HealthSource
 	connections        ConnectionControl
 	connectionRegistry *connections.Registry
@@ -211,6 +213,7 @@ func (a *API) routes() []route {
 		{"GET /api/v1/capabilities", a.guard(a.capabilitiesHandler)},
 
 		{"GET /api/v1/services", a.require(authz.ActionServiceRead, a.listServicesHandler)},
+		{"GET /api/v1/service-drivers", a.require(authz.ActionServiceRead, a.serviceDriversHandler)},
 		{"POST /api/v1/services", a.require(authz.ActionServiceWrite, a.createServiceHandler)},
 		{"GET /api/v1/services/{id}", a.require(authz.ActionServiceRead, a.getServiceHandler)},
 		{"PUT /api/v1/services/{id}", a.require(authz.ActionServiceWrite, a.updateServiceHandler)},
