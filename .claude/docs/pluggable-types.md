@@ -13,6 +13,7 @@ Updated 2026-10-14. Nir authorized finishing, validation and review. Implementat
 
 - Current implementation: C:/Projects/products/mishmesh/.claude/worktrees/pluggable-access-main, feat/pluggable-access. Reviewed provider code HEAD: 0bf452f.
 - Main124e5b1 integrated with reviewed providers and service foundations. Conflicts resolved retaining both Connect+Access and privacy policy. Full combined Go race, vet and server/agent compile passed; no tracked file deletion or private lab file resurrection.
+- Integration390f77a independent merge-resolution spec/quality PASS. Task12 API implemented029fe60; security guards use expected authorized user snapshots, provider State preserved. Final full available race/compile/vet and focused livePG guards pass; independent /root/review12 active.
 - Parked cancelled Kubernetes: ../pluggable-types on feat/pluggable-types, uncommitted Task10 code and task-10-report.md retained. No reset/revert/delete/cleanup executed.
 - Spec: docs/superpowers/specs/2026-10-13-pluggable-types-design.md. Plan: docs/superpowers/plans/2026-10-13-pluggable-types.md; its 2026-10-14 cancellation amendment overrides historical Kubernetes text.
 - Authoritative execution ledger and amended task briefs/reports/reviews: .superpowers/sdd/2026-10-13-pluggable-types/progress.md and adjacent files. Do not redispatch completed tasks. Root checkout topic file mirrors this checkpoint.
@@ -41,13 +42,14 @@ Task11 review found one Important cleanup issue after partial API creation/Serve
 - Task9 affected CF/connections/server races, all-consumer compilation, vet/format and earlier isolated live PG state/config concurrency proof passed. Deterministic initial-adoption and late-state-writer regressions included.
 - Task11 full available Go race suite: 29 tested packages, 3 no-test packages; final affected race/vet/Linux+Windows amd64 builds passed after final changes. HTTP fixtures implement actual published /services schema and LocalAPI Serve/ETag/preferences/approval contracts. Zero k8s.io and OpenPGP imports in actual server/agent dependency graph.
 - govulncheck: zero affected symbols/imported packages; existing module-only GO-2026-5932 for unused unmaintained x/crypto/openpgp, no fixed version. Unsuppressed logs retained. This is not an absolute zero-advisory claim.
+- Web baseline build passes. Existing npm lockfile reports12 advisories (3moderate/9high), retained web-baseline-audit.json; Task19 owns reachability/compatible remediation review. Some automatic fixes propose major Tailwind changes; no forced upgrade applied.
 - Cloudflare and Tailscale locks are process-local. Remote unconditional PUT/DELETE and advertisement preferences lack full CAS; observed fingerprints/claims protect known edits but cannot promise atomicity against unrelated external writers.
 - No live Cloudflare/tailnet, full PG migration, browser feature flow, publication or deployment claim yet. Fake APIs, compile-only and skipped PG tests are not live evidence.
 - Prior PostgreSQL fixture mishmesh-types-pg-1791842027 is stopped/retained and has a deliberate RED-test cycle. Use a fresh isolated fixture for full validation. Retain fixtures; avoid destructive cleanup.
 
 ## Remaining execution order
 
-1. Main integration validated; dispatch Task12 from the integrated branch.
+1. Main integration validated and independently reviewed PASS; Task12 Connections API029fe60 in independent review.
 2. Task12 generic connections API/authz/secret/reference guards and remove live old Cloudflare wiring.
 3. Task13 generic services API and explicit restart lifecycle; Task14 provider-owned naming/protocol capabilities, access aliases and preserved Connect/UDP.
 4. Task3 atomic schema/key/ciphertext/policy migration and removal of temporary adapters, reopen and missing/wrong-key proof.
@@ -59,10 +61,11 @@ Task11 review found one Important cleanup issue after partial API creation/Serve
 ## Human gates
 
 - No direct master/main push without fresh exact consent. No release/deployment claim before reviewed concrete artifacts and external-action authorization.
+- Existing local beta.5/beta.6 tags supersede the historical beta.5 plan target. Verify the next unused candidate during Task20 preparation; no retagging, publication or deployment executed.
 - Nir installs/joins Tailscale and approves tagged Service hosting. Verify current prerequisites before live-tailnet proof; credentials enter secret form/environment, never chat/logs.
 - Exact lab sudoers and MISHMESH_HOST_COMMANDS changes require Nir's explicit confirmation before application. Do not change GUI/default target independently.
 - Destructive commands/cleanup/restore must be printed with effects for Nir to run unless explicitly authorized. Private files and unrelated worktrees are preserved.
 
 ## Immediate next action
 
-Main-based integration is validated. Dispatch Task12 generic Connections API/authz/secret/reference guards from its amended brief and task-12-context.md in this active worktree. The reviewed predecessor branch feat/pluggable-access-base in ../pluggable-access is retained; cancelled Kubernetes remains ../pluggable-types. Do not reimplement completed providers or revive Kubernetes.
+Task12 generic Connections API029fe60 is under independent review with /root/review12; address findings through original /root/task12 if needed. Task13 brief/context is prepared, but do not dispatch before12 is reviewed. The reviewed predecessor branch feat/pluggable-access-base in ../pluggable-access is retained; cancelled Kubernetes remains ../pluggable-types. Do not reimplement completed providers or revive Kubernetes.
