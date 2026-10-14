@@ -104,7 +104,6 @@ type EndpointPolicy struct {
 	LoadBalance           string            `json:"load_balance,omitempty"`
 	OriginTLS             *OriginTLS        `json:"origin_tls,omitempty"`
 	ServiceID             string            `json:"service_id,omitempty"`
-	PublicAccess          string            `json:"public_access,omitempty"`
 	Connect               *ConnectPolicy    `json:"connect,omitempty"`
 	Access                []AccessRef       `json:"access,omitempty"`
 }
@@ -150,8 +149,6 @@ func PortKind(kind string) bool {
 const (
 	LoadBalanceRoundRobin = "round_robin"
 	LoadBalanceFailover   = "failover"
-
-	PublicAccessCloudflare = "cloudflare"
 )
 
 type OriginTLS struct {
@@ -279,7 +276,6 @@ type Service struct {
 	OrgID               string
 	Name                string
 	Driver              string
-	Spec                json.RawMessage
 	Config              json.RawMessage
 	Ready               json.RawMessage
 	Requires            []string
@@ -320,26 +316,6 @@ func (e *ConnectionInUseError) Error() string {
 	return "connection is referenced by endpoints or services"
 }
 func (e *ConnectionInUseError) Unwrap() error { return ErrConflict }
-
-const (
-	CloudflareConnectorExternal = "external"
-	CloudflareConnectorManaged  = "managed"
-)
-
-type CloudflareConnection struct {
-	OrgID          string
-	Name           string
-	AccountID      string
-	TunnelID       string
-	TunnelTokenEnc []byte
-	APITokenEnc    []byte
-	AccessAppID    string
-	Origin         string
-	Connector      string
-	MetricsAddr    string
-	Prune          bool
-	UpdatedAt      time.Time
-}
 
 type DataStore interface {
 	CreateOrg(ctx context.Context, o *Org) error
@@ -428,11 +404,6 @@ type DataStore interface {
 	UpdateConnectionState(ctx context.Context, orgID, connectionID string, state json.RawMessage) error
 	DeleteConnection(ctx context.Context, id string) error
 	DeleteConnectionIfCurrent(ctx context.Context, expected *Connection) error
-
-	GetCloudflareConnection(ctx context.Context, orgID string) (*CloudflareConnection, error)
-	ListCloudflareConnections(ctx context.Context) ([]*CloudflareConnection, error)
-	SetCloudflareConnection(ctx context.Context, c *CloudflareConnection) error
-	DeleteCloudflareConnection(ctx context.Context, orgID string) error
 
 	AppendAudit(ctx context.Context, e *AuditEvent) error
 	ListAudit(ctx context.Context, orgID string, limit int) ([]*AuditEvent, error)

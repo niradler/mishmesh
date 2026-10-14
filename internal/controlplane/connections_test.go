@@ -325,7 +325,7 @@ func TestShouldBlockDeletionWithAtomicSameOrgReferenceDetails(t *testing.T) {
 			id := createTestConnection(t, send, connectionCases()[2], "referenced")
 			ctx := context.Background()
 			if kind == "service" {
-				err := api.data.CreateService(ctx, &store.Service{ID: "svc-ref", OrgID: defaultOrgID, Name: "same-org-reference", Driver: "command", Spec: json.RawMessage(`{}`), Config: json.RawMessage(`{}`), ConnectionIDs: []string{id}, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+				err := api.data.CreateService(ctx, &store.Service{ID: "svc-ref", OrgID: defaultOrgID, Name: "same-org-reference", Driver: "command", Config: json.RawMessage(`{}`), ConnectionIDs: []string{id}, CreatedAt: time.Now(), UpdatedAt: time.Now()})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -629,7 +629,7 @@ func TestShouldSanitizeStoredSecretsAcrossStatusSyncAndReferenceErrors(t *testin
 	if code != http.StatusBadGateway || strings.Contains(response, "credential-value") || !strings.Contains(response, "Retry sync") {
 		t.Fatalf("sync leak: %d %s", code, response)
 	}
-	if err := api.data.CreateService(context.Background(), &store.Service{ID: "svc-secret-name", OrgID: defaultOrgID, Name: "credential-value", Driver: "command", Spec: json.RawMessage(`{}`), Config: json.RawMessage(`{}`), ConnectionIDs: []string{id}, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+	if err := api.data.CreateService(context.Background(), &store.Service{ID: "svc-secret-name", OrgID: defaultOrgID, Name: "credential-value", Driver: "command", Config: json.RawMessage(`{}`), ConnectionIDs: []string{id}, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	code, response = send(http.MethodDelete, "/api/v1/connections/"+id, "")

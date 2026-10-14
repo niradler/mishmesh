@@ -116,7 +116,7 @@ func TestShouldLoadGenericAndLegacyReadiness(t *testing.T) {
 			t.Fatal("HTTP readiness not loaded")
 		}
 	}
-	def, err := FromRecordWithRegistry(&store.Service{ID: "old", Name: "old", Driver: "docker", Spec: json.RawMessage(`{"docker":{"containers":["web"]},"ready_tcp":"localhost:8080"}`)}, registry)
+	def, err := FromRecordWithRegistry(&store.Service{ID: "old", Name: "old", Driver: "docker", Config: json.RawMessage(`{"containers":["web"]}`), Ready: json.RawMessage(`{"tcp":"localhost:8080"}`)}, registry)
 	if err != nil || def.Ready.TCP != "localhost:8080" {
 		t.Fatalf("legacy=%+v error=%v", def, err)
 	}

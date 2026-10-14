@@ -23,7 +23,7 @@ type ServiceSnapshotStore interface {
 }
 
 func SameServiceInput(left, right Service) bool {
-	return left.ID == right.ID && left.OrgID == right.OrgID && left.Name == right.Name && left.Driver == right.Driver && bytes.Equal(left.Spec, right.Spec) && bytes.Equal(left.Config, right.Config) && bytes.Equal(left.Ready, right.Ready) && sameServiceIDs(left.Requires, right.Requires) && sameServiceIDs(left.ConnectionIDs, right.ConnectionIDs) && left.IdleTimeoutSeconds == right.IdleTimeoutSeconds && left.StartTimeoutSeconds == right.StartTimeoutSeconds && left.UpdatedAt.Equal(right.UpdatedAt)
+	return left.ID == right.ID && left.OrgID == right.OrgID && left.Name == right.Name && left.Driver == right.Driver && bytes.Equal(left.Config, right.Config) && bytes.Equal(left.Ready, right.Ready) && sameServiceIDs(left.Requires, right.Requires) && sameServiceIDs(left.ConnectionIDs, right.ConnectionIDs) && left.IdleTimeoutSeconds == right.IdleTimeoutSeconds && left.StartTimeoutSeconds == right.StartTimeoutSeconds && left.UpdatedAt.Equal(right.UpdatedAt)
 }
 
 func sameServiceIDs(left, right []string) bool {

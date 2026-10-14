@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
+
+	"github.com/mishmesh/mishmesh/internal/typedfields"
 )
 
 func MigrateService(driver string, raw json.RawMessage) (string, json.RawMessage, json.RawMessage, error) {
@@ -36,6 +39,27 @@ func MigrateService(driver string, raw json.RawMessage) (string, json.RawMessage
 	var object map[string]json.RawMessage
 	if !exists || json.Unmarshal(config, &object) != nil || object == nil {
 		return "", nil, nil, errors.New("legacy service driver config must be an object")
+	}
+	var fields []typedfields.Field
+	switch block {
+	case "docker":
+		fields = []typedfields.Field{{Key: "containers", Kind: "list"}, {Key: "label", Kind: "text"}}
+	case "compose":
+		fields = []typedfields.Field{{Key: "project", Kind: "text", Required: true}, {Key: "file", Kind: "text"}, {Key: "bin", Kind: "text"}, {Key: "services", Kind: "list"}}
+	case "exec":
+		fields = []typedfields.Field{{Key: "start", Kind: "list", Required: true}, {Key: "stop", Kind: "list", Required: true}, {Key: "status", Kind: "list"}, {Key: "dir", Kind: "text"}, {Key: "env", Kind: "keyvalue"}}
+	}
+	if err := typedfields.Validate(fields, config); err != nil {
+		return "", nil, nil, errors.New("invalid legacy service driver configuration")
+	}
+	if block == "docker" {
+		var containers []string
+		var label string
+		_ = json.Unmarshal(object["containers"], &containers)
+		_ = json.Unmarshal(object["label"], &label)
+		if len(containers) == 0 && strings.TrimSpace(label) == "" {
+			return "", nil, nil, errors.New("legacy Docker service has no containers or label")
+		}
 	}
 	ready := json.RawMessage(`{}`)
 	if rawTCP, exists := legacy["ready_tcp"]; exists {

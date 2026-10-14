@@ -11,6 +11,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -21,6 +22,10 @@ type Store struct {
 var _ store.DataStore = (*Store)(nil)
 
 func Open(dsn string) (*Store, error) {
+	return OpenWithBox(dsn, nil)
+}
+
+func OpenWithBox(dsn string, box *secrets.Box) (*Store, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %q: %w", dsn, err)
@@ -41,7 +46,9 @@ func Open(dsn string) (*Store, error) {
 		}
 	}
 	s := &Store{db: db}
-	if err := s.migrate(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.migrate(ctx, box); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -50,7 +57,12 @@ func Open(dsn string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) migrate(ctx context.Context) error {
+func (s *Store) migrate(ctx context.Context, box *secrets.Box) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	const schema = `
 CREATE TABLE IF NOT EXISTS orgs (
   id         TEXT PRIMARY KEY,
@@ -158,7 +170,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at INTEGER NOT NULL
 );
 `
-	if _, err := s.db.ExecContext(ctx, schema+networkSchema); err != nil {
+	if _, err := tx.ExecContext(ctx, schema+networkSchema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	for _, alter := range []string{
@@ -169,11 +181,14 @@ CREATE TABLE IF NOT EXISTS org_policies (
 		`ALTER TABLE services ADD COLUMN ready TEXT`,
 		`ALTER TABLE connections ADD COLUMN state TEXT`,
 	} {
-		if _, err := s.db.ExecContext(ctx, alter); err != nil && !isDuplicateColumn(err) {
+		if _, err := tx.ExecContext(ctx, alter); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("migrate alter: %w", err)
 		}
 	}
-	return nil
+	if err := migratePluggable(ctx, tx, box); err != nil {
+		return fmt.Errorf("migrate legacy records: %w", err)
+	}
+	return tx.Commit()
 }
 
 func isDuplicateColumn(err error) bool {

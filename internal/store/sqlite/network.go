@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS services (
   org_id                TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   name                  TEXT NOT NULL,
   driver                TEXT NOT NULL,
-  spec                  TEXT NOT NULL,
+  config                TEXT,
+  ready                 TEXT,
   idle_timeout_seconds  INTEGER NOT NULL DEFAULT 0,
   start_timeout_seconds INTEGER NOT NULL DEFAULT 0,
   created_at            INTEGER NOT NULL,
@@ -64,23 +65,9 @@ CREATE TABLE IF NOT EXISTS endpoint_aliases (
  FOREIGN KEY (org_id, endpoint_id) REFERENCES endpoints (org_id, id) ON DELETE CASCADE,
  FOREIGN KEY (org_id, connection_id) REFERENCES connections (org_id, id) ON DELETE RESTRICT
 );
-CREATE TABLE IF NOT EXISTS cloudflare_connections (
-  org_id           TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
-  name             TEXT NOT NULL,
-  account_id       TEXT NOT NULL,
-  tunnel_id        TEXT NOT NULL,
-  tunnel_token_enc BLOB,
-  api_token_enc    BLOB,
-  access_app_id    TEXT NOT NULL DEFAULT '',
-  origin           TEXT NOT NULL DEFAULT '',
-  connector        TEXT NOT NULL,
-  metrics_addr     TEXT NOT NULL DEFAULT '',
-  prune            INTEGER NOT NULL DEFAULT 0,
-  updated_at       INTEGER NOT NULL
-);
 `
 
-const serviceCols = `id, org_id, name, driver, spec, config, ready, idle_timeout_seconds, start_timeout_seconds, created_at, updated_at,
+const serviceCols = `id, org_id, name, driver, config, ready, idle_timeout_seconds, start_timeout_seconds, created_at, updated_at,
  (SELECT json_group_array(requires_id) FROM (SELECT requires_id FROM service_requires WHERE service_id = services.id ORDER BY requires_id)),
  (SELECT json_group_array(connection_id) FROM (SELECT connection_id FROM service_connections WHERE service_id = services.id ORDER BY connection_id))`
 
@@ -97,14 +84,14 @@ func (s *Store) CreateService(ctx context.Context, svc *store.Service) error {
 }
 
 func createServiceTx(ctx context.Context, tx *sql.Tx, svc *store.Service) error {
-	spec, config, ready, err := serviceDocuments(svc)
+	config, ready, err := serviceDocuments(svc)
 	if err != nil {
 		return err
 	}
 	if err := validateServiceRequirements(ctx, tx, svc, false); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO services (id, org_id, name, driver, spec, config, ready, idle_timeout_seconds, start_timeout_seconds, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, svc.ID, svc.OrgID, svc.Name, svc.Driver, spec, config, ready, svc.IdleTimeoutSeconds, svc.StartTimeoutSeconds, ns(svc.CreatedAt), ns(svc.UpdatedAt))
+	_, err = tx.ExecContext(ctx, `INSERT INTO services (id, org_id, name, driver, config, ready, idle_timeout_seconds, start_timeout_seconds, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, svc.ID, svc.OrgID, svc.Name, svc.Driver, config, ready, svc.IdleTimeoutSeconds, svc.StartTimeoutSeconds, ns(svc.CreatedAt), ns(svc.UpdatedAt))
 	if err != nil {
 		return uniqueErr("create service", err)
 	}
@@ -114,18 +101,14 @@ func createServiceTx(ctx context.Context, tx *sql.Tx, svc *store.Service) error 
 	return nil
 }
 
-func serviceDocuments(svc *store.Service) (string, any, any, error) {
-	spec := string(svc.Spec)
-	if svc.Config != nil {
-		if !json.Valid(svc.Config) {
-			return "", nil, nil, fmt.Errorf("service config must be valid JSON")
-		}
-		spec = ""
+func serviceDocuments(svc *store.Service) (any, any, error) {
+	if !json.Valid(svc.Config) {
+		return nil, nil, fmt.Errorf("service config must be valid JSON")
 	}
 	if svc.Ready != nil && !json.Valid(svc.Ready) {
-		return "", nil, nil, fmt.Errorf("service readiness must be valid JSON")
+		return nil, nil, fmt.Errorf("service readiness must be valid JSON")
 	}
-	return spec, nullableJSON(svc.Config), nullableJSON(svc.Ready), nil
+	return string(svc.Config), nullableJSON(svc.Ready), nil
 }
 
 func nullableJSON(value json.RawMessage) any {
@@ -181,14 +164,14 @@ func (s *Store) UpdateService(ctx context.Context, svc *store.Service) error {
 }
 
 func updateServiceTx(ctx context.Context, tx *sql.Tx, svc *store.Service) error {
-	spec, config, ready, err := serviceDocuments(svc)
+	config, ready, err := serviceDocuments(svc)
 	if err != nil {
 		return err
 	}
 	if err := validateServiceRequirements(ctx, tx, svc, true); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE services SET name = ?, driver = ?, spec = ?, config = ?, ready = ?, idle_timeout_seconds = ?, start_timeout_seconds = ?, updated_at = ? WHERE id = ? AND org_id = ?`, svc.Name, svc.Driver, spec, config, ready, svc.IdleTimeoutSeconds, svc.StartTimeoutSeconds, ns(svc.UpdatedAt), svc.ID, svc.OrgID)
+	res, err := tx.ExecContext(ctx, `UPDATE services SET name = ?, driver = ?, config = ?, ready = ?, idle_timeout_seconds = ?, start_timeout_seconds = ?, updated_at = ? WHERE id = ? AND org_id = ?`, svc.Name, svc.Driver, config, ready, svc.IdleTimeoutSeconds, svc.StartTimeoutSeconds, ns(svc.UpdatedAt), svc.ID, svc.OrgID)
 	if err != nil {
 		return uniqueErr("update service", err)
 	}
@@ -306,16 +289,13 @@ func deleteServiceTx(ctx context.Context, tx *sql.Tx, id string) error {
 
 func scanService(row interface{ Scan(...any) error }) (*store.Service, error) {
 	var svc store.Service
-	var spec string
 	var config, ready, requires, connections sql.NullString
 	var created, updated int64
-	if err := row.Scan(&svc.ID, &svc.OrgID, &svc.Name, &svc.Driver, &spec, &config, &ready, &svc.IdleTimeoutSeconds, &svc.StartTimeoutSeconds, &created, &updated, &requires, &connections); err != nil {
+	if err := row.Scan(&svc.ID, &svc.OrgID, &svc.Name, &svc.Driver, &config, &ready, &svc.IdleTimeoutSeconds, &svc.StartTimeoutSeconds, &created, &updated, &requires, &connections); err != nil {
 		return nil, scanErr("scan service", err)
 	}
 	if config.Valid {
 		svc.Config = json.RawMessage(config.String)
-	} else {
-		svc.Spec = json.RawMessage(spec)
 	}
 	if ready.Valid {
 		svc.Ready = json.RawMessage(ready.String)
@@ -584,60 +564,6 @@ func endpointPolicies(ctx context.Context, tx *sql.Tx) ([]store.EndpointPolicy, 
 }
 
 const cloudflareCols = `org_id, name, account_id, tunnel_id, tunnel_token_enc, api_token_enc, access_app_id, origin, connector, metrics_addr, prune, updated_at`
-
-func (s *Store) GetCloudflareConnection(ctx context.Context, orgID string) (*store.CloudflareConnection, error) {
-	return scanCloudflare(s.db.QueryRowContext(ctx, `SELECT `+cloudflareCols+` FROM cloudflare_connections WHERE org_id = ?`, orgID))
-}
-
-func (s *Store) ListCloudflareConnections(ctx context.Context) ([]*store.CloudflareConnection, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+cloudflareCols+` FROM cloudflare_connections ORDER BY org_id`)
-	if err != nil {
-		return nil, wrap("list cloudflare connections", err)
-	}
-	defer rows.Close()
-	var out []*store.CloudflareConnection
-	for rows.Next() {
-		c, err := scanCloudflare(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, wrap("list cloudflare connections", rows.Err())
-}
-
-func (s *Store) SetCloudflareConnection(ctx context.Context, c *store.CloudflareConnection) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO cloudflare_connections (`+cloudflareCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(org_id) DO UPDATE SET name = excluded.name, account_id = excluded.account_id, tunnel_id = excluded.tunnel_id,
-		   tunnel_token_enc = excluded.tunnel_token_enc, api_token_enc = excluded.api_token_enc, access_app_id = excluded.access_app_id,
-		   origin = excluded.origin, connector = excluded.connector, metrics_addr = excluded.metrics_addr, prune = excluded.prune,
-		   updated_at = excluded.updated_at`,
-		c.OrgID, c.Name, c.AccountID, c.TunnelID, nullBytes(c.TunnelTokenEnc), nullBytes(c.APITokenEnc), c.AccessAppID, c.Origin,
-		c.Connector, c.MetricsAddr, boolInt(c.Prune), ns(c.UpdatedAt))
-	return wrap("set cloudflare connection", err)
-}
-
-func (s *Store) DeleteCloudflareConnection(ctx context.Context, orgID string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM cloudflare_connections WHERE org_id = ?`, orgID)
-	if err != nil {
-		return wrap("delete cloudflare connection", err)
-	}
-	return affected("delete cloudflare connection", res)
-}
-
-func scanCloudflare(row interface{ Scan(...any) error }) (*store.CloudflareConnection, error) {
-	var c store.CloudflareConnection
-	var prune int
-	var updated int64
-	if err := row.Scan(&c.OrgID, &c.Name, &c.AccountID, &c.TunnelID, &c.TunnelTokenEnc, &c.APITokenEnc, &c.AccessAppID, &c.Origin,
-		&c.Connector, &c.MetricsAddr, &prune, &updated); err != nil {
-		return nil, scanErr("scan cloudflare connection", err)
-	}
-	c.Prune = prune != 0
-	c.UpdatedAt = fromNS(updated)
-	return &c, nil
-}
 
 func uniqueErr(op string, err error) error {
 	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {

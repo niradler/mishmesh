@@ -55,6 +55,9 @@ func TestShouldRejectInvalidLegacyService(t *testing.T) {
 		{"docker", `[]`},
 		{"docker", ``},
 		{"docker", `{"docker":{},"ready_tcp":null}`},
+		{"docker", `{"docker":{"containers":"web"}}`},
+		{"compose", `{"compose":{"project":"p","unknown":"ignored"}}`},
+		{"exec", `{"exec":{"start":["true"],"stop":[]}}`},
 	} {
 		if _, _, _, err := MigrateService(test.driver, json.RawMessage(test.raw)); err == nil {
 			t.Fatalf("accepted %s %s", test.driver, test.raw)

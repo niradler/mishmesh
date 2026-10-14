@@ -24,7 +24,7 @@ func TestDecodePolicyDropsControlPlaneFields(t *testing.T) {
 	if p == nil || len(p.IPAllow) != 1 {
 		t.Fatalf("agent-owned fields lost: %+v", p)
 	}
-	if len(p.ProxyTargets) != 0 || p.LoadBalance != "" || p.OriginTLS != nil || p.ServiceID != "" || p.PublicAccess != "" || len(p.Access) > 0 {
+	if len(p.ProxyTargets) != 0 || p.LoadBalance != "" || p.OriginTLS != nil || p.ServiceID != "" || len(p.Access) > 0 {
 		t.Fatalf("control-plane fields kept: %+v", p)
 	}
 	if p.Connect == nil || p.Connect.Name != "database" || len(p.Connect.AllowAgents) != 2 {

@@ -11,6 +11,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -64,13 +65,19 @@ func (p PoolConfig) apply(db *sql.DB) {
 }
 
 func Open(dsn string, pool PoolConfig) (*Store, error) {
+	return OpenWithBox(dsn, pool, nil)
+}
+
+func OpenWithBox(dsn string, pool PoolConfig, box *secrets.Box) (*Store, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 	pool.apply(db)
 	s := &Store{db: db, queryTimeout: pool.withDefaults().QueryTimeout}
-	if err := s.migrate(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.migrate(ctx, box); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -81,7 +88,7 @@ func (s *Store) Close() error { return s.db.Close() }
 
 const migrationLockKey int64 = 0x6d6973686d657368
 
-func (s *Store) migrate(ctx context.Context) error {
+func (s *Store) migrate(ctx context.Context, box *secrets.Box) error {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("postgres migrate: acquire connection: %w", err)
@@ -93,10 +100,15 @@ func (s *Store) migrate(ctx context.Context) error {
 	defer func() {
 		_, _ = conn.ExecContext(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrationLockKey)
 	}()
-	return runMigrations(ctx, conn)
+	return runMigrations(ctx, conn, box)
 }
 
-func runMigrations(ctx context.Context, conn *sql.Conn) error {
+func runMigrations(ctx context.Context, conn *sql.Conn, boxes ...*secrets.Box) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	const schema = `
 CREATE TABLE IF NOT EXISTS orgs (
   id         TEXT PRIMARY KEY,
@@ -204,7 +216,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at BIGINT NOT NULL
 );
 `
-	if _, err := conn.ExecContext(ctx, schema+networkSchema); err != nil {
+	if _, err := tx.ExecContext(ctx, schema+networkSchema); err != nil {
 		return fmt.Errorf("postgres migrate: %w", err)
 	}
 	for _, alter := range []string{
@@ -215,11 +227,18 @@ CREATE TABLE IF NOT EXISTS org_policies (
 		`ALTER TABLE services ADD COLUMN IF NOT EXISTS ready TEXT`,
 		`ALTER TABLE connections ADD COLUMN IF NOT EXISTS state TEXT`,
 	} {
-		if _, err := conn.ExecContext(ctx, alter); err != nil {
+		if _, err := tx.ExecContext(ctx, alter); err != nil {
 			return fmt.Errorf("postgres migrate alter: %w", err)
 		}
 	}
-	return nil
+	var box *secrets.Box
+	if len(boxes) > 0 {
+		box = boxes[0]
+	}
+	if err := migratePluggable(ctx, tx, box); err != nil {
+		return fmt.Errorf("postgres migrate legacy records: %w", err)
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CreateOrg(ctx context.Context, o *store.Org) error {

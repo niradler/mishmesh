@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
-	"github.com/mishmesh/mishmesh/internal/cloudflare"
 	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/secrets"
@@ -30,10 +29,6 @@ type HealthSource interface {
 	Get(endpointID string) (health.EndpointHealth, bool)
 	ProbeNow(ctx context.Context, endpointID string) (health.EndpointHealth, error)
 	Forget(endpointID string)
-}
-
-type LegacyCloudflareStatus interface {
-	Status(orgID string) cloudflare.Status
 }
 
 type ConnectionControl interface {
@@ -136,9 +131,6 @@ func (a *API) validateNetworkPolicy(ctx context.Context, orgID, endpointID, doma
 			return fmt.Errorf("service_id: %w", err)
 		}
 	}
-	if pol.PublicAccess != "" {
-		return errors.New("use policy.access connection references")
-	}
 	seenConnections, seenHosts := map[string]bool{}, map[string]bool{}
 	for index, ref := range pol.Access {
 		if a.connectionRegistry == nil {
@@ -208,30 +200,6 @@ func endpointServiceID(ep *store.Endpoint) string {
 		return ""
 	}
 	return ep.Policy.ServiceID
-}
-
-func (a *API) endpointPublic(ctx context.Context, ep *store.Endpoint) bool {
-	if ep.Policy == nil || ep.Domain == "" {
-		return false
-	}
-	if len(ep.Policy.Access) == 0 {
-		return ep.Policy.PublicAccess == store.PublicAccessCloudflare && (ep.Kind == "" || ep.Kind == store.KindHTTP)
-	}
-	if a.connectionRegistry == nil {
-		return false
-	}
-	for _, ref := range ep.Policy.Access {
-		record, err := a.data.GetConnection(ctx, ref.ConnectionID)
-		if err != nil || record.OrgID != ep.OrgID {
-			continue
-		}
-		for _, descriptor := range a.connectionRegistry.Descriptors() {
-			if descriptor.Type == record.Type && descriptor.Scope == "public" && connections.SupportsProtocol(descriptor, ep.Kind) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (a *API) triggerConnections(orgID string) {

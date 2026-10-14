@@ -106,7 +106,7 @@ func (s stubStore) ListEndpointsByOrg(_ context.Context, org string) ([]*store.E
 }
 
 func TestStoreSource(t *testing.T) {
-	cf := &store.EndpointPolicy{PublicAccess: store.PublicAccessCloudflare}
+	cf := &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: "connection"}}}
 	data := stubStore{byOrg: map[string][]*store.Endpoint{
 		"org_default": {
 			{ID: "e1", OrgID: "org_default", Domain: "B.Example.com.", Policy: cf},
@@ -117,13 +117,13 @@ func TestStoreSource(t *testing.T) {
 		},
 		"org_other": {{ID: "e6", OrgID: "org_other", Domain: "z.example.com", Policy: cf}},
 	}}
-	got, err := StoreSource{Data: data}.Hostnames(context.Background(), "org_default")
+	got, err := StoreSource{Data: data, ConnectionID: "connection"}.Hostnames(context.Background(), "org_default")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []Hostname{
-		{Host: "a.example.com", EndpointID: "e5", OrgID: "org_default", Public: true},
-		{Host: "b.example.com", EndpointID: "e1", OrgID: "org_default", Public: true},
+		{Host: "a.example.com", EndpointID: "e5", OrgID: "org_default", Public: true, AccessHostnameKnown: true},
+		{Host: "b.example.com", EndpointID: "e1", OrgID: "org_default", Public: true, AccessHostnameKnown: true},
 		{Host: "c.example.com", EndpointID: "e3", OrgID: "org_default"},
 		{Host: "d.example.com", EndpointID: "e4", OrgID: "org_default"},
 	}

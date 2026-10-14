@@ -58,23 +58,7 @@ func (s StoreSource) Hostnames(ctx context.Context, orgID string) ([]Hostname, e
 	if err != nil {
 		return nil, fmt.Errorf("list endpoints for org %s: %w", orgID, err)
 	}
-	if s.ConnectionID != "" {
-		return s.connectionHosts(orgID, endpoints), nil
-	}
-	var out []Hostname
-	for _, ep := range endpoints {
-		if ep == nil {
-			continue
-		}
-		host := normalizeHost(ep.Domain)
-		if host == "" {
-			continue
-		}
-		public := ep.Policy != nil && ep.Policy.PublicAccess == store.PublicAccessCloudflare && (ep.Kind == "" || ep.Kind == store.KindHTTP)
-		out = append(out, Hostname{Host: host, EndpointID: ep.ID, OrgID: ep.OrgID, Public: public})
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Host < out[j].Host })
-	return out, nil
+	return s.connectionHosts(orgID, endpoints), nil
 }
 
 func (s StoreSource) connectionHosts(orgID string, endpoints []*store.Endpoint) []Hostname {

@@ -166,13 +166,6 @@ func (h *hostDrivers) build(def Definition) (Driver, error) {
 		return nil, errors.New("driver registry is required")
 	}
 	name, config := def.Driver, def.Config
-	if len(config) == 0 {
-		driverType, legacyConfig, err := legacyDriverConfig(name, def.Spec)
-		if err != nil {
-			return nil, err
-		}
-		name, config = driverType.Describe().Type, legacyConfig
-	}
 	driverType, ok := h.registry.Lookup(name)
 	if !ok {
 		return nil, fmt.Errorf("unknown driver %q", name)
@@ -481,9 +474,6 @@ func readyTarget(def Definition, readyAddr string) string {
 	if def.Ready.TCP != "" {
 		return def.Ready.TCP
 	}
-	if def.Spec.ReadyTCP != "" {
-		return def.Spec.ReadyTCP
-	}
 	if readyAddr != "" {
 		return hostPortOf(readyAddr)
 	}
@@ -753,7 +743,7 @@ func driverDefinitionEqual(a, b Definition) bool {
 	if json.Unmarshal(a.Config, &left) == nil && json.Unmarshal(b.Config, &right) == nil {
 		configEqual = reflect.DeepEqual(left, right)
 	}
-	return a.OrgID == b.OrgID && a.Driver == b.Driver && configEqual && reflect.DeepEqual(a.Spec, b.Spec)
+	return a.OrgID == b.OrgID && a.Driver == b.Driver && configEqual
 }
 
 func (m *Manager) Apply(defs []Definition) {

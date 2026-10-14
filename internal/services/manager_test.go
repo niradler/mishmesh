@@ -111,7 +111,7 @@ func newFixture(t *testing.T, svc Definition, driver *fakeDriver) *managerFixtur
 	f := &managerFixture{driver: driver, clock: newFakeClock()}
 	svc.ID, svc.OrgID, svc.Name = "svc", "org_default", "svc"
 	if svc.Driver == "" {
-		svc.Driver = DriverExec
+		svc.Driver = DriverCommand
 	}
 	if svc.StartTimeout == 0 {
 		svc.StartTimeout = 5 * time.Second
@@ -210,7 +210,7 @@ func TestEnsureRunningReadinessTargets(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			driver := &fakeDriver{state: Stopped}
-			f := newFixture(t, Definition{Spec: Spec{ReadyTCP: tt.readyTCP}}, driver)
+			f := newFixture(t, Definition{Ready: Readiness{TCP: tt.readyTCP}}, driver)
 			if err := f.manager.EnsureRunning(context.Background(), "svc", tt.readyAddr); err != nil {
 				t.Fatal(err)
 			}
@@ -538,8 +538,8 @@ func TestVisibilityAndListing(t *testing.T) {
 	clock := newFakeClock()
 	m := newManager(Options{Now: clock.Now}, func(Definition) (Driver, error) { return &fakeDriver{}, nil })
 	m.Apply([]Definition{
-		{ID: "svc_z", OrgID: "org_b", Name: "zeta", Driver: DriverExec, StartTimeout: time.Minute},
-		{ID: "svc_a", OrgID: "org_a", Name: "alpha", Driver: DriverExec, StartTimeout: time.Minute, IdleTimeout: 90 * time.Second},
+		{ID: "svc_z", OrgID: "org_b", Name: "zeta", Driver: DriverCommand, StartTimeout: time.Minute},
+		{ID: "svc_a", OrgID: "org_a", Name: "alpha", Driver: DriverCommand, StartTimeout: time.Minute, IdleTimeout: 90 * time.Second},
 	})
 
 	tests := []struct {
@@ -582,7 +582,7 @@ func TestApplyKeepsRuntimeStateAndDropsRemoved(t *testing.T) {
 		builds++
 		return driver, nil
 	})
-	def := Definition{ID: "svc_1", OrgID: "org_a", Name: "web", Driver: DriverExec, StartTimeout: time.Minute}
+	def := Definition{ID: "svc_1", OrgID: "org_a", Name: "web", Driver: DriverCommand, StartTimeout: time.Minute}
 	m.Apply([]Definition{def})
 	m.Refresh(context.Background())
 	release := m.Acquire("svc_1")
@@ -620,12 +620,12 @@ func TestApplyKeepsRuntimeStateAndDropsRemoved(t *testing.T) {
 
 func TestApplyMarksBrokenDefinitions(t *testing.T) {
 	m := newManager(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, func(def Definition) (Driver, error) {
-		if def.Driver == DriverExec {
+		if def.Driver == DriverCommand {
 			return nil, ErrHostCommandsOff
 		}
 		return &fakeDriver{}, nil
 	})
-	m.Apply([]Definition{{ID: "svc_x", OrgID: "org_a", Name: "x", Driver: DriverExec, StartTimeout: time.Second}})
+	m.Apply([]Definition{{ID: "svc_x", OrgID: "org_a", Name: "x", Driver: DriverCommand, StartTimeout: time.Second}})
 	st, _ := m.Status("svc_x")
 	if st.State != StateError || !strings.Contains(st.LastError, "disabled") {
 		t.Fatalf("status = %+v", st)
@@ -703,11 +703,11 @@ func TestHostDriversGateHostCommands(t *testing.T) {
 		hostCommands bool
 		wantErr      error
 	}{
-		{"exec blocked", Definition{Driver: DriverExec, Spec: Spec{Exec: &ExecSpec{Start: []string{"x"}, Stop: []string{"y"}}}}, false, ErrHostCommandsOff},
-		{"exec allowed", Definition{Driver: DriverExec, Spec: Spec{Exec: &ExecSpec{Start: []string{"x"}, Stop: []string{"y"}}}}, true, nil},
-		{"compose file blocked", Definition{Driver: DriverCompose, Spec: Spec{Compose: &ComposeSpec{Project: "p", File: "/x.yml", Bin: "docker"}}}, false, ErrHostCommandsOff},
-		{"compose by label allowed", Definition{Driver: DriverCompose, Spec: Spec{Compose: &ComposeSpec{Project: "p"}}}, false, nil},
-		{"docker allowed", Definition{Driver: DriverDocker, Spec: Spec{Docker: &DockerSpec{Containers: []string{"a"}}}}, false, nil},
+		{"exec blocked", Definition{Driver: DriverCommand, Config: json.RawMessage(`{"start":["x"],"stop":["y"]}`)}, false, ErrHostCommandsOff},
+		{"exec allowed", Definition{Driver: DriverCommand, Config: json.RawMessage(`{"start":["x"],"stop":["y"]}`)}, true, nil},
+		{"compose file blocked", Definition{Driver: DriverCompose, Config: json.RawMessage(`{"project":"p","file":"/x.yml","bin":"docker"}`)}, false, ErrHostCommandsOff},
+		{"compose by label allowed", Definition{Driver: DriverCompose, Config: json.RawMessage(`{"project":"p"}`)}, false, nil},
+		{"docker allowed", Definition{Driver: DriverDocker, Config: json.RawMessage(`{"containers":["a"]}`)}, false, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -719,7 +719,7 @@ func TestHostDriversGateHostCommands(t *testing.T) {
 		})
 	}
 	bad := &hostDrivers{dockerHost: "ftp://nope", registry: testRegistry(t)}
-	if _, err := bad.build(Definition{Driver: DriverDocker, Spec: Spec{Docker: &DockerSpec{Label: "a"}}}); err == nil {
+	if _, err := bad.build(Definition{Driver: DriverDocker, Config: json.RawMessage(`{"label":"a"}`)}); err == nil {
 		t.Error("expected error for bad docker host")
 	}
 }
@@ -728,7 +728,7 @@ func TestManagerWithDockerEngine(t *testing.T) {
 	engine := newFakeEngine(t, &fakeContainer{ID: "1", Name: "portainer", State: "exited"})
 	m := NewManager(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DockerHost: engine.host(), Registry: testRegistry(t)})
 	m.Apply([]Definition{{ID: "svc_p", OrgID: "org_a", Name: "portainer", Driver: DriverDocker,
-		Spec: Spec{Docker: &DockerSpec{Containers: []string{"portainer"}}}, StartTimeout: 5 * time.Second}})
+		Config: json.RawMessage(`{"containers":["portainer"]}`), StartTimeout: 5 * time.Second}})
 	if err := m.EnsureRunning(context.Background(), "svc_p", ""); err != nil {
 		t.Fatal(err)
 	}

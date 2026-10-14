@@ -48,7 +48,6 @@ type API struct {
 	endpointHealth     HealthSource
 	connections        ConnectionControl
 	connectionRegistry *connections.Registry
-	legacyCloudflare   LegacyCloudflareStatus
 	secretBox          *secrets.Box
 	hostCommands       bool
 

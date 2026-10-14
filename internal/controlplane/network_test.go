@@ -140,81 +140,6 @@ func (f *fakeServiceControl) appliedNames() []string {
 	return out
 }
 
-type fakeCloudflare struct {
-	mu       sync.Mutex
-	statuses map[string]cloudflare.Status
-	triggers map[string]int
-	reloads  map[string]int
-	syncs    map[string]int
-	syncErr  error
-}
-
-func newFakeCloudflare() *fakeCloudflare {
-	return &fakeCloudflare{statuses: map[string]cloudflare.Status{}, triggers: map[string]int{}, reloads: map[string]int{}, syncs: map[string]int{}}
-}
-
-func (f *fakeCloudflare) DefaultOrigin() string { return "http://127.0.0.1:8090" }
-
-func (f *fakeCloudflare) Status(orgID string) cloudflare.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if st, ok := f.statuses[orgID]; ok {
-		return st
-	}
-	return emptyCloudflareStatus()
-}
-
-func (f *fakeCloudflare) setStatus(orgID string, st cloudflare.Status) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.statuses[orgID] = st
-}
-
-func (f *fakeCloudflare) Reload(_ context.Context, orgID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.reloads[orgID]++
-	return nil
-}
-
-func (f *fakeCloudflare) Sync(_ context.Context, orgID string) (cloudflare.Status, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.syncs[orgID]++
-	st, ok := f.statuses[orgID]
-	if !ok {
-		return emptyCloudflareStatus(), cloudflare.ErrNotConnected
-	}
-	if f.syncErr != nil {
-		st.LastError = f.syncErr.Error()
-	}
-	return st, f.syncErr
-}
-
-func (f *fakeCloudflare) Trigger(orgID string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.triggers[orgID]++
-}
-
-func (f *fakeCloudflare) triggerCount(orgID string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.triggers[orgID]
-}
-
-func (f *fakeCloudflare) syncCount(orgID string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.syncs[orgID]
-}
-
-func (f *fakeCloudflare) reloadCount(orgID string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.reloads[orgID]
-}
-
 func testSecretBox(t *testing.T) *secrets.Box {
 	t.Helper()
 	box, err := secrets.New(make([]byte, 32))
@@ -259,7 +184,6 @@ type networkFixture struct {
 	api *API
 	srv *httptest.Server
 	svc *fakeServiceControl
-	cf  *fakeCloudflare
 	hub *fakeConnectionControl
 }
 
@@ -274,9 +198,8 @@ func newNetworkTestAPI(t *testing.T) (*API, *httptest.Server) {
 func newNetworkFixture(t *testing.T) *networkFixture {
 	t.Helper()
 	api, srv := newNetworkTestAPI(t)
-	f := &networkFixture{api: api, srv: srv, svc: newFakeServices(), cf: newFakeCloudflare(), hub: newFakeConnectionControl()}
+	f := &networkFixture{api: api, srv: srv, svc: newFakeServices(), hub: newFakeConnectionControl()}
 	api.SetServices(f.svc)
-	api.legacyCloudflare = f.cf
 	api.SetConnections(f.hub, testConnectionRegistry(t), testSecretBox(t))
 	api.SetHostCommands(true)
 	return f
@@ -310,9 +233,6 @@ func (f *networkFixture) createEndpoint(t *testing.T, body string) endpointDTO {
 
 func (f *networkFixture) connectCloudflare(t *testing.T) {
 	t.Helper()
-	if err := f.api.data.SetCloudflareConnection(context.Background(), &store.CloudflareConnection{OrgID: defaultOrgID, Name: "lab", AccountID: "acct1", TunnelID: "tun1", Connector: cloudflare.ConnectorExternal, MetricsAddr: cloudflare.DefaultMetricsAddr, UpdatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
 	sealed, err := f.api.secretBox.Seal([]byte(`{"tunnel_token":"`+testTunnelToken("acct1", "tun1")+`"}`), connections.SecretContext(defaultOrgID, "legacy-trigger"))
 	if err != nil {
 		t.Fatal(err)
@@ -513,7 +433,7 @@ func TestServiceInvalidRecordIsSkipped(t *testing.T) {
 	f := newNetworkFixture(t)
 	ctx := context.Background()
 	good := f.createService(t, dockerServiceBody)
-	bad := &store.Service{ID: store.NewID("svc"), OrgID: defaultOrgID, Name: "broken", Driver: "docker", Spec: json.RawMessage(`{"nope":1}`), CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	bad := &store.Service{ID: store.NewID("svc"), OrgID: defaultOrgID, Name: "broken", Driver: "docker", Config: json.RawMessage(`{"nope":1}`), CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := f.api.data.CreateService(ctx, bad); err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +502,7 @@ func TestNetworkPolicyValidation(t *testing.T) {
 			if err := f.api.data.CreateOrg(ctx, &store.Org{ID: "org_other", Name: "other", CreatedAt: time.Now()}); err != nil {
 				t.Fatal(err)
 			}
-			other := &store.Service{ID: store.NewID("svc"), OrgID: "org_other", Name: "hidden", Driver: "docker", Spec: json.RawMessage(`{"docker":{"containers":["h"]}}`), CreatedAt: time.Now(), UpdatedAt: time.Now()}
+			other := &store.Service{ID: store.NewID("svc"), OrgID: "org_other", Name: "hidden", Driver: "docker", Config: json.RawMessage(`{"containers":["h"]}`), CreatedAt: time.Now(), UpdatedAt: time.Now()}
 			if err := f.api.data.CreateService(ctx, other); err != nil {
 				t.Fatal(err)
 			}
@@ -666,14 +586,16 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 	f.connectCloudflare(t)
 	svc := f.createService(t, `{"name":"syncthing","driver":"compose","config":{"project":"syncthing"}}`)
 	ep := f.createEndpoint(t, `{"method":"proxy","domain":"sync.example.org","policy":{"proxy_targets":["93.184.216.34:8384","https://93.184.216.35:8384"],"service_id":"`+svc.ID+`","access":[{"connection_id":"legacy-trigger"}]}}`)
-	f.cf.setStatus(defaultOrgID, cloudflare.Status{
-		Level:  cloudflare.LevelImported,
-		Tunnel: &cloudflare.TunnelInfo{Name: "lab", Status: cloudflare.TunnelHealthy, Connections: 2},
-		Hostnames: []cloudflare.HostStatus{
+	f.hub.mu.Lock()
+	f.hub.statuses["legacy-trigger"] = connections.Status{
+		Level: "imported", Health: "up",
+
+		Hostnames: []connections.HostStatus{
 			{Host: "sync.example.org", EndpointID: ep.ID, State: cloudflare.StatePublished},
 			{Host: "spare.example.org", State: cloudflare.StateUnclaimed, Detail: "no endpoint claims this hostname"},
 		},
-	})
+	}
+	f.hub.mu.Unlock()
 	h.mu.Lock()
 	h.results[ep.ID] = health.EndpointHealth{State: health.StateDegraded, Targets: []health.TargetStatus{
 		{Target: "93.184.216.34:8384", Healthy: true},
@@ -692,13 +614,13 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 		nodes[n.ID] = n
 	}
 	want := map[string]string{
-		tunnelNodeID:                        health.StateUp,
-		"hostname:sync.example.org":         health.StateUp,
-		"hostname:spare.example.org":        health.StateUnknown,
-		"endpoint:" + ep.ID:                 health.StateDegraded,
-		"target:http://93.184.216.34:8384":  health.StateUp,
-		"target:https://93.184.216.35:8384": health.StateDown,
-		"service:" + svc.ID:                 health.StateSleeping,
+		"connection:legacy-trigger":                 health.StateUp,
+		"hostname:legacy-trigger:sync.example.org":  health.StateUp,
+		"hostname:legacy-trigger:spare.example.org": health.StateUnknown,
+		"endpoint:" + ep.ID:                         health.StateDegraded,
+		"target:http://93.184.216.34:8384":          health.StateUp,
+		"target:https://93.184.216.35:8384":         health.StateDown,
+		"service:" + svc.ID:                         health.StateSleeping,
 	}
 	for id, st := range want {
 		if n, ok := nodes[id]; !ok || n.State != st {
@@ -706,27 +628,27 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 		}
 	}
 	refs := map[string]topologyRef{
-		tunnelNodeID:                {Kind: "cloudflare"},
-		"hostname:sync.example.org": {Kind: "cloudflare"},
-		"endpoint:" + ep.ID:         {Kind: "endpoint", ID: ep.ID},
-		"service:" + svc.ID:         {Kind: "service", ID: svc.ID},
+		"connection:legacy-trigger":                {Kind: "connection", ID: "legacy-trigger"},
+		"hostname:legacy-trigger:sync.example.org": {Kind: "connection", ID: "legacy-trigger"},
+		"endpoint:" + ep.ID:                        {Kind: "endpoint", ID: ep.ID},
+		"service:" + svc.ID:                        {Kind: "service", ID: svc.ID},
 	}
 	for id, ref := range refs {
 		if n := nodes[id]; n.Ref == nil || *n.Ref != ref {
 			t.Fatalf("node %s ref = %+v want %+v", id, n.Ref, ref)
 		}
 	}
-	if nodes["service:"+svc.ID].Label != "syncthing" || nodes[tunnelNodeID].Label != "Cloudflare tunnel lab" {
-		t.Fatalf("labels: %q %q", nodes["service:"+svc.ID].Label, nodes[tunnelNodeID].Label)
+	if nodes["service:"+svc.ID].Label != "syncthing" || nodes["connection:legacy-trigger"].Label != "legacy-trigger" {
+		t.Fatalf("labels: %q %q", nodes["service:"+svc.ID].Label, nodes["connection:legacy-trigger"].Label)
 	}
 	edges := map[topologyEdge]bool{}
 	for _, e := range topo.Edges {
 		edges[e] = true
 	}
 	for _, e := range []topologyEdge{
-		{From: tunnelNodeID, To: "hostname:sync.example.org", Kind: edgeRoutes},
-		{From: tunnelNodeID, To: "hostname:spare.example.org", Kind: edgeRoutes},
-		{From: "hostname:sync.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes},
+		{From: "connection:legacy-trigger", To: "hostname:legacy-trigger:sync.example.org", Kind: edgeRoutes},
+		{From: "connection:legacy-trigger", To: "hostname:legacy-trigger:spare.example.org", Kind: edgeRoutes},
+		{From: "hostname:legacy-trigger:sync.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes},
 		{From: "endpoint:" + ep.ID, To: "target:http://93.184.216.34:8384", Kind: edgeProxies},
 		{From: "endpoint:" + ep.ID, To: "service:" + svc.ID, Kind: edgeWakes},
 	} {
@@ -760,31 +682,33 @@ func TestTopologyLinksUnclaimedHostnameToPrivateEndpoint(t *testing.T) {
 	f := newNetworkFixture(t)
 	f.connectCloudflare(t)
 	ep := f.createEndpoint(t, `{"method":"proxy","domain":"wiki.example.org","policy":{"proxy_targets":["93.184.216.34:80"]}}`)
-	f.cf.setStatus(defaultOrgID, cloudflare.Status{
-		Level:  cloudflare.LevelImported,
-		Tunnel: &cloudflare.TunnelInfo{Name: "lab", Status: cloudflare.TunnelHealthy},
-		Hostnames: []cloudflare.HostStatus{
+	f.hub.mu.Lock()
+	f.hub.statuses["legacy-trigger"] = connections.Status{
+		Level: "imported", Health: "up",
+
+		Hostnames: []connections.HostStatus{
 			{Host: "wiki.example.org", EndpointID: ep.ID, State: cloudflare.StateUnclaimed},
 			{Host: "spare.example.org", State: cloudflare.StateUnclaimed},
 		},
-	})
+	}
+	f.hub.mu.Unlock()
 	topo := fetchTopology(t, f.srv)
 	refs := map[string]*topologyRef{}
 	for _, n := range topo.Nodes {
 		refs[n.ID] = n.Ref
 	}
-	if r := refs["hostname:wiki.example.org"]; r == nil || *r != (topologyRef{Kind: "endpoint", ID: ep.ID}) {
+	if r := refs["hostname:legacy-trigger:wiki.example.org"]; r == nil || *r != (topologyRef{Kind: "endpoint", ID: ep.ID}) {
 		t.Fatalf("matched hostname ref = %+v", r)
 	}
-	if r := refs["hostname:spare.example.org"]; r == nil || *r != (topologyRef{Kind: "cloudflare"}) {
+	if r := refs["hostname:legacy-trigger:spare.example.org"]; r == nil || *r != (topologyRef{Kind: "connection", ID: "legacy-trigger"}) {
 		t.Fatalf("orphan hostname ref = %+v", r)
 	}
 	found := false
 	for _, e := range topo.Edges {
-		if e == (topologyEdge{From: "hostname:wiki.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes}) {
+		if e == (topologyEdge{From: "hostname:legacy-trigger:wiki.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes}) {
 			found = true
 		}
-		if e.From == "hostname:spare.example.org" {
+		if e.From == "hostname:legacy-trigger:spare.example.org" {
 			t.Fatalf("orphan hostname has an outgoing edge %+v", e)
 		}
 	}
@@ -797,7 +721,7 @@ func TestTopologyWithoutCloudflare(t *testing.T) {
 	f := newNetworkFixture(t)
 	ep := f.createEndpoint(t, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"`+f.createService(t, dockerServiceBody).ID+`"}}`)
 	for _, n := range fetchTopology(t, f.srv).Nodes {
-		if n.Kind == nodeTunnel || n.Kind == nodeHostname {
+		if n.Kind == nodeConnection || n.Kind == nodeHostname {
 			t.Fatalf("unexpected cloudflare node %+v for endpoint %s", n, ep.ID)
 		}
 	}

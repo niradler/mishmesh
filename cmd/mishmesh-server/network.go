@@ -35,15 +35,19 @@ type networkControl struct {
 }
 
 func newNetworkControl(cfg config.Server, data store.DataStore, conns store.ConnectionStore, guard *proxy.Guard, connector *proxy.Connector, log *slog.Logger) (*networkControl, error) {
-	nc := &networkControl{log: log, hostCommands: cfg.HostCommands}
-	keyFile := cfg.EffectiveSecretKeyFile()
-	key, err := secrets.LoadOrCreateKey(keyFile)
+	box, err := loadDataBox(cfg)
 	if err != nil {
 		return nil, err
 	}
-	if nc.box, err = secrets.New(key); err != nil {
-		return nil, err
+	return newNetworkControlWithBox(cfg, data, conns, guard, connector, log, box)
+}
+
+func newNetworkControlWithBox(cfg config.Server, data store.DataStore, conns store.ConnectionStore, guard *proxy.Guard, connector *proxy.Connector, log *slog.Logger, box *secrets.Box) (*networkControl, error) {
+	if box == nil {
+		return nil, fmt.Errorf("network control requires the data migration secret box")
 	}
+	nc := &networkControl{log: log, hostCommands: cfg.HostCommands, box: box}
+	keyFile := cfg.EffectiveSecretKeyFile()
 	driverRegistry := services.NewRegistry()
 	for _, driver := range []services.DriverType{services.DockerType{}, services.ComposeType{}, services.CommandType{}} {
 		if err := driverRegistry.Register(driver); err != nil {

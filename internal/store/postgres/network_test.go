@@ -331,7 +331,7 @@ func TestServiceCRUD(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	svc := &store.Service{ID: "svc_pgn1", OrgID: "org_pgn1", Name: "portainer", Driver: "docker", Spec: []byte(`{"docker":{"containers":["portainer"]}}`),
+	svc := &store.Service{ID: "svc_pgn1", OrgID: "org_pgn1", Name: "portainer", Driver: "docker", Config: []byte(`{"containers":["portainer"]}`),
 		IdleTimeoutSeconds: 1800, StartTimeoutSeconds: 60, CreatedAt: now, UpdatedAt: now}
 	if err := s.CreateService(ctx, svc); err != nil {
 		t.Fatal(err)
@@ -351,7 +351,7 @@ func TestServiceCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Name != "portainer" || string(got.Spec) != string(svc.Spec) || got.IdleTimeoutSeconds != 1800 || got.StartTimeoutSeconds != 60 {
+	if got.Name != "portainer" || string(got.Config) != string(svc.Config) || got.IdleTimeoutSeconds != 1800 || got.StartTimeoutSeconds != 60 {
 		t.Fatalf("round trip mismatch: %+v", got)
 	}
 
@@ -395,58 +395,44 @@ func TestServiceCRUD(t *testing.T) {
 	}
 }
 
-func TestCloudflareConnectionUpsert(t *testing.T) {
+func TestConnectionCRUDPreservesEncryptedConfiguration(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
+	org := store.NewID("org")
 	now := time.Now().UTC()
-	if err := s.CreateOrg(ctx, &store.Org{ID: "org_pgc1", Name: "acme", CreatedAt: now}); err != nil {
+	if err := s.CreateOrg(ctx, &store.Org{ID: org, Name: org, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetCloudflareConnection(ctx, "org_pgc1"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("empty: want ErrNotFound, got %v", err)
+	id := store.NewID("conn")
+	if _, err := s.GetConnection(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("empty %v", err)
 	}
-	c := &store.CloudflareConnection{OrgID: "org_pgc1", Name: "lab", AccountID: "acc", TunnelID: "tun", TunnelTokenEnc: []byte{1, 2, 3},
-		Connector: store.CloudflareConnectorExternal, MetricsAddr: "127.0.0.1:20241", UpdatedAt: now}
-	if err := s.SetCloudflareConnection(ctx, c); err != nil {
+	record := &store.Connection{ID: id, OrgID: org, Name: "lab", Type: "cloudflare", Config: json.RawMessage(`{"connector":"external","prune":false}`), SecretsEnc: []byte{1, 2, 3}, CreatedAt: now, UpdatedAt: now}
+	if err := s.CreateConnection(ctx, record); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.GetCloudflareConnection(ctx, "org_pgc1")
+	got, err := s.GetConnection(ctx, id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Name != "lab" || string(got.TunnelTokenEnc) != "\x01\x02\x03" || got.APITokenEnc != nil || got.Prune {
-		t.Fatalf("round trip mismatch: %+v", got)
+	if got.Name != "lab" || !bytes.Equal(got.Config, record.Config) || !bytes.Equal(got.SecretsEnc, record.SecretsEnc) {
+		t.Fatalf("round trip %+v", got)
 	}
-	c.APITokenEnc = []byte{9}
-	c.Prune = true
-	c.Connector = store.CloudflareConnectorManaged
-	if err := s.SetCloudflareConnection(ctx, c); err != nil {
+	record.Config = json.RawMessage(`{"connector":"managed","prune":true}`)
+	record.SecretsEnc = []byte{9}
+	if err := s.UpdateConnection(ctx, record); err != nil {
 		t.Fatal(err)
 	}
-	list, err := s.ListCloudflareConnections(ctx)
-	if err != nil {
+	list, err := s.ListConnections(ctx, org)
+	if err != nil || len(list) != 1 || !bytes.Equal(list[0].Config, record.Config) || !bytes.Equal(list[0].SecretsEnc, record.SecretsEnc) {
+		t.Fatalf("update %+v %v", list, err)
+	}
+	if err := s.DeleteConnection(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	list = onlyOrg(list, "org_pgc1")
-	if len(list) != 1 || !list[0].Prune || string(list[0].APITokenEnc) != "\x09" || list[0].Connector != store.CloudflareConnectorManaged {
-		t.Fatalf("upsert mismatch: %+v", list)
+	if err := s.DeleteConnection(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("second delete %v", err)
 	}
-	if err := s.DeleteCloudflareConnection(ctx, "org_pgc1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DeleteCloudflareConnection(ctx, "org_pgc1"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("second delete: want ErrNotFound, got %v", err)
-	}
-}
-
-func onlyOrg(list []*store.CloudflareConnection, orgID string) []*store.CloudflareConnection {
-	var out []*store.CloudflareConnection
-	for _, c := range list {
-		if c.OrgID == orgID {
-			out = append(out, c)
-		}
-	}
-	return out
 }
 
 func TestShouldKeepMultipleConnectionsOfOneType(t *testing.T) {
@@ -581,7 +567,7 @@ func TestShouldReplaceTypedServiceReferencesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got.Config) != string(dependent.Config) || string(got.Ready) != string(dependent.Ready) || len(got.Spec) != 0 || !reflect.DeepEqual(got.Requires, []string{first.ID}) || !reflect.DeepEqual(got.ConnectionIDs, []string{connection.ID}) {
+	if string(got.Config) != string(dependent.Config) || string(got.Ready) != string(dependent.Ready) || !reflect.DeepEqual(got.Requires, []string{first.ID}) || !reflect.DeepEqual(got.ConnectionIDs, []string{connection.ID}) {
 		t.Fatalf("typed round trip: %+v", got)
 	}
 	original := *got
