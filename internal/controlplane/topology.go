@@ -318,6 +318,9 @@ func (a *API) addService(b *topologyBuilder, id, name, epID string) {
 	if a.services != nil {
 		if st, ok := a.services.Status(id); ok {
 			state, detail = serviceNodeState(st.State), st.LastError
+			if detail != "" {
+				detail = "service operation failed; check the service configuration and server diagnostics"
+			}
 		}
 	}
 	b.node(topologyNode{ID: nodeID, Kind: nodeService, Label: name, State: state, Detail: detail, Ref: &topologyRef{Kind: "service", ID: id}})

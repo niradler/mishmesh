@@ -1,6 +1,6 @@
 # Task20 — release preparation and final review
 
-Prepared 2026-10-14. Independent whole-branch review pending; no publication or deployment.
+Prepared 2026-10-14. Independent whole-branch review completed with three concrete findings, reproduced and fixed. Scoped rereview pending; no publication or deployment. See task-20-review.md and task-20-fix-report.md.
 
 ## Artifacts
 

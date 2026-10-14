@@ -3,6 +3,7 @@ import type { TypedConnection } from "@/api/types";
 const TOKEN_PERMISSIONS = [
   "Account · Cloudflare Tunnel · Edit",
   "Zone · DNS · Edit",
+  "Zone · Zone · Read",
   "Account · Access: Apps and Policies · Edit",
 ];
 

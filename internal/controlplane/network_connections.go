@@ -129,9 +129,21 @@ func (a *API) connectionView(record *store.Connection, status connections.Status
 			}
 		}
 	}
+	if descriptor.Type == "" {
+		var values map[string]json.RawMessage
+		if json.Unmarshal(record.Config, &values) == nil {
+			for key := range values {
+				descriptor.Fields = append(descriptor.Fields, typedfields.Field{Key: key, Sensitive: true})
+			}
+		}
+		status = connections.WithHostDiagnostic(connections.Status{Health: "down", Hostnames: []connections.HostStatus{}, Details: map[string]any{}}, connections.HostUnknownType)
+	}
 	safe, err := connections.SanitizeJSON(cfg, descriptor, record.Config)
 	if err != nil {
 		return nil, err
+	}
+	if descriptor.Type == "" {
+		safe = json.RawMessage(`{}`)
 	}
 	rawName, err := json.Marshal(record.Name)
 	if err != nil {
