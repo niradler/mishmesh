@@ -9,6 +9,9 @@ You deploy it once and reuse it everywhere, instead of building a custom tunnel 
 
 One Go module builds two binaries: `mishmesh-server` (gateway, public ingress, control API, web UI) and `mishmesh-agent` (the tunnel client).
 
+App Access is pluggable: Cloudflare publishes HTTP apps publicly and Tailscale Services publishes private HTTPS over an existing tailnet. The Connections UI supports multiple named connections and per-endpoint Access refs while preserving agent Connect and UDP. Docker/Compose/Command services use typed descriptors, readiness, Requires and explicit Save and restart. See [Connections](docs/connections.md) and [Services](docs/services.md). Kubernetes and VPN peer/key/route management are outside this release. This release requires clean-slate typed initialization; there is no old-schema conversion or backward compatibility. Existing installations and data stay separate.
+
+
 ## Contents
 
 - [When to use it](#when-to-use-it)
@@ -468,7 +471,7 @@ All settings are environment variables with the `MISHMESH_` prefix. The defaults
 | `PROXY_ALLOWED_CIDRS` | empty | comma-separated CIDRs `method=proxy` may reach even when private targets are otherwise denied |
 | `HEALTH_INTERVAL` / `HEALTH_TIMEOUT` | `15s` / `3s` | endpoint health probe interval and per-target dial timeout |
 | `SECRET_KEY_FILE` | `mishmesh-secret.key` next to the SQLite file, else in the working directory | AES-256 key that seals stored Cloudflare tokens; created on first start (mode 0600) |
-| `HOST_COMMANDS` | `true` in `invite` mode, else `false` | allow services that run commands on the server host (`exec`, Compose `file`); see [docs/services.md](docs/services.md) |
+| `HOST_COMMANDS` | `true` in `invite` mode, else `false` | allow services that run commands on the server host (`command`, Compose `file`); see [docs/services.md](docs/services.md) |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker Engine address for `docker` and `compose` services |
 | `CLOUDFLARED_BIN` | `cloudflared` | binary run for a Cloudflare connection with `connector: managed`; see [docs/cloudflare.md](docs/cloudflare.md) |
 | `CLUSTER_ENABLED`, `NODE_ID`, `RELAY_ADDR`, `RELAY_ADVERTISE`, `CLUSTER_SECRET` | | [cluster mode](#how-it-scales) |
@@ -479,7 +482,7 @@ Server CLI: `mishmesh-server [serve]`, `mishmesh-server token create --org NAME 
 ## Operations: backup and upgrade
 
 - **What to back up.** Postgres holds the durable state: orgs, users, agents, token hashes, endpoints, domains, quotas, services, Cloudflare connections and the audit log. Back it up with your usual Postgres tooling (`pg_dump -Fc`, managed-database snapshots, or WAL archiving). Redis holds only live routing and rate-limit state, which agents rebuild by reconnecting, so it needs no backup. Also keep the ACME cache directory (single-pod ACME) or your wildcard certificate Secret, and the secrets you configured (`API_AUTH_TOKEN`, `CLUSTER_SECRET`, `ENDPOINT_OIDC_KEY`, Google OIDC credentials). Back up the `SECRET_KEY_FILE` with the database: without it the stored Cloudflare tokens cannot be decrypted.
-- **Upgrades.** The schema migrates forward automatically when the server starts. An advisory lock serializes it, so a rolling upgrade of many pods is safe. Take a database backup first. Downgrading after a migration is not supported, so restore that backup instead. Upgrade the server before the agents. Agents reconnect with backoff during a rollout and need no action.
+- **Upgrades.** This release uses a clean typed schema and has no backward compatibility or automatic conversion from earlier releases. Provision a fresh database for the new installation. Unsupported old schemas are rejected unchanged. Current typed databases reopen normally; PostgreSQL initialization is serialized across pods. Preserve the previous installation and its database/key separately. Upgrade the server before the agents. Agents reconnect with backoff during a rollout.
 - **Version.** `mishmesh-server version` and `mishmesh-agent version` print the release tag.
 
 Before serving beta customers, validate the actual deployment: public API and tunnel names resolve correctly; TLS chains validate without insecure client flags; API authentication and cross-origin rejection pass; agents reconnect after a server restart; a backup restores into a separate instance with identities and endpoints intact; and alerting detects unavailable pods, database failures and failed tunnels. Keep the relay on a private network, restrict control/API access as required, and protect database backups and deployment secrets. Validate Google login and endpoint OIDC with the actual provider before enabling them. Start within measured capacity and monitor the deployment; local fixture results do not prove a customer's DNS, certificates, provider configuration or multi-day workload.

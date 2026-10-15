@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,25 +10,25 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mishmesh/mishmesh/internal/cloudflare"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
 )
 
 type tenantFixture struct {
-	srv      *httptest.Server
-	api      *API
-	alice    *http.Client
-	bob      *http.Client
-	orgA     string
-	orgB     string
-	userA    string
-	agentA   string
-	tokenA   string
-	endpoint string
-	inviteA  string
-	inviteTk string
-	service  string
+	srv        *httptest.Server
+	api        *API
+	alice      *http.Client
+	bob        *http.Client
+	orgA       string
+	orgB       string
+	userA      string
+	agentA     string
+	tokenA     string
+	endpoint   string
+	inviteA    string
+	inviteTk   string
+	service    string
+	connection string
 }
 
 func newTenantFixture(t *testing.T) *tenantFixture {
@@ -78,6 +77,7 @@ func (f *tenantFixture) fill(pattern string) (string, string) {
 		"{user_id}", f.userA,
 		"{agent_id}", f.agentA,
 		"/services/{id}", "/services/"+f.service,
+		"/connections/{id}", "/connections/"+f.connection,
 	)
 	return method, r.Replace(path)
 }
@@ -107,16 +107,16 @@ func (f *tenantFixture) do(t *testing.T, c *http.Client, method, path, body stri
 func TestCrossTenantEveryRoute(t *testing.T) {
 	f := newTenantFixture(t)
 	f.api.SetServices(newFakeServices())
-	f.api.SetCloudflare(newFakeCloudflare(), testSecretBox(t))
+	f.api.SetConnections(newFakeConnectionControl(), testConnectionRegistry(t), testSecretBox(t))
 	f.api.SetHostCommands(true)
-	f.api.detectCloudflare = func(context.Context, string, string) (cloudflare.DetectResult, error) {
-		return cloudflare.DetectResult{Hostnames: []string{}}, nil
-	}
 	var svc serviceDTO
-	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/services", `{"name":"alice-svc","driver":"docker","spec":{"docker":{"containers":["alice-c"]}}}`, http.StatusCreated, &svc)
+	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/services", `{"name":"alice-svc","driver":"docker","config":{"containers":["alice-c"]}}`, http.StatusCreated, &svc)
 	f.service = svc.ID
-	aliceTunnel := testTunnelToken("aliceacct", "alicetun")
-	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/cloudflare", `{"name":"alice-lab","tunnel_token":"`+aliceTunnel+`"}`, http.StatusOK, nil)
+	var connection struct {
+		ID string `json:"id"`
+	}
+	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/connections", `{"type":"third","name":"alice-lab","config":{},"secrets":{"third_key":"alice-credential"}}`, http.StatusCreated, &connection)
+	f.connection = connection.ID
 
 	type probe struct {
 		body string
@@ -155,23 +155,27 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"GET /api/v1/status":                  {"", http.StatusOK},
 		"GET /api/v1/policy":                  {"", http.StatusOK},
 		"GET /api/v1/services":                {"", http.StatusOK},
-		"POST /api/v1/services":               {`{"name":"bob-svc","driver":"docker","spec":{"docker":{"containers":["bob"]}}}`, http.StatusCreated},
+		"GET /api/v1/service-drivers":         {"", http.StatusOK},
+		"POST /api/v1/services":               {`{"name":"bob-svc","driver":"docker","config":{"containers":["bob"]}}`, http.StatusCreated},
 		"GET /api/v1/services/{id}":           {"", notFound},
-		"PUT /api/v1/services/{id}":           {`{"name":"pwned","driver":"docker","spec":{"docker":{"containers":["x"]}}}`, notFound},
+		"PUT /api/v1/services/{id}":           {`{"name":"pwned","driver":"docker","config":{"containers":["x"]}}`, notFound},
 		"DELETE /api/v1/services/{id}":        {"", notFound},
 		"POST /api/v1/services/{id}/start":    {"", notFound},
 		"POST /api/v1/services/{id}/stop":     {"", notFound},
 		"GET /api/v1/capabilities":            {"", http.StatusOK},
-		"GET /api/v1/cloudflare":              {"", http.StatusOK},
-		"PUT /api/v1/cloudflare":              {`{"name":"bob","tunnel_token":"` + aliceTunnel + `"}`, http.StatusConflict},
-		"DELETE /api/v1/cloudflare":           {"", notFound},
-		"POST /api/v1/cloudflare/detect":      {`{"metrics_addr":"10.0.0.1:20241"}`, http.StatusBadRequest},
-		"POST /api/v1/cloudflare/sync":        {"", notFound},
+		"GET /api/v1/connection-types":        {"", http.StatusOK},
+		"GET /api/v1/connections":             {"", http.StatusOK},
+		"POST /api/v1/connections":            {`{"type":"third","name":"bob-connection","config":{},"secrets":{}}`, http.StatusCreated},
+		"GET /api/v1/connections/{id}":        {"", notFound},
+		"PUT /api/v1/connections/{id}":        {`{"name":"pwned","config":{}}`, notFound},
+		"DELETE /api/v1/connections/{id}":     {"", notFound},
+		"POST /api/v1/connections/{id}/sync":  {"", notFound},
+		"POST /api/v1/connections/detect":     {`{"type":"third","input":{}}`, http.StatusOK},
 		"GET /api/v1/topology":                {"", http.StatusOK},
 		"PUT /api/v1/policy":                  {`{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"],"member":["agent:read"]}}`, http.StatusOK},
 	}
 
-	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service}
+	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, "alice-credential"}
 
 	for _, rt := range f.api.routes() {
 		pr, ok := probes[rt.pattern]

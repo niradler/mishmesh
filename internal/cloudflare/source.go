@@ -10,10 +10,12 @@ import (
 )
 
 type Hostname struct {
-	Host       string
-	EndpointID string
-	OrgID      string
-	Public     bool
+	Host                string
+	EndpointID          string
+	OrgID               string
+	Public              bool
+	AccessHostname      string
+	AccessHostnameKnown bool
 }
 
 type Source interface {
@@ -25,7 +27,30 @@ type EndpointLister interface {
 }
 
 type StoreSource struct {
-	Data EndpointLister
+	Data         EndpointLister
+	ConnectionID string
+}
+
+func AccessHosts(connectionID string, endpoints []*store.Endpoint) []Hostname {
+	out := make([]Hostname, 0)
+	for _, endpoint := range endpoints {
+		if endpoint == nil || endpoint.Policy == nil || connectionID == "" || endpoint.Kind != "" && endpoint.Kind != store.KindHTTP {
+			continue
+		}
+		for _, ref := range endpoint.Policy.Access {
+			if ref.ConnectionID != connectionID {
+				continue
+			}
+			host := ref.Hostname
+			if host == "" {
+				host = endpoint.Domain
+			}
+			if normalized, err := accessHostname(endpoint.Domain, host); err == nil {
+				out = append(out, Hostname{Host: normalized, EndpointID: endpoint.ID, OrgID: endpoint.OrgID, Public: true, AccessHostname: ref.Hostname, AccessHostnameKnown: true})
+			}
+		}
+	}
+	return dedupeHostnames(out)
 }
 
 func (s StoreSource) Hostnames(ctx context.Context, orgID string) ([]Hostname, error) {
@@ -33,20 +58,39 @@ func (s StoreSource) Hostnames(ctx context.Context, orgID string) ([]Hostname, e
 	if err != nil {
 		return nil, fmt.Errorf("list endpoints for org %s: %w", orgID, err)
 	}
-	var out []Hostname
-	for _, ep := range endpoints {
-		if ep == nil {
-			continue
+	return s.connectionHosts(orgID, endpoints), nil
+}
+
+func (s StoreSource) connectionHosts(orgID string, endpoints []*store.Endpoint) []Hostname {
+	owned := make([]*store.Endpoint, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		if endpoint != nil && endpoint.OrgID == orgID {
+			owned = append(owned, endpoint)
 		}
-		host := normalizeHost(ep.Domain)
-		if host == "" {
-			continue
+	}
+	out := AccessHosts(s.ConnectionID, owned)
+	selected := make(map[string]bool, len(out))
+	for _, host := range out {
+		selected[host.Host] = true
+	}
+	observed := make(map[string]bool)
+	for _, endpoint := range owned {
+		names := []string{endpoint.Domain}
+		if endpoint.Policy != nil {
+			for _, ref := range endpoint.Policy.Access {
+				names = append(names, ref.Hostname)
+			}
 		}
-		public := ep.Policy != nil && ep.Policy.PublicAccess == store.PublicAccessCloudflare
-		out = append(out, Hostname{Host: host, EndpointID: ep.ID, OrgID: ep.OrgID, Public: public})
+		for _, name := range names {
+			host := normalizeHost(name)
+			if host != "" && !selected[host] && !observed[host] {
+				out = append(out, Hostname{Host: host, EndpointID: endpoint.ID, OrgID: orgID})
+				observed[host] = true
+			}
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Host < out[j].Host })
-	return out, nil
+	return out
 }
 
 func normalizeHost(h string) string {

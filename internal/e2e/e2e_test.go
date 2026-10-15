@@ -77,9 +77,35 @@ func TestEndToEndHTTPTunnel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get endpoint: %v", err)
 		}
-		body := pollTunnel(t, ingSrv, "", "/tunnel/"+ep.ID+"/foo/bar")
+		body := pollTunnel(t, ingSrv, "localhost", "/tunnel/"+ep.ID+"/foo/bar")
 		if body != "hello GET /foo/bar" {
 			t.Fatalf("got %q", body)
+		}
+	})
+
+	t.Run("unknown private host cannot use endpoint path", func(t *testing.T) {
+		ep, err := data.GetEndpointBySubdomain(ctx, "demo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, host := range []string{"unknown.example.org", "demo.foreign-tailnet.ts.net"} {
+			request, err := http.NewRequest(http.MethodGet, ingSrv.URL+"/tunnel/"+ep.ID+"/foo/bar", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Host = host
+			response, err := ingSrv.Client().Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(response.Body)
+			response.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != http.StatusNotFound || strings.Contains(string(body), "hello GET") {
+				t.Fatalf("unknown host routed to endpoint: %s %d %s", host, response.StatusCode, body)
+			}
 		}
 	})
 

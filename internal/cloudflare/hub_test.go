@@ -2,7 +2,9 @@ package cloudflare
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"github.com/mishmesh/mishmesh/internal/connections"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,7 +15,7 @@ import (
 )
 
 type hubFixture struct {
-	hub  *Hub
+	hub  *connections.Hub
 	data *sqlite.Store
 	box  *secrets.Box
 	f    *fakeCF
@@ -34,24 +36,43 @@ func newHubFixture(t *testing.T) *hubFixture {
 		t.Fatal(err)
 	}
 	f := newFakeCF(t)
-	hub := NewHub(HubOptions{Data: data, Box: box, Origin: testOrigin, BaseURL: f.server.URL, SyncInterval: time.Hour})
+	hub := genericCloudflareHub(t, data, box, f)
 	return &hubFixture{hub: hub, data: data, box: box, f: f}
+}
+
+func genericCloudflareHub(t *testing.T, data *sqlite.Store, box *secrets.Box, fake *fakeCF) *connections.Hub {
+	t.Helper()
+	registry := connections.NewRegistry()
+	if err := registry.Register(NewProvider(ProviderOptions{BaseURL: fake.server.URL})); err != nil {
+		t.Fatal(err)
+	}
+	return connections.NewHub(connections.HubOptions{Registry: registry, Deps: connections.Deps{Data: data, Box: box, Origin: testOrigin}})
 }
 
 func (x *hubFixture) save(t *testing.T, apiToken string) {
 	t.Helper()
-	tunnelEnc, err := x.box.Seal([]byte("tunnel-token"), TokenContext("org_a", TokenKindTunnel))
+	cfg := providerConfig(t, "conn-a", x.f.local.addr(), apiToken != "")
+	cfg.Record.OrgID = "org_a"
+	raw, err := json.Marshal(cfg.Secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn := &store.CloudflareConnection{OrgID: "org_a", Name: "lab", AccountID: testAccount, TunnelID: testTunnel,
-		TunnelTokenEnc: tunnelEnc, Connector: ConnectorExternal, MetricsAddr: x.f.local.addr(), UpdatedAt: time.Now()}
-	if apiToken != "" {
-		if conn.APITokenEnc, err = x.box.Seal([]byte(apiToken), TokenContext("org_a", TokenKindAPI)); err != nil {
+	cfg.Record.SecretsEnc, err = x.box.Seal(raw, connections.SecretContext("org_a", "conn-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Record.CreatedAt = time.Now()
+	cfg.Record.UpdatedAt = time.Now()
+	if old, err := x.data.GetConnection(context.Background(), "conn-a"); err == nil {
+		cfg.Record.CreatedAt = old.CreatedAt
+		if err := x.data.UpdateConnection(context.Background(), &cfg.Record); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := x.data.SetCloudflareConnection(context.Background(), conn); err != nil {
+	} else if errors.Is(err, store.ErrNotFound) {
+		if err := x.data.CreateConnection(context.Background(), &cfg.Record); err != nil {
+			t.Fatal(err)
+		}
+	} else {
 		t.Fatal(err)
 	}
 }
@@ -64,33 +85,33 @@ func TestHubLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer x.hub.Close()
-	waitFor(t, func() bool { return !x.hub.Status("org_a").LastSync.IsZero() })
-	if st := x.hub.Status("org_a"); st.Level != LevelImported || st.Origin != testOrigin {
+	waitFor(t, func() bool { return !x.hub.Status("conn-a").LastSync.IsZero() })
+	if st := x.hub.Status("conn-a"); st.Level != LevelImported || st.Details["origin"] != testOrigin {
 		t.Fatalf("status = %+v", st)
 	}
-	if st, err := x.hub.Sync(ctx, "org_a"); err != nil || st.Level != LevelImported {
+	if st, err := x.hub.Sync(ctx, "conn-a"); err != nil || st.Level != LevelImported {
 		t.Fatalf("imported refresh = %+v, %v", st, err)
 	}
 
 	x.save(t, testToken)
-	if err := x.hub.Reload(ctx, "org_a"); err != nil {
+	if err := x.hub.Reload(ctx, "conn-a"); err != nil {
 		t.Fatal(err)
 	}
-	st, err := x.hub.Sync(ctx, "org_a")
+	st, err := x.hub.Sync(ctx, "conn-a")
 	if err != nil || st.Level != LevelManaged || tunnelGets(x.f) == 0 {
 		t.Fatalf("managed sync = %+v, %v", st, err)
 	}
 
-	if err := x.data.DeleteCloudflareConnection(ctx, "org_a"); err != nil {
+	if err := x.data.DeleteConnection(ctx, "conn-a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := x.hub.Reload(ctx, "org_a"); err != nil {
+	if err := x.hub.Reload(ctx, "conn-a"); err != nil {
 		t.Fatal(err)
 	}
-	if st := x.hub.Status("org_a"); st.Level != LevelNone {
+	if st := x.hub.Status("conn-a"); st.Health != "down" {
 		t.Fatalf("status after delete = %+v", st)
 	}
-	if _, err := x.hub.Sync(ctx, "org_a"); !errors.Is(err, ErrNotConnected) {
+	if _, err := x.hub.Sync(ctx, "conn-a"); !errors.Is(err, connections.ErrNotConnected) {
 		t.Fatalf("sync without connection = %v", err)
 	}
 }
@@ -100,20 +121,20 @@ func TestHubReportsUndecryptableConnection(t *testing.T) {
 	ctx := context.Background()
 	x.save(t, "")
 	other, _ := secrets.New(append(make([]byte, 31), 1))
-	x.hub.opts.Box = other
+	x.hub = genericCloudflareHub(t, x.data, other, x.f)
 	if err := x.hub.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
 	defer x.hub.Close()
-	st := x.hub.Status("org_a")
-	if st.Level != LevelNone || st.LastError == "" {
+	st := x.hub.Status("conn-a")
+	if st.Health != "down" || st.LastError == "" {
 		t.Fatalf("status = %+v", st)
 	}
 }
 
 func TestHubReloadBeforeStart(t *testing.T) {
 	x := newHubFixture(t)
-	if err := x.hub.Reload(context.Background(), "org_a"); !errors.Is(err, errHubStopped) {
+	if err := x.hub.Reload(context.Background(), "org_a"); !errors.Is(err, connections.ErrHubStopped) {
 		t.Fatalf("err = %v", err)
 	}
 }

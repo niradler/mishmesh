@@ -17,6 +17,7 @@ import (
 
 	"github.com/mishmesh/mishmesh/internal/cloudflare"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
+	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/health"
 	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/services"
@@ -32,6 +33,7 @@ type fakeServiceControl struct {
 	ensured  []string
 	stopped  []string
 	startErr error
+	stopErr  error
 }
 
 func newFakeServices() *fakeServiceControl {
@@ -74,10 +76,54 @@ func (f *fakeServiceControl) EnsureRunning(_ context.Context, id, ready string) 
 	return nil
 }
 
+func (f *fakeServiceControl) RunningDependents(string) []services.Status { return nil }
+
+func (f *fakeServiceControl) Reserve(ctx context.Context, expected []services.Definition, action func(services.LifecycleReservation) error) error {
+	return action(&fakeServiceReservation{control: f, context: ctx})
+}
+
+type fakeServiceReservation struct {
+	control *fakeServiceControl
+	context context.Context
+}
+
+func (f *fakeServiceReservation) CheckUpdate(id string, proposed services.Definition, restart bool) error {
+	f.control.mu.Lock()
+	defer f.control.mu.Unlock()
+	for _, current := range f.control.applied {
+		if current.ID == id && !services.RuntimeDefinitionEqual(current, proposed) && f.control.statuses[id].State == services.StateRunning && !restart {
+			return services.ErrRestartRequired
+		}
+	}
+	return nil
+}
+
+func (f *fakeServiceReservation) Stop(id string) error {
+	return f.control.Stop(f.context, id)
+}
+
+func (f *fakeServiceReservation) Apply(defs []services.Definition) error {
+	f.control.Apply(defs)
+	return nil
+}
+
+func (f *fakeServiceReservation) Invalidate(id string) {
+	f.control.mu.Lock()
+	delete(f.control.statuses, id)
+	f.control.mu.Unlock()
+}
+
+func (f *fakeServiceReservation) Start(id, ready string) error {
+	return f.control.EnsureRunning(f.context, id, ready)
+}
+
 func (f *fakeServiceControl) Stop(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, id)
+	if f.stopErr != nil {
+		return f.stopErr
+	}
 	st := f.statuses[id]
 	st.State = services.StateSleeping
 	f.statuses[id] = st
@@ -92,81 +138,6 @@ func (f *fakeServiceControl) appliedNames() []string {
 		out = append(out, d.Name)
 	}
 	return out
-}
-
-type fakeCloudflare struct {
-	mu       sync.Mutex
-	statuses map[string]cloudflare.Status
-	triggers map[string]int
-	reloads  map[string]int
-	syncs    map[string]int
-	syncErr  error
-}
-
-func newFakeCloudflare() *fakeCloudflare {
-	return &fakeCloudflare{statuses: map[string]cloudflare.Status{}, triggers: map[string]int{}, reloads: map[string]int{}, syncs: map[string]int{}}
-}
-
-func (f *fakeCloudflare) DefaultOrigin() string { return "http://127.0.0.1:8090" }
-
-func (f *fakeCloudflare) Status(orgID string) cloudflare.Status {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if st, ok := f.statuses[orgID]; ok {
-		return st
-	}
-	return emptyCloudflareStatus()
-}
-
-func (f *fakeCloudflare) setStatus(orgID string, st cloudflare.Status) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.statuses[orgID] = st
-}
-
-func (f *fakeCloudflare) Reload(_ context.Context, orgID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.reloads[orgID]++
-	return nil
-}
-
-func (f *fakeCloudflare) Sync(_ context.Context, orgID string) (cloudflare.Status, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.syncs[orgID]++
-	st, ok := f.statuses[orgID]
-	if !ok {
-		return emptyCloudflareStatus(), cloudflare.ErrNotConnected
-	}
-	if f.syncErr != nil {
-		st.LastError = f.syncErr.Error()
-	}
-	return st, f.syncErr
-}
-
-func (f *fakeCloudflare) Trigger(orgID string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.triggers[orgID]++
-}
-
-func (f *fakeCloudflare) triggerCount(orgID string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.triggers[orgID]
-}
-
-func (f *fakeCloudflare) syncCount(orgID string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.syncs[orgID]
-}
-
-func (f *fakeCloudflare) reloadCount(orgID string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.reloads[orgID]
 }
 
 func testSecretBox(t *testing.T) *secrets.Box {
@@ -213,7 +184,7 @@ type networkFixture struct {
 	api *API
 	srv *httptest.Server
 	svc *fakeServiceControl
-	cf  *fakeCloudflare
+	hub *fakeConnectionControl
 }
 
 func newNetworkTestAPI(t *testing.T) (*API, *httptest.Server) {
@@ -227,17 +198,10 @@ func newNetworkTestAPI(t *testing.T) (*API, *httptest.Server) {
 func newNetworkFixture(t *testing.T) *networkFixture {
 	t.Helper()
 	api, srv := newNetworkTestAPI(t)
-	f := &networkFixture{api: api, srv: srv, svc: newFakeServices(), cf: newFakeCloudflare()}
+	f := &networkFixture{api: api, srv: srv, svc: newFakeServices(), hub: newFakeConnectionControl()}
 	api.SetServices(f.svc)
-	api.SetCloudflare(f.cf, testSecretBox(t))
+	api.SetConnections(f.hub, testConnectionRegistry(t), testSecretBox(t))
 	api.SetHostCommands(true)
-	api.detectCloudflare = func(_ context.Context, addr, token string) (cloudflare.DetectResult, error) {
-		if token == "bogus" {
-			return cloudflare.DetectResult{}, errors.New("tunnel token is not valid base64")
-		}
-		return cloudflare.DetectResult{AccountID: "acct1", TunnelID: "tun1", Hostnames: []string{"a.example.org"},
-			Connector: cloudflare.ConnectorStatus{Reachable: true, EdgeLocations: []string{}}}, nil
-	}
 	return f
 }
 
@@ -269,13 +233,16 @@ func (f *networkFixture) createEndpoint(t *testing.T, body string) endpointDTO {
 
 func (f *networkFixture) connectCloudflare(t *testing.T) {
 	t.Helper()
-	code, body := statusAndBody(t, f.srv, http.MethodPut, "/api/v1/cloudflare", `{"name":"lab","tunnel_token":"`+testTunnelToken("acct1", "tun1")+`"}`)
-	if code != http.StatusOK {
-		t.Fatalf("connect cloudflare: %d %s", code, body)
+	sealed, err := f.api.secretBox.Seal([]byte(`{"tunnel_token":"`+testTunnelToken("acct1", "tun1")+`"}`), connections.SecretContext(defaultOrgID, "public-connection"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.api.data.CreateConnection(context.Background(), &store.Connection{ID: "public-connection", OrgID: defaultOrgID, Name: "public-connection", Type: "cloudflare", Config: json.RawMessage(`{}`), SecretsEnc: sealed, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
 	}
 }
 
-const dockerServiceBody = `{"name":"portainer","driver":"docker","spec":{"docker":{"containers":["portainer"]}},"idle_timeout_seconds":600}`
+const dockerServiceBody = `{"name":"portainer","driver":"docker","idle_timeout_seconds":600,"config":{"containers":["portainer"]}}`
 
 func TestServiceCRUD(t *testing.T) {
 	f := newNetworkFixture(t)
@@ -292,11 +259,11 @@ func TestServiceCRUD(t *testing.T) {
 	}
 
 	invalid := []string{
-		`{"name":"Bad Name","driver":"docker","spec":{"docker":{"containers":["x"]}}}`,
-		`{"name":"x","driver":"docker","spec":{}}`,
-		`{"name":"x","driver":"docker","spec":{"docker":{"containers":["x"]},"bogus":1}}`,
-		`{"name":"x","driver":"podman","spec":{}}`,
-		`{"name":"x","driver":"docker","spec":{"docker":{"containers":["x"]}},"idle_timeout_seconds":-1}`,
+		`{"name":"Bad Name","driver":"docker","config":{"containers":["x"]}}`,
+		`{"name":"x","driver":"docker","config":{}}`,
+		`{"name":"x","driver":"docker","config":{"containers":["x"],"bogus":1}}`,
+		`{"name":"x","driver":"podman","config":{}}`,
+		`{"name":"x","driver":"docker","idle_timeout_seconds":-2,"config":{"containers":["x"]}}`,
 	}
 	for _, body := range invalid {
 		if code, resp := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services", body); code != http.StatusBadRequest {
@@ -304,7 +271,7 @@ func TestServiceCRUD(t *testing.T) {
 		}
 	}
 
-	code, body := statusAndBody(t, f.srv, http.MethodPut, "/api/v1/services/"+created.ID, `{"name":"portainer-ce","driver":"compose","spec":{"compose":{"project":"portainer"}}}`)
+	code, body := statusAndBody(t, f.srv, http.MethodPut, "/api/v1/services/"+created.ID, `{"name":"portainer-ce","driver":"compose","config":{"project":"portainer"}}`)
 	if code != http.StatusOK || !strings.Contains(body, `"name":"portainer-ce"`) || !strings.Contains(body, `"id":"`+created.ID+`"`) {
 		t.Fatalf("update: %d %s", code, body)
 	}
@@ -334,8 +301,8 @@ func TestServiceCRUD(t *testing.T) {
 
 func TestServiceHostCommandsGate(t *testing.T) {
 	f := newNetworkFixture(t)
-	execBody := `{"name":"backup","driver":"exec","spec":{"exec":{"start":["systemctl","start","backup"],"stop":["systemctl","stop","backup"]}}}`
-	composeFileBody := `{"name":"stack","driver":"compose","spec":{"compose":{"project":"stack","file":"/srv/stack/compose.yml"}}}`
+	execBody := `{"name":"backup","driver":"command","config":{"start":["systemctl","start","backup"],"stop":["systemctl","stop","backup"]}}`
+	composeFileBody := `{"name":"stack","driver":"compose","config":{"project":"stack","file":"/srv/stack/compose.yml"}}`
 	execSvc := f.createService(t, execBody)
 	if !strings.Contains(statusBody(t, f, http.MethodGet, "/api/v1/capabilities"), `"host_commands":true`) {
 		t.Fatal("capabilities must report host commands when enabled")
@@ -350,20 +317,47 @@ func TestServiceHostCommandsGate(t *testing.T) {
 			t.Fatalf("host command service with host commands off: %d %s", code, resp)
 		}
 	}
-	downgrade := `{"name":"backup","driver":"docker","spec":{"docker":{"containers":["backup"]}}}`
+	downgrade := `{"name":"backup","driver":"docker","config":{"containers":["backup"]}}`
 	if code, resp := statusAndBody(t, f.srv, http.MethodPut, "/api/v1/services/"+execSvc.ID, downgrade); code != http.StatusForbidden {
 		t.Fatalf("editing an exec service without host access: %d %s", code, resp)
 	}
 	if code, resp := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/services/"+execSvc.ID, ""); code != http.StatusForbidden {
 		t.Fatalf("deleting an exec service without host access: %d %s", code, resp)
 	}
-	plain := f.createService(t, `{"name":"plain","driver":"compose","spec":{"compose":{"project":"plain"}}}`)
+	plain := f.createService(t, `{"name":"plain","driver":"compose","config":{"project":"plain"}}`)
 	if code, resp := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/services/"+plain.ID, ""); code != http.StatusNoContent {
 		t.Fatalf("deleting a plain service without host access: %d %s", code, resp)
 	}
 	f.api.SetHostCommands(true)
 	if code, resp := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/services/"+execSvc.ID, ""); code != http.StatusNoContent {
 		t.Fatalf("deleting an exec service with host access: %d %s", code, resp)
+	}
+}
+
+func TestShouldGateExplicitComposeHostFieldsBeforeNormalization(t *testing.T) {
+	f := newNetworkFixture(t)
+	f.api.SetHostCommands(false)
+	for _, field := range []string{`"bin":"custom-docker"`, `"bin":" "`, `"file":" "`} {
+		body := `{"name":"stack","driver":"compose","config":{"project":"stack",` + field + `}}`
+		if code, resp := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services", body); code != http.StatusForbidden || !strings.Contains(resp, "MISHMESH_HOST_COMMANDS") {
+			t.Fatalf("explicit host field bypassed gate: %d %s", code, resp)
+		}
+	}
+}
+
+func TestShouldRejectInvalidTCPReadinessBeforePersistence(t *testing.T) {
+	f := newNetworkFixture(t)
+	for _, target := range []string{"localhost:http", "localhost:0", "localhost:65536", ":80"} {
+		body := `{"name":"invalid-ready","driver":"docker","config":{"containers":["web"]},"ready":{"tcp":"` + target + `"}}`
+		if code, response := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/services", body); code != http.StatusBadRequest || !strings.Contains(response, "readiness") {
+			t.Fatalf("invalid readiness: %d %s", code, response)
+		}
+	}
+	if body := statusBody(t, f, http.MethodGet, "/api/v1/services"); strings.TrimSpace(body) != "[]" {
+		t.Fatalf("invalid records persisted: %s", body)
+	}
+	if names := f.svc.appliedNames(); len(names) != 0 {
+		t.Fatalf("invalid definitions loaded: %v", names)
 	}
 }
 
@@ -439,7 +433,7 @@ func TestServiceInvalidRecordIsSkipped(t *testing.T) {
 	f := newNetworkFixture(t)
 	ctx := context.Background()
 	good := f.createService(t, dockerServiceBody)
-	bad := &store.Service{ID: store.NewID("svc"), OrgID: defaultOrgID, Name: "broken", Driver: "docker", Spec: json.RawMessage(`{"nope":1}`), CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	bad := &store.Service{ID: store.NewID("svc"), OrgID: defaultOrgID, Name: "broken", Driver: "docker", Config: json.RawMessage(`{"nope":1}`), CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := f.api.data.CreateService(ctx, bad); err != nil {
 		t.Fatal(err)
 	}
@@ -458,6 +452,32 @@ func TestServiceInvalidRecordIsSkipped(t *testing.T) {
 	}
 }
 
+type fallbackEndpointStore struct {
+	store.DataStore
+	endpoints []*store.Endpoint
+}
+
+func (s fallbackEndpointStore) ListEndpointsByOrg(context.Context, string) ([]*store.Endpoint, error) {
+	return s.endpoints, nil
+}
+
+func TestShouldLoadServiceLinkedFallbackOnlyFromSameOrganization(t *testing.T) {
+	f := newNetworkFixture(t)
+	svc := f.createService(t, dockerServiceBody)
+	f.api.data = fallbackEndpointStore{DataStore: f.api.data, endpoints: []*store.Endpoint{
+		{OrgID: "foreign", Policy: &store.EndpointPolicy{ServiceID: svc.ID, ProxyTargets: []string{"http://foreign.invalid:1234"}}},
+		{OrgID: defaultOrgID, Policy: &store.EndpointPolicy{ServiceID: svc.ID, ProxyTargets: []string{"http://127.0.0.1:4321", "http://127.0.0.1:4322"}}},
+	}}
+	if err := f.api.LoadServices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.mu.Lock()
+	defer f.svc.mu.Unlock()
+	if len(f.svc.applied) != 1 || f.svc.applied[0].FallbackReadyAddr != "http://127.0.0.1:4321" {
+		t.Fatalf("definitions=%+v", f.svc.applied)
+	}
+}
+
 func TestNetworkPolicyValidation(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -469,10 +489,10 @@ func TestNetworkPolicyValidation(t *testing.T) {
 		{"service of this org", false, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"$SVC"}}`, http.StatusCreated, ""},
 		{"service unknown", false, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"svc_nope"}}`, http.StatusBadRequest, "not a service of this org"},
 		{"service of another org", false, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"$OTHER"}}`, http.StatusBadRequest, "not a service of this org"},
-		{"public access without connection", false, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`, http.StatusBadRequest, "needs a Cloudflare connection"},
-		{"public access without domain", true, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`, http.StatusBadRequest, "requires a custom domain"},
-		{"public access unknown", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"akamai"}}`, http.StatusBadRequest, "public_access must be"},
-		{"public access with domain", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`, http.StatusCreated, ""},
+		{"public access without connection", false, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusBadRequest, "connection in this organization"},
+		{"public access without domain", true, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusBadRequest, "full DNS domain"},
+		{"public access unknown", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"missing"}]}}`, http.StatusBadRequest, "connection in this organization"},
+		{"public access with domain", true, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusCreated, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -482,7 +502,7 @@ func TestNetworkPolicyValidation(t *testing.T) {
 			if err := f.api.data.CreateOrg(ctx, &store.Org{ID: "org_other", Name: "other", CreatedAt: time.Now()}); err != nil {
 				t.Fatal(err)
 			}
-			other := &store.Service{ID: store.NewID("svc"), OrgID: "org_other", Name: "hidden", Driver: "docker", Spec: json.RawMessage(`{"docker":{"containers":["h"]}}`), CreatedAt: time.Now(), UpdatedAt: time.Now()}
+			other := &store.Service{ID: store.NewID("svc"), OrgID: "org_other", Name: "hidden", Driver: "docker", Config: json.RawMessage(`{"containers":["h"]}`), CreatedAt: time.Now(), UpdatedAt: time.Now()}
 			if err := f.api.data.CreateService(ctx, other); err != nil {
 				t.Fatal(err)
 			}
@@ -490,7 +510,7 @@ func TestNetworkPolicyValidation(t *testing.T) {
 				f.connectCloudflare(t)
 			}
 			body := strings.NewReplacer("$SVC", svc.ID, "$OTHER", other.ID).Replace(tc.body)
-			before := f.cf.triggerCount(defaultOrgID)
+			before := f.hub.triggerCount("public-connection")
 			code, resp := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/endpoints", body)
 			if code != tc.wantCode {
 				t.Fatalf("status %d want %d: %s", code, tc.wantCode, resp)
@@ -498,7 +518,7 @@ func TestNetworkPolicyValidation(t *testing.T) {
 			if tc.wantMsg != "" && !strings.Contains(resp, tc.wantMsg) {
 				t.Fatalf("body %q missing %q", resp, tc.wantMsg)
 			}
-			if triggered := f.cf.triggerCount(defaultOrgID) > before; triggered != (code == http.StatusCreated) {
+			if triggered := f.hub.triggerCount("public-connection") > before; triggered != (code == http.StatusCreated && tc.connect) {
 				t.Fatalf("triggered=%v for status %d", triggered, code)
 			}
 		})
@@ -508,16 +528,16 @@ func TestNetworkPolicyValidation(t *testing.T) {
 func TestPatchRevalidatesNetworkPolicy(t *testing.T) {
 	f := newNetworkFixture(t)
 	f.connectCloudflare(t)
-	ep := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`)
+	ep := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`)
 	code, body := statusAndBody(t, f.srv, http.MethodPatch, "/api/v1/endpoints/"+ep.ID, `{"domain":""}`)
-	if code != http.StatusBadRequest || !strings.Contains(body, "requires a custom domain") {
-		t.Fatalf("removing the domain of a public endpoint: %d %s", code, body)
+	if code != http.StatusOK {
+		t.Fatalf("explicit access hostname was lost when canonical domain was cleared: %d %s", code, body)
 	}
-	before := f.cf.triggerCount(defaultOrgID)
+	before := f.hub.triggerCount("public-connection")
 	if code, _ := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/endpoints/"+ep.ID, ""); code != http.StatusNoContent {
 		t.Fatalf("delete: %d", code)
 	}
-	if f.cf.triggerCount(defaultOrgID) <= before {
+	if f.hub.triggerCount("public-connection") <= before {
 		t.Fatal("delete did not trigger a cloudflare sync")
 	}
 }
@@ -525,10 +545,15 @@ func TestPatchRevalidatesNetworkPolicy(t *testing.T) {
 func TestPublicEndpointStaysEditableAfterDisconnect(t *testing.T) {
 	f := newNetworkFixture(t)
 	f.connectCloudflare(t)
-	public := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`)
+	public := f.createEndpoint(t, `{"method":"proxy","domain":"app.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`)
 	private := f.createEndpoint(t, `{"method":"proxy","domain":"other.example.org","policy":{"proxy_targets":["93.184.216.34:80"]}}`)
-	if code, _ := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/cloudflare", ""); code != http.StatusNoContent {
-		t.Fatalf("disconnect: %d", code)
+	record, err := f.api.data.GetConnection(context.Background(), "public-connection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Config = json.RawMessage(`{"invalid":true}`)
+	if err := f.api.data.UpdateConnection(context.Background(), record); err != nil {
+		t.Fatal(err)
 	}
 	cases := []struct {
 		name string
@@ -536,11 +561,11 @@ func TestPublicEndpointStaysEditableAfterDisconnect(t *testing.T) {
 		body string
 		want int
 	}{
-		{"edit targets of a public endpoint", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"public_access":"cloudflare"}}`, http.StatusOK},
+		{"edit targets of a public endpoint", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusOK},
 		{"edit port of a public endpoint", public.ID, `{"port":8443}`, http.StatusOK},
-		{"turn public access off", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"public_access":""}}`, http.StatusOK},
-		{"turn public access back on", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"public_access":"cloudflare"}}`, http.StatusBadRequest},
-		{"newly public endpoint", private.ID, `{"policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`, http.StatusBadRequest},
+		{"turn public access off", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[]}}`, http.StatusOK},
+		{"turn public access back on", public.ID, `{"policy":{"proxy_targets":["93.184.216.35:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusBadRequest},
+		{"newly public endpoint", private.ID, `{"policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`, http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -549,171 +574,8 @@ func TestPublicEndpointStaysEditableAfterDisconnect(t *testing.T) {
 			}
 		})
 	}
-	if code, body := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/endpoints", `{"method":"proxy","domain":"new.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"public_access":"cloudflare"}}`); code != http.StatusBadRequest {
+	if code, body := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/endpoints", `{"method":"proxy","domain":"new.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"public-connection"}]}}`); code != http.StatusBadRequest {
 		t.Fatalf("create public endpoint without a connection: %d %s", code, body)
-	}
-}
-
-func TestCloudflareConnectionLifecycle(t *testing.T) {
-	f := newNetworkFixture(t)
-	code, body := statusAndBody(t, f.srv, http.MethodGet, "/api/v1/cloudflare", "")
-	if code != http.StatusOK || !strings.Contains(body, `"level":"none"`) || strings.Contains(body, `"connection"`) || !strings.Contains(body, `"status"`) {
-		t.Fatalf("empty: %d %s", code, body)
-	}
-	if code, _ := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/cloudflare/sync", ""); code != http.StatusNotFound {
-		t.Fatalf("sync without connection: %d", code)
-	}
-
-	tunnelToken := testTunnelToken("acct1", "tun1")
-	f.cf.setStatus(defaultOrgID, cloudflare.Status{Level: cloudflare.LevelImported, Hostnames: []cloudflare.HostStatus{{Host: "fresh.example.org", State: cloudflare.StateUnclaimed}}})
-	syncsBefore := f.cf.syncCount(defaultOrgID)
-	code, body = statusAndBody(t, f.srv, http.MethodPut, "/api/v1/cloudflare", `{"name":"lab","tunnel_token":"`+tunnelToken+`"}`)
-	if code != http.StatusOK {
-		t.Fatalf("import: %d %s", code, body)
-	}
-	if f.cf.syncCount(defaultOrgID) != syncsBefore+1 || !strings.Contains(body, "fresh.example.org") {
-		t.Fatalf("import must answer with a freshly synced status: syncs=%d->%d %s", syncsBefore, f.cf.syncCount(defaultOrgID), body)
-	}
-	var view cloudflareDTO
-	if err := json.Unmarshal([]byte(body), &view); err != nil {
-		t.Fatal(err)
-	}
-	c := view.Connection
-	if view.Level != cloudflare.LevelImported || c == nil || c.AccountID != "acct1" || c.TunnelID != "tun1" || !c.TunnelTokenSet || c.APITokenSet ||
-		c.Connector != cloudflare.ConnectorExternal || c.MetricsAddr != cloudflare.DefaultMetricsAddr || c.Origin != "http://127.0.0.1:8090" {
-		t.Fatalf("imported view = %+v / %+v", view, c)
-	}
-	if strings.Contains(body, tunnelToken) {
-		t.Fatal("response leaks the tunnel token")
-	}
-	if f.cf.reloadCount(defaultOrgID) != 1 {
-		t.Fatalf("reloads = %d", f.cf.reloadCount(defaultOrgID))
-	}
-	stored, err := f.api.data.GetCloudflareConnection(context.Background(), defaultOrgID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(stored.TunnelTokenEnc), tunnelToken) {
-		t.Fatal("tunnel token stored in plaintext")
-	}
-	plain, err := f.api.secretBox.Open(stored.TunnelTokenEnc, cloudflare.TokenContext(defaultOrgID, cloudflare.TokenKindTunnel))
-	if err != nil || string(plain) != tunnelToken {
-		t.Fatalf("sealed tunnel token does not open: %v", err)
-	}
-
-	code, body = statusAndBody(t, f.srv, http.MethodPut, "/api/v1/cloudflare", `{"name":"lab","api_token":"cf-api-secret","prune":true,"access_app_id":"app-1"}`)
-	if code != http.StatusOK || !strings.Contains(body, `"level":"managed"`) || !strings.Contains(body, `"api_token_set":true`) || strings.Contains(body, "cf-api-secret") {
-		t.Fatalf("upgrade to managed: %d %s", code, body)
-	}
-	code, body = statusAndBody(t, f.srv, http.MethodPut, "/api/v1/cloudflare", `{"name":"lab","clear_api_token":true}`)
-	if code != http.StatusOK || !strings.Contains(body, `"level":"imported"`) {
-		t.Fatalf("downgrade to imported: %d %s", code, body)
-	}
-
-	f.cf.setStatus(defaultOrgID, cloudflare.Status{Level: cloudflare.LevelImported, Hostnames: []cloudflare.HostStatus{{Host: "a.example.org", State: cloudflare.StateUnclaimed}}})
-	code, body = statusAndBody(t, f.srv, http.MethodPost, "/api/v1/cloudflare/sync", "")
-	if code != http.StatusOK || !strings.Contains(body, "a.example.org") {
-		t.Fatalf("sync: %d %s", code, body)
-	}
-	f.cf.syncErr = errors.New("connector unreachable")
-	code, body = statusAndBody(t, f.srv, http.MethodPost, "/api/v1/cloudflare/sync", "")
-	if code != http.StatusBadGateway || !strings.Contains(body, "connector unreachable") || !strings.Contains(body, `"status"`) {
-		t.Fatalf("failed sync: %d %s", code, body)
-	}
-
-	if code, _ := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/cloudflare", ""); code != http.StatusNoContent {
-		t.Fatalf("delete: %d", code)
-	}
-	if code, _ := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/cloudflare", ""); code != http.StatusNotFound {
-		t.Fatalf("second delete: %d", code)
-	}
-	code, body = statusAndBody(t, f.srv, http.MethodGet, "/api/v1/cloudflare", "")
-	if code != http.StatusOK || !strings.Contains(body, `"level":"none"`) {
-		t.Fatalf("after delete: %d %s", code, body)
-	}
-}
-
-func TestCloudflareConnectionValidation(t *testing.T) {
-	token := testTunnelToken("acct1", "tun1")
-	tests := []struct {
-		name string
-		body string
-		want int
-		msg  string
-	}{
-		{"missing name", `{"tunnel_token":"` + token + `"}`, http.StatusBadRequest, "name is required"},
-		{"missing token", `{"name":"lab"}`, http.StatusBadRequest, "tunnel_token is required"},
-		{"bad token", `{"name":"lab","tunnel_token":"bogus!"}`, http.StatusBadRequest, "base64"},
-		{"bad token ids", `{"name":"lab","tunnel_token":"` + testTunnelToken("acct/1", "tun1") + `"}`, http.StatusBadRequest, "invalid account"},
-		{"remote metrics", `{"name":"lab","tunnel_token":"` + token + `","metrics_addr":"10.0.0.1:20241"}`, http.StatusBadRequest, "loopback"},
-		{"bad origin", `{"name":"lab","tunnel_token":"` + token + `","origin":"ftp://x"}`, http.StatusBadRequest, "origin must be"},
-		{"origin with path", `{"name":"lab","tunnel_token":"` + token + `","origin":"http://127.0.0.1:8090/x"}`, http.StatusBadRequest, "path"},
-		{"bad connector", `{"name":"lab","tunnel_token":"` + token + `","connector":"docker"}`, http.StatusBadRequest, "connector must be"},
-		{"bad access app", `{"name":"lab","tunnel_token":"` + token + `","access_app_id":"../x"}`, http.StatusBadRequest, "access_app_id"},
-		{"prune without api token", `{"name":"lab","tunnel_token":"` + token + `","prune":true}`, http.StatusBadRequest, "prune needs an API token"},
-		{"clear and set api token", `{"name":"lab","tunnel_token":"` + token + `","api_token":"x","clear_api_token":true}`, http.StatusBadRequest, "mutually exclusive"},
-		{"oversized token", `{"name":"lab","tunnel_token":"` + strings.Repeat("a", maxCloudflareTokenLen+1) + `"}`, http.StatusBadRequest, "too long"},
-		{"custom origin", `{"name":"lab","tunnel_token":"` + token + `","origin":"https://ingress.lab:8443/"}`, http.StatusOK, `"origin":"https://ingress.lab:8443"`},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newNetworkFixture(t)
-			code, body := statusAndBody(t, f.srv, http.MethodPut, "/api/v1/cloudflare", tc.body)
-			if code != tc.want || !strings.Contains(body, tc.msg) {
-				t.Fatalf("%d %s, want %d containing %q", code, body, tc.want, tc.msg)
-			}
-		})
-	}
-}
-
-func TestCloudflareTunnelBelongsToOneOrg(t *testing.T) {
-	f := newNetworkFixture(t)
-	ctx := context.Background()
-	if err := f.api.data.CreateOrg(ctx, &store.Org{ID: "org_other", Name: "other", CreatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.api.data.SetCloudflareConnection(ctx, &store.CloudflareConnection{OrgID: "org_other", Name: "theirs", AccountID: "acct1", TunnelID: "tun1",
-		TunnelTokenEnc: []byte("x"), Connector: cloudflare.ConnectorExternal, MetricsAddr: cloudflare.DefaultMetricsAddr, UpdatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	code, body := statusAndBody(t, f.srv, http.MethodPut, "/api/v1/cloudflare", `{"name":"lab","tunnel_token":"`+testTunnelToken("acct1", "tun1")+`"}`)
-	if code != http.StatusConflict || !strings.Contains(body, "another organization") {
-		t.Fatalf("cross-org tunnel: %d %s", code, body)
-	}
-}
-
-func TestCloudflareWritesNeedHostAccess(t *testing.T) {
-	f := newNetworkFixture(t)
-	f.connectCloudflare(t)
-	f.api.SetHostCommands(false)
-	if code, body := statusAndBody(t, f.srv, http.MethodPut, "/api/v1/cloudflare", `{"name":"lab"}`); code != http.StatusForbidden {
-		t.Fatalf("put without host access: %d %s", code, body)
-	}
-	if code, body := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/cloudflare/detect", `{}`); code != http.StatusForbidden {
-		t.Fatalf("detect without host access: %d %s", code, body)
-	}
-	if code, body := statusAndBody(t, f.srv, http.MethodDelete, "/api/v1/cloudflare", ""); code != http.StatusNoContent {
-		t.Fatalf("delete must not need host access: %d %s", code, body)
-	}
-
-	api, srv := newNetworkTestAPI(t)
-	api.SetHostCommands(true)
-	if code, body := statusAndBody(t, srv, http.MethodPut, "/api/v1/cloudflare", `{"name":"lab","tunnel_token":"`+testTunnelToken("a", "b")+`"}`); code != http.StatusServiceUnavailable {
-		t.Fatalf("put without a secret box: %d %s", code, body)
-	}
-}
-
-func TestCloudflareDetect(t *testing.T) {
-	f := newNetworkFixture(t)
-	code, body := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/cloudflare/detect", `{"tunnel_token":"x"}`)
-	if code != http.StatusOK || !strings.Contains(body, `"tunnel_id":"tun1"`) || !strings.Contains(body, "a.example.org") {
-		t.Fatalf("detect: %d %s", code, body)
-	}
-	if code, body := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/cloudflare/detect", `{"metrics_addr":"8.8.8.8:53"}`); code != http.StatusBadRequest {
-		t.Fatalf("detect remote: %d %s", code, body)
-	}
-	if code, body := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/cloudflare/detect", `{"tunnel_token":"bogus"}`); code != http.StatusBadRequest {
-		t.Fatalf("detect bad token: %d %s", code, body)
 	}
 }
 
@@ -722,16 +584,18 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 	h := &fakeHealth{results: map[string]health.EndpointHealth{}}
 	f.api.SetHealth(h)
 	f.connectCloudflare(t)
-	svc := f.createService(t, `{"name":"syncthing","driver":"compose","spec":{"compose":{"project":"syncthing"}}}`)
-	ep := f.createEndpoint(t, `{"method":"proxy","domain":"sync.example.org","policy":{"proxy_targets":["93.184.216.34:8384","https://93.184.216.35:8384"],"service_id":"`+svc.ID+`","public_access":"cloudflare"}}`)
-	f.cf.setStatus(defaultOrgID, cloudflare.Status{
-		Level:  cloudflare.LevelImported,
-		Tunnel: &cloudflare.TunnelInfo{Name: "lab", Status: cloudflare.TunnelHealthy, Connections: 2},
-		Hostnames: []cloudflare.HostStatus{
+	svc := f.createService(t, `{"name":"syncthing","driver":"compose","config":{"project":"syncthing"}}`)
+	ep := f.createEndpoint(t, `{"method":"proxy","domain":"sync.example.org","policy":{"proxy_targets":["93.184.216.34:8384","https://93.184.216.35:8384"],"service_id":"`+svc.ID+`","access":[{"connection_id":"public-connection"}]}}`)
+	f.hub.mu.Lock()
+	f.hub.statuses["public-connection"] = connections.Status{
+		Level: "imported", Health: "up",
+
+		Hostnames: []connections.HostStatus{
 			{Host: "sync.example.org", EndpointID: ep.ID, State: cloudflare.StatePublished},
 			{Host: "spare.example.org", State: cloudflare.StateUnclaimed, Detail: "no endpoint claims this hostname"},
 		},
-	})
+	}
+	f.hub.mu.Unlock()
 	h.mu.Lock()
 	h.results[ep.ID] = health.EndpointHealth{State: health.StateDegraded, Targets: []health.TargetStatus{
 		{Target: "93.184.216.34:8384", Healthy: true},
@@ -750,13 +614,13 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 		nodes[n.ID] = n
 	}
 	want := map[string]string{
-		tunnelNodeID:                        health.StateUp,
-		"hostname:sync.example.org":         health.StateUp,
-		"hostname:spare.example.org":        health.StateUnknown,
-		"endpoint:" + ep.ID:                 health.StateDegraded,
-		"target:http://93.184.216.34:8384":  health.StateUp,
-		"target:https://93.184.216.35:8384": health.StateDown,
-		"service:" + svc.ID:                 health.StateSleeping,
+		"connection:public-connection":                 health.StateUp,
+		"hostname:public-connection:sync.example.org":  health.StateUp,
+		"hostname:public-connection:spare.example.org": health.StateUnknown,
+		"endpoint:" + ep.ID:                            health.StateDegraded,
+		"target:http://93.184.216.34:8384":             health.StateUp,
+		"target:https://93.184.216.35:8384":            health.StateDown,
+		"service:" + svc.ID:                            health.StateSleeping,
 	}
 	for id, st := range want {
 		if n, ok := nodes[id]; !ok || n.State != st {
@@ -764,27 +628,27 @@ func TestEndpointHealthAndTopology(t *testing.T) {
 		}
 	}
 	refs := map[string]topologyRef{
-		tunnelNodeID:                {Kind: "cloudflare"},
-		"hostname:sync.example.org": {Kind: "cloudflare"},
-		"endpoint:" + ep.ID:         {Kind: "endpoint", ID: ep.ID},
-		"service:" + svc.ID:         {Kind: "service", ID: svc.ID},
+		"connection:public-connection":                {Kind: "connection", ID: "public-connection"},
+		"hostname:public-connection:sync.example.org": {Kind: "connection", ID: "public-connection"},
+		"endpoint:" + ep.ID:                           {Kind: "endpoint", ID: ep.ID},
+		"service:" + svc.ID:                           {Kind: "service", ID: svc.ID},
 	}
 	for id, ref := range refs {
 		if n := nodes[id]; n.Ref == nil || *n.Ref != ref {
 			t.Fatalf("node %s ref = %+v want %+v", id, n.Ref, ref)
 		}
 	}
-	if nodes["service:"+svc.ID].Label != "syncthing" || nodes[tunnelNodeID].Label != "Cloudflare tunnel lab" {
-		t.Fatalf("labels: %q %q", nodes["service:"+svc.ID].Label, nodes[tunnelNodeID].Label)
+	if nodes["service:"+svc.ID].Label != "syncthing" || nodes["connection:public-connection"].Label != "public-connection" {
+		t.Fatalf("labels: %q %q", nodes["service:"+svc.ID].Label, nodes["connection:public-connection"].Label)
 	}
 	edges := map[topologyEdge]bool{}
 	for _, e := range topo.Edges {
 		edges[e] = true
 	}
 	for _, e := range []topologyEdge{
-		{From: tunnelNodeID, To: "hostname:sync.example.org", Kind: edgeRoutes},
-		{From: tunnelNodeID, To: "hostname:spare.example.org", Kind: edgeRoutes},
-		{From: "hostname:sync.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes},
+		{From: "connection:public-connection", To: "hostname:public-connection:sync.example.org", Kind: edgeRoutes},
+		{From: "connection:public-connection", To: "hostname:public-connection:spare.example.org", Kind: edgeRoutes},
+		{From: "hostname:public-connection:sync.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes},
 		{From: "endpoint:" + ep.ID, To: "target:http://93.184.216.34:8384", Kind: edgeProxies},
 		{From: "endpoint:" + ep.ID, To: "service:" + svc.ID, Kind: edgeWakes},
 	} {
@@ -818,31 +682,33 @@ func TestTopologyLinksUnclaimedHostnameToPrivateEndpoint(t *testing.T) {
 	f := newNetworkFixture(t)
 	f.connectCloudflare(t)
 	ep := f.createEndpoint(t, `{"method":"proxy","domain":"wiki.example.org","policy":{"proxy_targets":["93.184.216.34:80"]}}`)
-	f.cf.setStatus(defaultOrgID, cloudflare.Status{
-		Level:  cloudflare.LevelImported,
-		Tunnel: &cloudflare.TunnelInfo{Name: "lab", Status: cloudflare.TunnelHealthy},
-		Hostnames: []cloudflare.HostStatus{
+	f.hub.mu.Lock()
+	f.hub.statuses["public-connection"] = connections.Status{
+		Level: "imported", Health: "up",
+
+		Hostnames: []connections.HostStatus{
 			{Host: "wiki.example.org", EndpointID: ep.ID, State: cloudflare.StateUnclaimed},
 			{Host: "spare.example.org", State: cloudflare.StateUnclaimed},
 		},
-	})
+	}
+	f.hub.mu.Unlock()
 	topo := fetchTopology(t, f.srv)
 	refs := map[string]*topologyRef{}
 	for _, n := range topo.Nodes {
 		refs[n.ID] = n.Ref
 	}
-	if r := refs["hostname:wiki.example.org"]; r == nil || *r != (topologyRef{Kind: "endpoint", ID: ep.ID}) {
+	if r := refs["hostname:public-connection:wiki.example.org"]; r == nil || *r != (topologyRef{Kind: "endpoint", ID: ep.ID}) {
 		t.Fatalf("matched hostname ref = %+v", r)
 	}
-	if r := refs["hostname:spare.example.org"]; r == nil || *r != (topologyRef{Kind: "cloudflare"}) {
+	if r := refs["hostname:public-connection:spare.example.org"]; r == nil || *r != (topologyRef{Kind: "connection", ID: "public-connection"}) {
 		t.Fatalf("orphan hostname ref = %+v", r)
 	}
 	found := false
 	for _, e := range topo.Edges {
-		if e == (topologyEdge{From: "hostname:wiki.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes}) {
+		if e == (topologyEdge{From: "hostname:public-connection:wiki.example.org", To: "endpoint:" + ep.ID, Kind: edgeServes}) {
 			found = true
 		}
-		if e.From == "hostname:spare.example.org" {
+		if e.From == "hostname:public-connection:spare.example.org" {
 			t.Fatalf("orphan hostname has an outgoing edge %+v", e)
 		}
 	}
@@ -855,7 +721,7 @@ func TestTopologyWithoutCloudflare(t *testing.T) {
 	f := newNetworkFixture(t)
 	ep := f.createEndpoint(t, `{"method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"service_id":"`+f.createService(t, dockerServiceBody).ID+`"}}`)
 	for _, n := range fetchTopology(t, f.srv).Nodes {
-		if n.Kind == nodeTunnel || n.Kind == nodeHostname {
+		if n.Kind == nodeConnection || n.Kind == nodeHostname {
 			t.Fatalf("unexpected cloudflare node %+v for endpoint %s", n, ep.ID)
 		}
 	}
@@ -884,7 +750,7 @@ func TestNetworkRolePermissions(t *testing.T) {
 	api.SetPublicConfig("localhost:8080", "http")
 	api.ConfigureAuth(AuthOptions{Enabled: true, PasswordEnabled: true})
 	api.SetServices(newFakeServices())
-	api.SetCloudflare(newFakeCloudflare(), testSecretBox(t))
+	api.SetConnections(newFakeConnectionControl(), testConnectionRegistry(t), testSecretBox(t))
 	api.SetHostCommands(true)
 	mux := http.NewServeMux()
 	api.Register(mux)
@@ -895,8 +761,7 @@ func TestNetworkRolePermissions(t *testing.T) {
 	admin := inviteAndRegister(t, srv, owner, "admin@example.com", "admin")
 	member := inviteAndRegister(t, srv, owner, "member@example.com", "member")
 
-	execBody := `{"name":"backup","driver":"exec","spec":{"exec":{"start":["true"],"stop":["true"],"env":{"TOKEN":"s3cret"}}}}`
-	cfBody := `{"name":"lab","tunnel_token":"` + testTunnelToken("acct1", "tun1") + `"}`
+	execBody := `{"name":"backup","driver":"command","config":{"start":["true"],"stop":["true"],"env":{"TOKEN":"s3cret"}}}`
 
 	var caps map[string]bool
 	doc(t, owner, srv, http.MethodGet, "/api/v1/capabilities", "", http.StatusOK, &caps)
@@ -909,42 +774,40 @@ func TestNetworkRolePermissions(t *testing.T) {
 	}
 
 	doc(t, admin, srv, http.MethodPost, "/api/v1/services", execBody, http.StatusForbidden, nil)
-	doc(t, admin, srv, http.MethodPut, "/api/v1/cloudflare", cfBody, http.StatusForbidden, nil)
 	var svc serviceDTO
 	doc(t, admin, srv, http.MethodPost, "/api/v1/services", dockerServiceBody, http.StatusCreated, &svc)
 	var execSvc serviceDTO
 	doc(t, owner, srv, http.MethodPost, "/api/v1/services", execBody, http.StatusCreated, &execSvc)
 	doc(t, admin, srv, http.MethodPut, "/api/v1/services/"+execSvc.ID, dockerServiceBody, http.StatusForbidden, nil)
-	doc(t, owner, srv, http.MethodPut, "/api/v1/cloudflare", cfBody, http.StatusOK, nil)
 
 	doc(t, member, srv, http.MethodGet, "/api/v1/services", "", http.StatusOK, nil)
 	doc(t, member, srv, http.MethodGet, "/api/v1/services/"+svc.ID, "", http.StatusOK, nil)
-	doc(t, member, srv, http.MethodGet, "/api/v1/cloudflare", "", http.StatusOK, nil)
 	doc(t, member, srv, http.MethodPost, "/api/v1/services", dockerServiceBody, http.StatusForbidden, nil)
 	doc(t, member, srv, http.MethodPost, "/api/v1/services/"+svc.ID+"/start", "", http.StatusForbidden, nil)
-	doc(t, member, srv, http.MethodDelete, "/api/v1/cloudflare", "", http.StatusForbidden, nil)
-	doc(t, member, srv, http.MethodPost, "/api/v1/cloudflare/sync", "", http.StatusForbidden, nil)
-	doc(t, admin, srv, http.MethodDelete, "/api/v1/cloudflare", "", http.StatusNoContent, nil)
 
 	for _, tc := range []struct {
 		name   string
 		client *http.Client
 		want   string
 	}{
-		{"owner", owner, "s3cret"},
+		{"owner", owner, redactedEnvValue},
 		{"admin", admin, redactedEnvValue},
 		{"member", member, redactedEnvValue},
 	} {
 		var got serviceDTO
 		doc(t, tc.client, srv, http.MethodGet, "/api/v1/services/"+execSvc.ID, "", http.StatusOK, &got)
-		if got.Spec.Exec == nil || got.Spec.Exec.Env["TOKEN"] != tc.want {
-			t.Errorf("%s sees exec env %+v, want TOKEN=%q", tc.name, got.Spec.Exec, tc.want)
+		var gotConfig services.ExecSpec
+		_ = json.Unmarshal(got.Config, &gotConfig)
+		if gotConfig.Env["TOKEN"] != tc.want {
+			t.Errorf("%s sees command env %+v, want TOKEN=%q", tc.name, gotConfig.Env, tc.want)
 		}
 		var list []serviceDTO
 		doc(t, tc.client, srv, http.MethodGet, "/api/v1/services", "", http.StatusOK, &list)
 		for _, item := range list {
-			if item.ID == execSvc.ID && item.Spec.Exec.Env["TOKEN"] != tc.want {
-				t.Errorf("%s list sees exec env %+v, want TOKEN=%q", tc.name, item.Spec.Exec, tc.want)
+			var itemConfig services.ExecSpec
+			_ = json.Unmarshal(item.Config, &itemConfig)
+			if item.ID == execSvc.ID && itemConfig.Env["TOKEN"] != tc.want {
+				t.Errorf("%s list sees command env %+v, want TOKEN=%q", tc.name, itemConfig.Env, tc.want)
 			}
 		}
 	}

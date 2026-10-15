@@ -20,11 +20,14 @@ func TestDecodePolicyDropsInvalidRateLimitKeepsRest(t *testing.T) {
 
 func TestDecodePolicyDropsControlPlaneFields(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	p := decodePolicy([]byte(`{"ip_allow":["10.0.0.0/8"],"proxy_targets":["169.254.169.254:80"],"load_balance":"failover","origin_tls":{"insecure_skip_verify":true},"service_id":"svc_other","public_access":"cloudflare"}`), log)
+	p := decodePolicy([]byte(`{"ip_allow":["10.0.0.0/8"],"proxy_targets":["169.254.169.254:80"],"load_balance":"failover","origin_tls":{"insecure_skip_verify":true},"service_id":"svc_other","public_access":"cloudflare","access":[{"connection_id":"conn_other","hostname":"private.example.test"}],"connect":{"name":"database","allow_agents":["ag_allowed","*"]}}`), log)
 	if p == nil || len(p.IPAllow) != 1 {
 		t.Fatalf("agent-owned fields lost: %+v", p)
 	}
-	if len(p.ProxyTargets) != 0 || p.LoadBalance != "" || p.OriginTLS != nil || p.ServiceID != "" || p.PublicAccess != "" {
+	if len(p.ProxyTargets) != 0 || p.LoadBalance != "" || p.OriginTLS != nil || p.ServiceID != "" || len(p.Access) > 0 {
 		t.Fatalf("control-plane fields kept: %+v", p)
+	}
+	if p.Connect == nil || p.Connect.Name != "database" || len(p.Connect.AllowAgents) != 2 {
+		t.Fatalf("authorized agent Connect was stripped: %+v", p.Connect)
 	}
 }

@@ -70,7 +70,9 @@ func Open(dsn string, pool PoolConfig) (*Store, error) {
 	}
 	pool.apply(db)
 	s := &Store{db: db, queryTimeout: pool.withDefaults().QueryTimeout}
-	if err := s.migrate(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -97,6 +99,14 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 func runMigrations(ctx context.Context, conn *sql.Conn) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := validateSchema(ctx, tx); err != nil {
+		return err
+	}
 	const schema = `
 CREATE TABLE IF NOT EXISTS orgs (
   id         TEXT PRIMARY KEY,
@@ -129,7 +139,8 @@ CREATE TABLE IF NOT EXISTS endpoints (
   domain     TEXT,
   port       INTEGER NOT NULL DEFAULT 0,
   policy     TEXT,
-  created_at BIGINT NOT NULL
+  created_at BIGINT NOT NULL,
+  method     TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_endpoints_subdomain
   ON endpoints(subdomain) WHERE subdomain IS NOT NULL AND subdomain <> '';
@@ -204,19 +215,10 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at BIGINT NOT NULL
 );
 `
-	if _, err := conn.ExecContext(ctx, schema+networkSchema); err != nil {
+	if _, err := tx.ExecContext(ctx, schema+networkSchema); err != nil {
 		return fmt.Errorf("postgres migrate: %w", err)
 	}
-	for _, alter := range []string{
-		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS domain TEXT`,
-		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS policy TEXT`,
-		`ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS method TEXT`,
-	} {
-		if _, err := conn.ExecContext(ctx, alter); err != nil {
-			return fmt.Errorf("postgres migrate alter: %w", err)
-		}
-	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) CreateOrg(ctx context.Context, o *store.Org) error {
@@ -416,10 +418,21 @@ func (s *Store) CreateEndpoint(ctx context.Context, e *store.Endpoint) error {
 	if err != nil {
 		return wrap("create endpoint", err)
 	}
-	_, err = s.db.ExecContext(ctx,
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := validateEndpointReferences(ctx, tx, e, false); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO endpoints (id, agent_id, org_id, kind, lifecycle, subdomain, domain, port, policy, created_at, method) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		e.ID, e.AgentID, e.OrgID, e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, ns(e.CreatedAt), store.MethodOrDefault(e.Method))
-	return wrap("create endpoint", err)
+	if err != nil {
+		return wrap("create endpoint", err)
+	}
+	return wrap("create endpoint", tx.Commit())
 }
 
 func (s *Store) GetEndpoint(ctx context.Context, id string) (*store.Endpoint, error) {
@@ -437,7 +450,8 @@ func (s *Store) GetEndpointBySubdomain(ctx context.Context, subdomain string) (*
 func (s *Store) GetEndpointByDomain(ctx context.Context, domain string) (*store.Endpoint, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	return scanEndpoint(s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE domain = $1`, domain).Scan)
+	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
+	return scanEndpoint(s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE lower(rtrim(domain, '.')) = $1 AND (SELECT COUNT(*) FROM endpoints WHERE lower(rtrim(domain, '.')) = $1) = 1`, domain).Scan)
 }
 
 func (s *Store) ListEndpointsByAgent(ctx context.Context, agentID string) ([]*store.Endpoint, error) {
@@ -476,10 +490,24 @@ func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
 	if err != nil {
 		return wrap("update endpoint", err)
 	}
-	_, err = s.db.ExecContext(ctx,
+	tx, err := s.beginNetworkWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := validateEndpointReferences(ctx, tx, e, true); err != nil {
+		return err
+	}
+	if err := clearChangedEndpointAliases(ctx, tx, e); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
 		`UPDATE endpoints SET kind = $1, lifecycle = $2, subdomain = $3, domain = $4, port = $5, policy = $6, method = $7 WHERE id = $8`,
 		e.Kind, e.Lifecycle, nullStr(e.Subdomain), nullStr(e.Domain), e.Port, pol, store.MethodOrDefault(e.Method), e.ID)
-	return wrap("update endpoint", err)
+	if err != nil {
+		return wrap("update endpoint", err)
+	}
+	return wrap("update endpoint", tx.Commit())
 }
 
 func (s *Store) DeleteEndpoint(ctx context.Context, id string) error {

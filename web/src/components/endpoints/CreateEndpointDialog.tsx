@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
+import { AccessRows } from "@/components/endpoints/AccessSection";
 import {
   Dialog,
   DialogContent,
@@ -12,7 +12,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { FormSection } from "@/components/common/FormSection";
 import { FormError } from "@/components/common/ConfirmDialog";
 import { HelpTip, LabelWithHelp } from "@/components/common/HelpTip";
@@ -27,13 +33,17 @@ import {
   validateTargets,
   type UpstreamForm,
 } from "@/components/common/UpstreamFields";
-import { useAgents, useCloudflare, useCreateEndpoint, useServices } from "@/api/hooks";
+import { useAgents, useCreateEndpoint, useServices } from "@/api/hooks";
 import { errorMessage } from "@/api/client";
 import { useSession } from "@/context/SessionContext";
 import { toast } from "@/hooks/use-toast";
 import { HELP, KIND_HELP, KIND_LABELS, METHOD_HELP } from "@/lib/glossary";
-import { isCloudflareConnected } from "@/lib/cloudflare";
-import type { CreateEndpointRequest, EndpointKind, EndpointPolicy } from "@/api/types";
+import type {
+  AccessRef,
+  CreateEndpointRequest,
+  EndpointKind,
+  EndpointPolicy,
+} from "@/api/types";
 
 export type CreateMethod = "native" | "proxy";
 
@@ -42,14 +52,29 @@ export interface EndpointPrefill {
   domain?: string;
   target?: string;
   serviceId?: string;
-  publicAccess?: boolean;
+  connectionId?: string;
+  hostname?: string;
 }
 
 const NO_SERVICE = "__none__";
 
-function ChoiceButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+function ChoiceButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
   return (
-    <Button type="button" variant={active ? "default" : "outline"} size="sm" onClick={onClick} aria-pressed={active}>
+    <Button
+      type="button"
+      variant={active ? "default" : "outline"}
+      size="sm"
+      onClick={onClick}
+      aria-pressed={active}
+    >
       {children}
     </Button>
   );
@@ -68,7 +93,6 @@ export function CreateEndpointDialog({
   const { currentOrgId } = useSession();
   const agents = useAgents(currentOrgId);
   const services = useServices(currentOrgId);
-  const cloudflare = useCloudflare(currentOrgId);
   const create = useCreateEndpoint();
   const [method, setMethod] = useState<CreateMethod>("proxy");
   const [agentId, setAgentId] = useState("");
@@ -78,7 +102,7 @@ export function CreateEndpointDialog({
   const [port, setPort] = useState("");
   const [upstream, setUpstream] = useState<UpstreamForm>(emptyUpstreamForm);
   const [serviceId, setServiceId] = useState("");
-  const [publish, setPublish] = useState(false);
+  const [access, setAccess] = useState<AccessRef[]>([]);
   const [problem, setProblem] = useState<string | null>(null);
   const [targetsProblem, setTargetsProblem] = useState<string | null>(null);
 
@@ -90,20 +114,40 @@ export function CreateEndpointDialog({
     setSubdomain("");
     setDomain(prefill?.domain ?? "");
     setPort("");
-    setUpstream(prefill?.target ? { ...emptyUpstreamForm(), targets: [prefill.target] } : emptyUpstreamForm());
+    setUpstream(
+      prefill?.target
+        ? { ...emptyUpstreamForm(), targets: [prefill.target] }
+        : emptyUpstreamForm(),
+    );
     setServiceId(prefill?.serviceId ?? "");
-    setPublish(prefill?.publicAccess ?? false);
+    setAccess(
+      prefill?.connectionId
+        ? [
+            {
+              connection_id: prefill.connectionId,
+              hostname: prefill.hostname ?? "",
+            },
+          ]
+        : [],
+    );
     setProblem(null);
     setTargetsProblem(null);
     create.reset();
-  }, [open, prefill?.method, prefill?.domain, prefill?.target, prefill?.serviceId, prefill?.publicAccess]);
+  }, [
+    open,
+    prefill?.method,
+    prefill?.domain,
+    prefill?.target,
+    prefill?.serviceId,
+    prefill?.connectionId,
+    prefill?.hostname,
+  ]);
 
   const isProxy = method === "proxy";
   const effectiveKind: EndpointKind = isProxy ? "http" : kind;
   const isHttp = effectiveKind === "http";
-  const connected = isCloudflareConnected(cloudflare.data);
-  const canPublish = connected && isHttp && domain.trim() !== "";
-  const showAdvanced = isProxy && (cleanTargets(upstream).length > 1 || hasHttpsTarget(upstream));
+  const showAdvanced =
+    isProxy && (cleanTargets(upstream).length > 1 || hasHttpsTarget(upstream));
   const serviceList = services.data ?? [];
   const agentList = agents.data ?? [];
 
@@ -115,12 +159,12 @@ export function CreateEndpointDialog({
       return;
     }
     const payload: CreateEndpointRequest = isProxy
-      ? { kind: "http", method: "proxy", lifecycle: "reserved" }
-      : { agent_id: agentId, kind, method: "native", lifecycle: "reserved" };
+      ? { kind: "http", method: "proxy" }
+      : { agent_id: agentId, kind, method: "native" };
     if (isHttp) {
       if (subdomain.trim()) payload.subdomain = subdomain.trim().toLowerCase();
       if (domain.trim()) payload.domain = domain.trim().toLowerCase();
-    } else if (kind === "tcp") {
+    } else if (kind === "tcp" || kind === "udp") {
       if (port.trim()) {
         const value = Number(port);
         if (!Number.isInteger(value) || value < 1 || value > 65535) {
@@ -142,7 +186,7 @@ export function CreateEndpointDialog({
       Object.assign(policy, upstreamPolicyFields(upstream));
     }
     if (isHttp && serviceId) policy.service_id = serviceId;
-    if (canPublish && publish) policy.public_access = "cloudflare";
+    if (access.length > 0) policy.access = access;
     if (Object.keys(policy).length > 0) payload.policy = policy;
     create.mutate(payload, {
       onSuccess: (endpoint) => {
@@ -159,20 +203,29 @@ export function CreateEndpointDialog({
         <form onSubmit={onSubmit} className="space-y-4">
           <DialogHeader>
             <DialogTitle>Reserve endpoint</DialogTitle>
-            <DialogDescription>A stable address that routes to your service. It survives restarts and disconnects.</DialogDescription>
+            <DialogDescription>
+              A stable address that routes to your service. It survives restarts
+              and disconnects.
+            </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-1.5">
             <Label>Method</Label>
             <div className="flex flex-wrap items-center gap-3">
               <span className="inline-flex items-center gap-1">
-                <ChoiceButton active={isProxy} onClick={() => setMethod("proxy")}>
+                <ChoiceButton
+                  active={isProxy}
+                  onClick={() => setMethod("proxy")}
+                >
                   Proxy
                 </ChoiceButton>
                 <HelpTip entry={METHOD_HELP.proxy} />
               </span>
               <span className="inline-flex items-center gap-1">
-                <ChoiceButton active={!isProxy} onClick={() => setMethod("native")}>
+                <ChoiceButton
+                  active={!isProxy}
+                  onClick={() => setMethod("native")}
+                >
                   Agent
                 </ChoiceButton>
                 <HelpTip entry={METHOD_HELP.native} />
@@ -186,7 +239,13 @@ export function CreateEndpointDialog({
                 <Label>Agent</Label>
                 <Select value={agentId} onValueChange={setAgentId}>
                   <SelectTrigger>
-                    <SelectValue placeholder={agents.data && agentList.length === 0 ? "Create an agent first" : "Select an agent"} />
+                    <SelectValue
+                      placeholder={
+                        agents.data && agentList.length === 0
+                          ? "Create an agent first"
+                          : "Select an agent"
+                      }
+                    />
                   </SelectTrigger>
                   <SelectContent>
                     {agentList.map((agent) => (
@@ -200,16 +259,21 @@ export function CreateEndpointDialog({
               </div>
               <div className="space-y-1.5">
                 <LabelWithHelp entry={KIND_HELP[kind]}>Kind</LabelWithHelp>
-                <Select value={kind} onValueChange={(v) => setKind(v as EndpointKind)}>
+                <Select
+                  value={kind}
+                  onValueChange={(v) => setKind(v as EndpointKind)}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {(Object.keys(KIND_LABELS) as EndpointKind[]).map((value) => (
-                      <SelectItem key={value} value={value}>
-                        {KIND_LABELS[value]}
-                      </SelectItem>
-                    ))}
+                    {(Object.keys(KIND_LABELS) as EndpointKind[]).map(
+                      (value) => (
+                        <SelectItem key={value} value={value}>
+                          {KIND_LABELS[value]}
+                        </SelectItem>
+                      ),
+                    )}
                   </SelectContent>
                 </Select>
               </div>
@@ -222,22 +286,38 @@ export function CreateEndpointDialog({
                 <LabelWithHelp htmlFor="new-subdomain" entry={HELP.subdomain}>
                   Subdomain
                 </LabelWithHelp>
-                <Input id="new-subdomain" value={subdomain} onChange={(e) => setSubdomain(e.target.value)} placeholder="api" />
+                <Input
+                  id="new-subdomain"
+                  value={subdomain}
+                  onChange={(e) => setSubdomain(e.target.value)}
+                  placeholder="api"
+                />
               </div>
               <div className="space-y-1.5">
                 <LabelWithHelp htmlFor="new-domain" entry={HELP.domain}>
                   Custom domain
                 </LabelWithHelp>
-                <Input id="new-domain" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="optional" />
+                <Input
+                  id="new-domain"
+                  value={domain}
+                  onChange={(e) => setDomain(e.target.value)}
+                  placeholder="optional"
+                />
               </div>
             </div>
           )}
-          {!isProxy && kind === "tcp" && (
+          {!isProxy && (kind === "tcp" || kind === "udp") && (
             <div className="space-y-1.5">
               <LabelWithHelp htmlFor="new-port" entry={HELP.port}>
                 Port
               </LabelWithHelp>
-              <Input id="new-port" type="number" value={port} onChange={(e) => setPort(e.target.value)} placeholder="auto-assign if empty" />
+              <Input
+                id="new-port"
+                type="number"
+                value={port}
+                onChange={(e) => setPort(e.target.value)}
+                placeholder="auto-assign if empty"
+              />
             </div>
           )}
           {!isProxy && kind === "tls" && (
@@ -245,7 +325,12 @@ export function CreateEndpointDialog({
               <LabelWithHelp htmlFor="new-tls-domain" entry={HELP.domain}>
                 Domain
               </LabelWithHelp>
-              <Input id="new-tls-domain" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="app.example.com" />
+              <Input
+                id="new-tls-domain"
+                value={domain}
+                onChange={(e) => setDomain(e.target.value)}
+                placeholder="app.example.com"
+              />
             </div>
           )}
 
@@ -260,8 +345,14 @@ export function CreateEndpointDialog({
                 error={targetsProblem}
               />
               {showAdvanced && (
-                <FormSection title="Load balancing & origin TLS" summary={upstreamAdvancedSummary(upstream)}>
-                  <UpstreamAdvancedFields form={upstream} onChange={setUpstream} />
+                <FormSection
+                  title="Load balancing & origin TLS"
+                  summary={upstreamAdvancedSummary(upstream)}
+                >
+                  <UpstreamAdvancedFields
+                    form={upstream}
+                    onChange={setUpstream}
+                  />
                 </FormSection>
               )}
             </>
@@ -269,14 +360,22 @@ export function CreateEndpointDialog({
 
           {isHttp && (serviceList.length > 0 || serviceId) && (
             <div className="space-y-1.5">
-              <LabelWithHelp entry={HELP.serviceLink}>Wake a service (optional)</LabelWithHelp>
-              <Select value={serviceId || NO_SERVICE} onValueChange={(v) => setServiceId(v === NO_SERVICE ? "" : v)}>
+              <LabelWithHelp entry={HELP.serviceLink}>
+                Wake a service (optional)
+              </LabelWithHelp>
+              <Select
+                value={serviceId || NO_SERVICE}
+                onValueChange={(v) => setServiceId(v === NO_SERVICE ? "" : v)}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NO_SERVICE}>None</SelectItem>
-                  {serviceId && !serviceList.some((s) => s.id === serviceId) && <SelectItem value={serviceId}>{serviceId}</SelectItem>}
+                  {serviceId &&
+                    !serviceList.some((s) => s.id === serviceId) && (
+                      <SelectItem value={serviceId}>{serviceId}</SelectItem>
+                    )}
                   {serviceList.map((service) => (
                     <SelectItem key={service.id} value={service.id}>
                       {service.name}
@@ -287,30 +386,20 @@ export function CreateEndpointDialog({
             </div>
           )}
 
-          {canPublish && (
-            <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
-              <div>
-                <p className="flex items-center gap-1 text-sm font-medium">
-                  Public access
-                  <HelpTip entry={HELP.publicAccess} />
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Route <span className="font-mono">{domain.trim()}</span> through {cloudflare.data?.connection?.name}.
-                </p>
-              </div>
-              <Switch checked={publish} onCheckedChange={setPublish} />
-            </div>
-          )}
-          {!canPublish && publish && isHttp && (
-            <p className="text-xs text-muted-foreground">
-              {connected ? "Add a custom domain to publish via Cloudflare." : "Cloudflare is not connected, so this endpoint will not be published."}
-            </p>
-          )}
+          <AccessRows kind={effectiveKind} refs={access} onChange={setAccess} />
 
-          <FormError message={problem ?? (create.error ? errorMessage(create.error) : undefined)} />
+          <FormError
+            message={
+              problem ?? (create.error ? errorMessage(create.error) : undefined)
+            }
+          />
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
               Cancel
             </Button>
             <Button type="submit" disabled={create.isPending}>

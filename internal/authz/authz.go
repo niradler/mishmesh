@@ -23,22 +23,22 @@ const (
 type Action string
 
 const (
-	ActionAgentRead     Action = "agent:read"
-	ActionAgentWrite    Action = "agent:write"
-	ActionEndpointRead  Action = "endpoint:read"
-	ActionEndpointWrite Action = "endpoint:write"
-	ActionQuotaRead     Action = "quota:read"
-	ActionQuotaWrite    Action = "quota:write"
-	ActionMemberRead    Action = "member:read"
-	ActionMemberManage  Action = "member:manage"
-	ActionAuditRead     Action = "audit:read"
-	ActionStatusRead    Action = "status:read"
-	ActionPolicyRead    Action = "policy:read"
-	ActionPolicyWrite   Action = "policy:write"
-	ActionServiceRead   Action = "service:read"
-	ActionServiceWrite  Action = "service:write"
-	ActionCloudflare    Action = "cloudflare:manage"
-	ActionHostExec      Action = "host:exec"
+	ActionAgentRead        Action = "agent:read"
+	ActionAgentWrite       Action = "agent:write"
+	ActionEndpointRead     Action = "endpoint:read"
+	ActionEndpointWrite    Action = "endpoint:write"
+	ActionQuotaRead        Action = "quota:read"
+	ActionQuotaWrite       Action = "quota:write"
+	ActionMemberRead       Action = "member:read"
+	ActionMemberManage     Action = "member:manage"
+	ActionAuditRead        Action = "audit:read"
+	ActionStatusRead       Action = "status:read"
+	ActionPolicyRead       Action = "policy:read"
+	ActionPolicyWrite      Action = "policy:write"
+	ActionServiceRead      Action = "service:read"
+	ActionServiceWrite     Action = "service:write"
+	ActionConnectionManage Action = "connection:manage"
+	ActionHostExec         Action = "host:exec"
 )
 
 func AllActions() []Action {
@@ -50,7 +50,7 @@ func AllActions() []Action {
 		ActionAuditRead, ActionStatusRead,
 		ActionPolicyRead, ActionPolicyWrite,
 		ActionServiceRead, ActionServiceWrite,
-		ActionCloudflare, ActionHostExec,
+		ActionConnectionManage, ActionHostExec,
 	}
 }
 

@@ -11,7 +11,14 @@ import { ServiceFormDialog } from "@/components/services/ServiceFormDialog";
 import { ServiceConfigCard } from "@/components/services/ServiceConfigCard";
 import { WokenByCard } from "@/components/services/WokenByCard";
 import { EndpointLinks } from "@/components/services/EndpointLinks";
-import { useDeleteService, useEndpoints, useService, useServices, useStartService, useStopService } from "@/api/hooks";
+import {
+  useDeleteService,
+  useEndpoints,
+  useService,
+  useServices,
+  useStartService,
+  useStopService,
+} from "@/api/hooks";
 import { ApiError, errorMessage } from "@/api/client";
 import { useSession } from "@/context/SessionContext";
 import { toast } from "@/hooks/use-toast";
@@ -40,9 +47,17 @@ export function ServiceDetail() {
   const remove = useDeleteService();
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDependentStop, setConfirmDependentStop] = useState(false);
+  const [dependentStopError, setDependentStopError] = useState<string | null>(
+    null,
+  );
+  const [stoppingDependents, setStoppingDependents] = useState(false);
 
   const endpointsById = useMemo(
-    () => new Map<string, Endpoint>((endpoints.data ?? []).map((ep) => [ep.id, ep])),
+    () =>
+      new Map<string, Endpoint>(
+        (endpoints.data ?? []).map((ep) => [ep.id, ep]),
+      ),
     [endpoints.data],
   );
   const servicesById = useMemo(
@@ -57,13 +72,60 @@ export function ServiceDetail() {
   const state = svc.status.state;
   const running = RUNNING_STATES.includes(state);
   const blockingEndpoints = conflictEndpointIds(remove.error);
+  const stopConflict =
+    stop.error instanceof ApiError
+      ? (stop.error.body as ServiceDeleteConflict)
+      : undefined;
+
+  async function stopDependents(): Promise<void> {
+    setStoppingDependents(true);
+    setDependentStopError(null);
+    const ordered: string[] = [];
+    const visited = new Set<string>();
+    const visiting = new Set<string>();
+    function visit(id: string): void {
+      if (visiting.has(id))
+        throw new Error(
+          "Service requirements changed; reload before stopping dependents.",
+        );
+      if (visited.has(id)) return;
+      visiting.add(id);
+      for (const candidate of servicesById.values()) {
+        if (candidate.requires.includes(id)) visit(candidate.id);
+      }
+      visiting.delete(id);
+      visited.add(id);
+      ordered.push(id);
+    }
+    try {
+      if (!canWrite) throw new Error("Service write permission is required.");
+      if (!services.data || services.isError)
+        throw new Error("Load the services before stopping dependents.");
+      visit(svc.id);
+      for (const id of ordered) await stop.mutateAsync(id);
+      setConfirmDependentStop(false);
+      toast({ title: "Services stopped" });
+    } catch (err) {
+      setDependentStopError(errorMessage(err));
+    } finally {
+      setStoppingDependents(false);
+    }
+  }
 
   const runAction = (action: "start" | "stop") => {
     const mutation = action === "start" ? start : stop;
     mutation.mutate(svc.id, {
-      onSuccess: () => toast({ title: action === "start" ? "Service started" : "Service stopped", description: svc.name }),
+      onSuccess: () =>
+        toast({
+          title: action === "start" ? "Service started" : "Service stopped",
+          description: svc.name,
+        }),
       onError: (err) =>
-        toast({ variant: "destructive", title: action === "start" ? "Start failed" : "Stop failed", description: errorMessage(err) }),
+        toast({
+          variant: "destructive",
+          title: action === "start" ? "Start failed" : "Stop failed",
+          description: errorMessage(err),
+        }),
     });
   };
 
@@ -77,7 +139,10 @@ export function ServiceDetail() {
 
   return (
     <div className="space-y-6">
-      <Link to="/services" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+      <Link
+        to="/services"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+      >
         <ArrowLeft className="h-4 w-4" /> Services
       </Link>
 
@@ -88,12 +153,22 @@ export function ServiceDetail() {
           canWrite ? (
             <>
               {running ? (
-                <Button variant="outline" disabled={stop.isPending} onClick={() => runAction("stop")}>
-                  <Square className="h-4 w-4" /> {stop.isPending ? "Stopping…" : "Stop"}
+                <Button
+                  variant="outline"
+                  disabled={stop.isPending}
+                  onClick={() => runAction("stop")}
+                >
+                  <Square className="h-4 w-4" />{" "}
+                  {stop.isPending ? "Stopping…" : "Stop"}
                 </Button>
               ) : (
-                <Button variant="outline" disabled={start.isPending} onClick={() => runAction("start")}>
-                  <Play className="h-4 w-4" /> {start.isPending ? "Starting…" : "Start"}
+                <Button
+                  variant="outline"
+                  disabled={start.isPending}
+                  onClick={() => runAction("start")}
+                >
+                  <Play className="h-4 w-4" />{" "}
+                  {start.isPending ? "Starting…" : "Start"}
                 </Button>
               )}
               <Button variant="outline" onClick={() => setEditing(true)}>
@@ -117,33 +192,92 @@ export function ServiceDetail() {
         <HelpedStateBadge scope="service" state={state} />
         <DriverBadge driver={svc.driver} />
         <span className="inline-flex items-center gap-1 text-muted-foreground">
-          Idle timeout {svc.idle_timeout_seconds ? formatDurationSeconds(svc.idle_timeout_seconds) : "never"}
+          Idle timeout{" "}
+          {svc.idle_timeout_seconds === -1
+            ? "while dependents run"
+            : svc.idle_timeout_seconds
+              ? formatDurationSeconds(svc.idle_timeout_seconds)
+              : "never"}
           <HelpTip entry={HELP.idleTimeout} />
         </span>
-        <span className="text-muted-foreground">Active requests {svc.status.active}</span>
+        <span className="text-muted-foreground">
+          Active requests {svc.status.active}
+        </span>
         {svc.status.last_activity && (
-          <span className="text-muted-foreground">Last activity {formatRelativeTime(svc.status.last_activity)}</span>
+          <span className="text-muted-foreground">
+            Last activity {formatRelativeTime(svc.status.last_activity)}
+          </span>
         )}
-        {svc.status.started_by && <span className="text-muted-foreground">Started by {svc.status.started_by}</span>}
+        {svc.status.started_by && (
+          <span className="text-muted-foreground">
+            Started by {svc.status.started_by}
+          </span>
+        )}
       </div>
       {svc.status.last_error && (
         <p className="break-words rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
           {svc.status.last_error}
         </p>
       )}
+      {stopConflict?.dependents && stopConflict.dependents.length > 0 && (
+        <div className="space-y-2 rounded-md border p-3">
+          <p className="text-sm">
+            This service is required by running services:
+          </p>
+          {stopConflict.dependents.map((dependent) => (
+            <Link
+              key={dependent.id}
+              className="block text-sm underline"
+              to={`/services/${encodeURIComponent(dependent.id)}`}
+            >
+              {dependent.name} ({dependent.state})
+            </Link>
+          ))}
+          {canWrite && (
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDependentStop(true)}
+            >
+              Stop dependents too
+            </Button>
+          )}
+        </div>
+      )}
 
-      <WokenByCard service={svc} endpoints={endpoints.data ?? []} services={servicesById} canWrite={canWrite} />
+      <WokenByCard
+        service={svc}
+        endpoints={endpoints.data ?? []}
+        services={servicesById}
+        canWrite={canWrite}
+      />
       <ServiceConfigCard service={svc} />
 
-      <ServiceFormDialog open={editing} onOpenChange={setEditing} service={svc} />
+      <ServiceFormDialog
+        open={editing}
+        onOpenChange={setEditing}
+        service={svc}
+      />
+      <ConfirmDialog
+        open={confirmDependentStop}
+        onOpenChange={setConfirmDependentStop}
+        title="Stop dependent services too?"
+        description="Stop dependent services in order, then stop this service. Each stop checks your permission; a failure stops the sequence."
+        confirmLabel="Stop dependents and service"
+        pendingLabel="Stopping…"
+        pending={stoppingDependents}
+        error={dependentStopError ?? undefined}
+        onConfirm={() => {
+          void stopDependents();
+        }}
+      />
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
         title="Delete service?"
         description={
           <>
-            mishmesh forgets <span className="font-medium">{svc.name}</span>. Its containers or processes are left as they are. This
-            cannot be undone.
+            mishmesh stops <span className="font-medium">{svc.name}</span> and
+            forgets its configuration. This cannot be undone.
           </>
         }
         pending={remove.isPending}
@@ -152,7 +286,10 @@ export function ServiceDetail() {
             blockingEndpoints.length > 0 ? (
               <div className="space-y-1.5">
                 <p>Unlink these endpoints first:</p>
-                <EndpointLinks ids={blockingEndpoints} endpointsById={endpointsById} />
+                <EndpointLinks
+                  ids={blockingEndpoints}
+                  endpointsById={endpointsById}
+                />
               </div>
             ) : (
               errorMessage(remove.error)

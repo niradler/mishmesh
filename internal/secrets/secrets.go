@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -56,6 +57,10 @@ func (b *Box) Open(sealed []byte, context string) ([]byte, error) {
 }
 
 func LoadOrCreateKey(path string) ([]byte, error) {
+	return loadOrCreateKey(path, os.Link)
+}
+
+func loadOrCreateKey(path string, publish func(string, string) error) ([]byte, error) {
 	raw, err := os.ReadFile(path)
 	if err == nil {
 		return decodeKey(path, raw)
@@ -67,19 +72,31 @@ func LoadOrCreateKey(path string) ([]byte, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("secrets: generate key: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, fs.ErrExist) {
-		return LoadOrCreateKey(path)
-	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".mishmesh-key-*")
 	if err != nil {
 		return nil, fmt.Errorf("secrets: create key %s (set MISHMESH_SECRET_KEY_FILE to a writable path): %w", path, err)
 	}
+	defer os.Remove(f.Name())
 	if _, err := f.WriteString(hex.EncodeToString(key) + "\n"); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("secrets: write key %s: %w", path, err)
 	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("secrets: sync key %s: %w", path, err)
+	}
 	if err := f.Close(); err != nil {
 		return nil, fmt.Errorf("secrets: write key %s: %w", path, err)
+	}
+	if err := publish(f.Name(), path); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("secrets: read concurrently created key %s: %w", path, err)
+			}
+			return decodeKey(path, raw)
+		}
+		return nil, fmt.Errorf("secrets: atomically publish key %s: %w", path, err)
 	}
 	return key, nil
 }

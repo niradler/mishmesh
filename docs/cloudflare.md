@@ -2,13 +2,13 @@
 
 mishmesh can publish endpoints through a Cloudflare Tunnel. Cloudflare terminates TLS (and applies Access, when configured), `cloudflared` carries the traffic, and the tunnel routes each published hostname to the mishmesh ingress, which serves the endpoint as usual.
 
-Each org has at most one tunnel connection. It is stored in the database and managed through the API (`/api/v1/cloudflare`, see [api.md](api.md#cloudflare-public-access)) or the web UI. No environment variable configures it.
+Each organization can have multiple named Cloudflare connections. They are stored in the database and managed through `/api/v1/connections` or the Connections UI. Provider credentials belong to the selected connection.
 
 ## Publishing an endpoint
 
-Set `policy.public_access: "cloudflare"` and a custom `domain` on the endpoint. The domain is the published hostname. A public endpoint must always have a domain, else 400. The org must have a connection only when public access is newly turned on (on create, or a PATCH that turns it on), else 400. An endpoint that is already public stays editable after the connection is removed. Endpoint changes trigger a refresh within about two seconds.
+Add `policy.access: [{"connection_id":"<connection-id>","hostname":"app.example.test"}]` to an HTTP endpoint. The requested hostname must be a full DNS name; an empty hostname defaults to the endpoint domain. Enabled domain authorization still applies. New refs require a valid same-org connection; an existing ref stays editable while its provider is unavailable. Referenced connections cannot be deleted. Endpoint changes trigger provider refresh and alias invalidation.
 
-In the web UI this is the endpoint's **Public access** toggle ("Turn on public access").
+In the UI, add a row under the endpoint's **Access** section. Public and private rows can coexist.
 
 ## Levels
 
@@ -17,24 +17,24 @@ In the web UI this is the endpoint's **Public access** toggle ("Turn on public a
 | `imported` | Tunnel token and the cloudflared metrics address | Reads the tunnel's routes from the local cloudflared and reports each hostname. Changes nothing in Cloudflare. Every missing or wrong route comes with a `fix`: the exact Zero Trust dashboard change to make |
 | `managed` | Also an API token | Reconciles through the Cloudflare API: adds ingress rules, creates DNS records, adds hostnames to the Access app, and with `prune` removes what it owns and no endpoint wants |
 
-Start at `imported` to see what the tunnel already serves, then add an API token to move to `managed`. `clear_api_token: true` moves back.
+Start at `imported` to see what the tunnel already serves, then add an API token to move to `managed`. Explicitly clear the API token to move back; the wire payload uses `secrets.api_token: ""`.
 
-Refresh runs every minute at `imported` and every five minutes at `managed`, plus on endpoint changes, after every save, and on `POST /cloudflare/sync`. A refresh at `imported` re-inspects the local cloudflared and its route list; at `managed` it reconciles. The UI labels the button **Refresh** at `imported` and **Sync now** at `managed`.
+Providers refresh periodically, on endpoint changes, after saves and on `POST /connections/{id}/sync`. Imported refresh inspects local cloudflared routes; managed refresh reconciles owned resources. The UI provides **Sync now** for the selected connection.
 
 ## Connection fields
 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `name` | required | Display name, at most 100 characters |
-| `tunnel_token` | required once | The token from the Zero Trust dashboard. The account and tunnel IDs are read from it. One tunnel can be connected to only one org |
-| `api_token` | none | Turns on `managed` |
+| `secrets.tunnel_token` | required | The token from the Zero Trust dashboard; account and tunnel IDs are read from it |
+| `secrets.api_token` | none | Enables `managed` reconciliation |
 | `connector` | `external` | `external`: you run cloudflared. `managed`: mishmesh runs it |
 | `metrics_addr` | `127.0.0.1:20241` | cloudflared's metrics address. Must be loopback, so cloudflared runs on the server host (or in its network namespace) |
 | `origin` | `http://<MISHMESH_INGRESS_ADDR>`, with an unspecified host replaced by `127.0.0.1` | The ingress URL the tunnel routes hostnames to. No path, query or credentials |
 | `access_app_id` | none | Self-hosted Access application that receives published hostnames (`managed` only) |
 | `prune` | `false` | Remove owned hostnames no endpoint wants. Needs an API token |
 
-Saving a connection (`PUT`) and reading a local cloudflared (`POST /cloudflare/detect`) need the `cloudflare:manage` permission and host access, because they make the server talk to a local process. `PUT` reloads the connection, then syncs once (up to 20 seconds) and returns the fresh status. Syncing (`POST /cloudflare/sync`) and removing the connection (`DELETE`) need only `cloudflare:manage`. `DELETE` stops a managed cloudflared and changes nothing in Cloudflare.
+Connection config and secrets are separate in the generic API (`POST /connections`, `PUT /connections/{id}`). Both require `connection:manage`; local managed connector execution additionally needs host access. Detection is `POST /connections/detect` with `{type:"cloudflare",input:{metrics_addr?,tunnel_token?}}`. A save commits first, then reloads/syncs within20seconds and returns safe status even when a provider is down. Referenced connections return409 on deletion; deleting an unreferenced row closes its local instance without silently pruning external resources.
 
 ## Routing to ingress
 
@@ -44,9 +44,9 @@ The default origin is derived from `MISHMESH_INGRESS_ADDR`. An unspecified host 
 
 ## Token sealing
 
-Tokens are encrypted with AES-256-GCM before they are stored, each bound to its org and kind. They are never returned by the API; `api_token_set` and `tunnel_token_set` show whether one is stored.
+Tokens are encrypted together with AES-256-GCM, bound to organization and connection ID. API reads return `has_api_token` and `has_tunnel_token`, never their values. User config and private ownership state are stored separately.
 
-The key lives in `MISHMESH_SECRET_KEY_FILE`, by default `mishmesh-secret.key` next to the SQLite database (or in the working directory for Postgres and in-memory stores). It is created on first start with mode 0600. Back it up with the database: without it the stored tokens cannot be opened and the connection must be saved again with fresh tokens.
+The key lives in `MISHMESH_SECRET_KEY_FILE`, by default `mishmesh-secret.key` beside SQLite or in the working directory for PostgreSQL/in-memory stores. First creation publishes a complete key atomically. Protect OS permissions/ACL and back up the matching key with the database. Missing/wrong keys fail closed when opening typed connection ciphertext; restore the matching key rather than creating a replacement over ciphertext.
 
 ## API token permissions (managed level)
 
@@ -64,9 +64,9 @@ The tunnel must be remotely managed (created in the dashboard or the API), since
 mishmesh changes only what it can prove is its own.
 
 - **Ingress rules.** A missing hostname gets a rule to the origin, inserted before the catch-all (`http_status:404` is added if there is none). A hostname already routed elsewhere is a `conflict` and is left alone. Unknown settings and fields are written back unchanged, and nothing is written when nothing changed.
-- **DNS.** The zone is the longest matching zone in the account. A missing record is created as a proxied CNAME to `<tunnel-id>.cfargotunnel.com` with the comment `managed by mishmesh`. Any other existing record is a `conflict` and is never changed.
-- **Access.** Hostnames are added to the app's domains and destinations.
-- **Prune.** Removes owned ingress rules no endpoint wants, deletes only CNAMEs that point at this tunnel, and removes the hostname from the Access app. It never removes the rule for a hostname that is the domain of an endpoint with Public access off.
+- **DNS.** The longest matching zone is selected. Created records have durable per-resource ownership. A matching pre-existing record is not silently adopted; foreign or operator-modified records remain intact.
+- **Access.** Added app domains/destinations are tracked separately. Pre-existing entries are retained.
+- **Prune.** Removes only resources supported by durable ownership and matching observed fingerprints. Unknown settings, unclaimed hostnames and operator edits are preserved. Dropping an Access ref clears its local alias; it does not grant blanket ownership of the external hostname.
 
 Errors are per hostname: one failure does not stop the others.
 
@@ -97,6 +97,8 @@ The binary is `cloudflared` on the PATH, or `MISHMESH_CLOUDFLARED_BIN`. The tunn
 ## Moving from a hand-managed tunnel
 
 1. Import the tunnel with its token and `connector: external`. Set `origin` to exactly the service your existing routes use for mishmesh.
-2. Set `public_access: "cloudflare"` and the domain on each endpoint to publish. Existing routes to the origin for those hostnames show `published`.
+2. Add an Access row referencing the imported connection ID and desired hostname on each endpoint. Existing routes to the origin for those hostnames show `published`.
 3. Check `unclaimed` hostnames: turn on Public access for the endpoint named in `endpoint_id`, add an endpoint, or accept that prune will remove the ones no endpoint serves.
 4. Add an API token to manage the tunnel. Leave `prune` off until no unexpected `unclaimed` routes to the origin remain.
+
+The new connection API, encrypted connection-secret persistence, multi-network refs and private Tailscale provider are documented in [connections.md](connections.md). Historical REST singleton routes and `public_access` writes are rejected.

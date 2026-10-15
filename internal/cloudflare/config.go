@@ -30,6 +30,7 @@ const (
 )
 
 type Config struct {
+	ConnectionID   string
 	OrgID          string
 	Name           string
 	AccountID      string
