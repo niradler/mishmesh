@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Activity } from "lucide-react";
+import { BrandIcon } from "@/components/common/BrandIcon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,13 +22,18 @@ export function Login({ authConfig }: { authConfig: AuthConfig }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"login" | "register">(() =>
-    new URLSearchParams(window.location.search).has("invite") ? "register" : "login",
+    new URLSearchParams(window.location.search).has("invite")
+      ? "register"
+      : "login",
   );
   const login = useLogin();
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    login.mutate({ email, password }, { onSuccess: () => window.location.reload() });
+    login.mutate(
+      { email, password },
+      { onSuccess: () => window.location.reload() },
+    );
   };
 
   const errorMessage =
@@ -44,13 +49,15 @@ export function Login({ authConfig }: { authConfig: AuthConfig }) {
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-background/0 via-background/60 to-background" />
       <div className="relative w-full max-w-sm animate-fade-in">
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <Activity className="h-5 w-5" />
-          </div>
+          <BrandIcon className="h-12 w-12" />
           <div>
-            <h1 className="text-2xl font-semibold tracking-heading">mishmesh</h1>
+            <h1 className="text-2xl font-semibold tracking-heading">
+              mishmesh
+            </h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              {mode === "register" ? "Create your account" : "Sign in to your control plane"}
+              {mode === "register"
+                ? "Create your account"
+                : "Sign in to your control plane"}
             </p>
           </div>
         </div>
@@ -91,24 +98,35 @@ export function Login({ authConfig }: { authConfig: AuthConfig }) {
                   {errorMessage}
                 </p>
               )}
-              <Button type="submit" className="w-full" disabled={login.isPending}>
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={login.isPending}
+              >
                 {login.isPending ? "Signing in…" : "Sign in"}
               </Button>
               {authConfig.password_signup && (
-                <Button type="button" variant="ghost" className="w-full" onClick={() => setMode("register")}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="w-full"
+                  onClick={() => setMode("register")}
+                >
                   Create an account
                 </Button>
               )}
             </form>
           )}
 
-          {mode === "login" && authConfig.password_enabled && authConfig.google_enabled && (
-            <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
-              <span className="h-px flex-1 bg-border" />
-              OR
-              <span className="h-px flex-1 bg-border" />
-            </div>
-          )}
+          {mode === "login" &&
+            authConfig.password_enabled &&
+            authConfig.google_enabled && (
+              <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
+                <span className="h-px flex-1 bg-border" />
+                OR
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            )}
 
           {mode === "login" && authConfig.google_enabled && (
             <Button variant="outline" className="w-full" asChild>
@@ -121,7 +139,8 @@ export function Login({ authConfig }: { authConfig: AuthConfig }) {
 
           {!authConfig.password_enabled && !authConfig.google_enabled && (
             <p className="text-center text-sm text-muted-foreground">
-              No sign-in methods are enabled. Configure authentication on the server.
+              No sign-in methods are enabled. Configure authentication on the
+              server.
             </p>
           )}
         </div>

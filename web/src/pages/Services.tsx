@@ -18,6 +18,8 @@ import {
   LoadingState,
 } from "@/components/common/States";
 import { DriverBadge, HelpedStateBadge } from "@/components/common/TermBadges";
+import { HelpTip } from "@/components/common/HelpTip";
+import { HELP } from "@/lib/glossary";
 import { EndpointLinks } from "@/components/services/EndpointLinks";
 import { ServiceFormDialog } from "@/components/services/ServiceFormDialog";
 import { useEndpoints, useServiceDrivers, useServices } from "@/api/hooks";
@@ -73,7 +75,11 @@ export function Services() {
                   <TableHead>Name</TableHead>
                   <TableHead>Driver</TableHead>
                   <TableHead>State</TableHead>
-                  <TableHead>Idle timeout</TableHead>
+                  <TableHead>
+                    <span className="inline-flex items-center gap-1.5">
+                      Automatic scale-down <HelpTip entry={HELP.idleTimeout} />
+                    </span>
+                  </TableHead>
                   <TableHead>Woken by</TableHead>
                 </TableRow>
               </TableHeader>
@@ -115,10 +121,10 @@ export function Services() {
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {service.idle_timeout_seconds === -1
-                        ? "While dependents run"
+                        ? "When no dependent needs it"
                         : service.idle_timeout_seconds
-                          ? formatDurationSeconds(service.idle_timeout_seconds)
-                          : "never"}
+                          ? `After ${formatDurationSeconds(service.idle_timeout_seconds)} idle`
+                          : "Disabled"}
                     </TableCell>
                     <TableCell>
                       <EndpointLinks

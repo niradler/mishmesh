@@ -240,8 +240,8 @@ export const HELP = {
     body: "How mishmesh verifies https:// targets. A pin or a CA certificate verifies a self-signed origin; skipping verification trusts anything.",
   },
   idleTimeout: {
-    title: "Idle timeout",
-    body: "After this long with no requests, mishmesh stops the service. The next request starts it again. Never keeps it running.",
+    title: "Automatic scale-down",
+    body: "mishmesh stops the service after the selected period without traffic to free resources. Active requests and dependent services keep it running; regular polling can prevent it from stopping. A request to a linked HTTP endpoint wakes it, so the first request may wait for startup. Never stop automatically disables idle stopping; it does not start a stopped service. Dependency mode stops once no dependent service or active request needs it.",
   },
   startTimeout: {
     title: "Start timeout",

@@ -9,11 +9,11 @@ import type {
 export const SERVICE_NAME_PATTERN = /^[a-z0-9][a-z0-9-_.]{0,62}$/;
 export const DEFAULT_START_TIMEOUT_SECONDS = 120;
 export const IDLE_PRESETS = [
-  { value: "-1", label: "While dependents are running" },
+  { value: "-1", label: "When no dependent service needs it" },
   { value: "0", label: "Never stop automatically" },
-  { value: "300", label: "5 minutes" },
-  { value: "1800", label: "30 minutes" },
-  { value: "7200", label: "2 hours" },
+  { value: "300", label: "After 5 minutes idle" },
+  { value: "1800", label: "After 30 minutes idle" },
+  { value: "7200", label: "After 2 hours idle" },
 ] as const;
 
 export interface ServiceFormState {
@@ -94,7 +94,7 @@ export function validateServiceForm(
     form.idleSeconds < -1 ||
     form.idleSeconds > 604800
   )
-    return "Idle timeout must be -1, zero or a positive number of seconds up to seven days.";
+    return "Choose an idle duration from 1 second to 7 days in whole seconds, or select a stopping mode.";
   if (
     !Number.isInteger(form.startTimeout) ||
     form.startTimeout < 0 ||

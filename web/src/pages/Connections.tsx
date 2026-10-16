@@ -16,6 +16,7 @@ import {
   LoadingState,
 } from "@/components/common/States";
 import { ConnectionForm } from "@/components/connections/ConnectionForm";
+import { StateBadge } from "@/components/common/StateBadge";
 import { useConnections, useConnectionTypes } from "@/api/hooks";
 import { connectionScope } from "@/lib/connections";
 import { useSession } from "@/context/SessionContext";
@@ -79,7 +80,11 @@ export function Connections(): React.JSX.Element {
                         <td>{descriptor?.role ?? "Unknown"}</td>
                         <td>{connectionScope(descriptor)}</td>
                         <td>{connection.status.level}</td>
-                        <td>{connection.status.health}</td>
+                        <td>
+                          <StateBadge
+                            state={connection.status.health || "unknown"}
+                          />
+                        </td>
                       </tr>
                     );
                   })}

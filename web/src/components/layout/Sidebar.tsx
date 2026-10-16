@@ -1,6 +1,5 @@
 import { NavLink } from "react-router-dom";
 import {
-  Activity,
   Cloud,
   KeyRound,
   LayoutGrid,
@@ -12,6 +11,7 @@ import {
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { BrandIcon } from "@/components/common/BrandIcon";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutGrid, end: true },
@@ -29,9 +29,7 @@ export function Sidebar() {
   return (
     <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-card md:flex">
       <div className="flex h-14 items-center gap-2 border-b border-border px-5">
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-          <Activity className="h-4 w-4" />
-        </div>
+        <BrandIcon className="h-8 w-8" />
         <span className="font-semibold tracking-heading">mishmesh</span>
       </div>
       <nav className="flex-1 space-y-0.5 p-3">

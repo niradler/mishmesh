@@ -5,6 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DescriptorFields } from "@/components/types/DescriptorFields";
 import { TypePicker } from "@/components/types/TypePicker";
+import { IdleSettings } from "@/components/services/IdleSettings";
+import { LabelWithHelp } from "@/components/common/HelpTip";
+import { HELP } from "@/lib/glossary";
 import { ErrorState, LoadingState } from "@/components/common/States";
 import {
   useCapabilities,
@@ -18,7 +21,6 @@ import { ApiError, errorMessage } from "@/api/client";
 import { useSession } from "@/context/SessionContext";
 import { fieldDefaults } from "@/lib/typed-fields";
 import {
-  IDLE_PRESETS,
   emptyServiceForm,
   runtimeConfigChanged,
   serviceFormFromService,
@@ -102,8 +104,8 @@ export function ServiceForm({
   const input = serviceInputFromForm(form);
   const restartNeeded = Boolean(
     service &&
-    ["running", "starting", "partial"].includes(service.status.state) &&
-    runtimeConfigChanged(service, input),
+      ["running", "starting", "partial"].includes(service.status.state) &&
+      runtimeConfigChanged(service, input),
   );
   const failure =
     mutation.error instanceof ApiError
@@ -219,40 +221,14 @@ export function ServiceForm({
             </label>
           ))}
       </fieldset>
-      <div className="space-y-2">
-        <Label htmlFor="idle-preset">Idle behavior</Label>
-        <select
-          id="idle-preset"
-          className="h-10 w-full rounded-md border bg-background px-3"
-          value={
-            IDLE_PRESETS.some(
-              (preset) => Number(preset.value) === form.idleSeconds,
-            )
-              ? String(form.idleSeconds)
-              : "custom"
-          }
-          onChange={(event) => {
-            if (event.target.value === "custom") set("idleSeconds", 60);
-            else set("idleSeconds", Number(event.target.value));
-          }}
-        >
-          {IDLE_PRESETS.map((preset) => (
-            <option key={preset.value} value={preset.value}>
-              {preset.label}
-            </option>
-          ))}
-          <option value="custom">Custom seconds</option>
-        </select>
-        <Label htmlFor="idle-seconds">Idle timeout seconds</Label>
-        <Input
-          id="idle-seconds"
-          type="number"
-          value={form.idleSeconds}
-          onChange={(event) => set("idleSeconds", Number(event.target.value))}
-        />
-      </div>
+      <IdleSettings
+        seconds={form.idleSeconds}
+        onChange={(value) => set("idleSeconds", value)}
+      />
       <div>
-        <Label htmlFor="start-timeout">Start timeout seconds</Label>
+        <LabelWithHelp htmlFor="start-timeout" entry={HELP.startTimeout}>
+          Startup time limit (seconds)
+        </LabelWithHelp>
         <Input
           id="start-timeout"
           type="number"

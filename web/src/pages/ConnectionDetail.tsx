@@ -17,6 +17,7 @@ import { HostnamesTable } from "@/components/cloudflare/HostnamesTable";
 import { connectionScope } from "@/lib/connections";
 import { ConnectionPanel } from "@/components/connections/ConnectionPanels";
 import { DescriptorDetails } from "@/components/types/DescriptorDetails";
+import { StateBadge } from "@/components/common/StateBadge";
 import {
   useConnection,
   useConnectionTypes,
@@ -90,7 +91,9 @@ export function ConnectionDetail(): React.JSX.Element | null {
       />
       <div className="flex flex-wrap gap-4 text-sm">
         <span>Level: {row.status.level || "Unknown"}</span>
-        <span>Health: {row.status.health || "Unknown"}</span>
+        <span className="inline-flex items-center gap-2">
+          Health <StateBadge state={row.status.health || "unknown"} />
+        </span>
         <span>
           Last sync:{" "}
           {row.status.last_sync

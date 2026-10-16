@@ -192,12 +192,12 @@ export function ServiceDetail() {
         <HelpedStateBadge scope="service" state={state} />
         <DriverBadge driver={svc.driver} />
         <span className="inline-flex items-center gap-1 text-muted-foreground">
-          Idle timeout{" "}
+          Automatic scale-down:{" "}
           {svc.idle_timeout_seconds === -1
-            ? "while dependents run"
+            ? "when no dependent needs it"
             : svc.idle_timeout_seconds
-              ? formatDurationSeconds(svc.idle_timeout_seconds)
-              : "never"}
+              ? `after ${formatDurationSeconds(svc.idle_timeout_seconds)} idle`
+              : "disabled"}
           <HelpTip entry={HELP.idleTimeout} />
         </span>
         <span className="text-muted-foreground">

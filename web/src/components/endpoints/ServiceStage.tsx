@@ -6,7 +6,10 @@ import { HelpTip } from "@/components/common/HelpTip";
 import { DriverBadge, HelpedStateBadge } from "@/components/common/TermBadges";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { PipelineCard } from "@/components/endpoints/PipelineCard";
-import { WakeServiceDialog, useServiceLink } from "@/components/endpoints/WakeServiceDialog";
+import {
+  WakeServiceDialog,
+  useServiceLink,
+} from "@/components/endpoints/WakeServiceDialog";
 import { useService, useStartService, useStopService } from "@/api/hooks";
 import { errorMessage } from "@/api/client";
 import { toast } from "@/hooks/use-toast";
@@ -17,7 +20,13 @@ import type { Endpoint } from "@/api/types";
 
 const RUNNING_STATES = ["running", "starting", "partial"];
 
-export function ServiceStage({ endpoint, canWrite }: { endpoint: Endpoint; canWrite: boolean }) {
+export function ServiceStage({
+  endpoint,
+  canWrite,
+}: {
+  endpoint: Endpoint;
+  canWrite: boolean;
+}) {
   const serviceId = endpoint.policy?.service_id ?? "";
   const service = useService(serviceId);
   const start = useStartService();
@@ -26,7 +35,13 @@ export function ServiceStage({ endpoint, canWrite }: { endpoint: Endpoint; canWr
   const [picking, setPicking] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState(false);
 
-  const dialog = <WakeServiceDialog endpoint={endpoint} open={picking} onOpenChange={setPicking} />;
+  const dialog = (
+    <WakeServiceDialog
+      endpoint={endpoint}
+      open={picking}
+      onOpenChange={setPicking}
+    />
+  );
 
   if (!serviceId) {
     if (isEphemeral(endpoint) || endpoint.kind !== "http") {
@@ -48,14 +63,20 @@ export function ServiceStage({ endpoint, canWrite }: { endpoint: Endpoint; canWr
           empty
           actions={
             canWrite && (
-              <Button type="button" size="sm" variant="outline" onClick={() => setPicking(true)}>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setPicking(true)}
+              >
                 Wake a service
               </Button>
             )
           }
         >
           <p className="flex items-center gap-1 text-xs text-muted-foreground">
-            No service linked. Link one to start it on the first request.
+            Routes directly to its backend. Link a service only if mishmesh
+            should start and stop it automatically.
             <HelpTip entry={HELP.serviceLink} />
           </p>
         </PipelineCard>
@@ -71,9 +92,16 @@ export function ServiceStage({ endpoint, canWrite }: { endpoint: Endpoint; canWr
   const runAction = (action: "start" | "stop") => {
     const mutation = action === "start" ? start : stop;
     mutation.mutate(serviceId, {
-      onSuccess: () => toast({ title: action === "start" ? "Service started" : "Service stopped" }),
+      onSuccess: () =>
+        toast({
+          title: action === "start" ? "Service started" : "Service stopped",
+        }),
       onError: (err) =>
-        toast({ variant: "destructive", title: action === "start" ? "Start failed" : "Stop failed", description: errorMessage(err) }),
+        toast({
+          variant: "destructive",
+          title: action === "start" ? "Start failed" : "Stop failed",
+          description: errorMessage(err),
+        }),
     });
   };
 
@@ -92,25 +120,53 @@ export function ServiceStage({ endpoint, canWrite }: { endpoint: Endpoint; canWr
           canWrite && (
             <>
               {running ? (
-                <Button type="button" size="sm" variant="outline" disabled={stop.isPending} onClick={() => runAction("stop")}>
-                  <Square className="h-3.5 w-3.5" /> {stop.isPending ? "Stopping…" : "Stop"}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={stop.isPending}
+                  onClick={() => runAction("stop")}
+                >
+                  <Square className="h-3.5 w-3.5" />{" "}
+                  {stop.isPending ? "Stopping…" : "Stop"}
                 </Button>
               ) : (
-                <Button type="button" size="sm" variant="outline" disabled={start.isPending || !data} onClick={() => runAction("start")}>
-                  <Play className="h-3.5 w-3.5" /> {start.isPending ? "Starting…" : "Start"}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={start.isPending || !data}
+                  onClick={() => runAction("start")}
+                >
+                  <Play className="h-3.5 w-3.5" />{" "}
+                  {start.isPending ? "Starting…" : "Start"}
                 </Button>
               )}
-              <Button type="button" size="sm" variant="ghost" onClick={() => setPicking(true)}>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setPicking(true)}
+              >
                 Change
               </Button>
-              <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmUnlink(true)}>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setConfirmUnlink(true)}
+              >
                 Unlink
               </Button>
             </>
           )
         }
       >
-        {service.isError && <p className="text-xs text-destructive">{errorMessage(service.error)}</p>}
+        {service.isError && (
+          <p className="text-xs text-destructive">
+            {errorMessage(service.error)}
+          </p>
+        )}
         {data && (
           <>
             <div className="flex flex-wrap items-center gap-1.5">
@@ -118,10 +174,19 @@ export function ServiceStage({ endpoint, canWrite }: { endpoint: Endpoint; canWr
               <DriverBadge driver={data.driver} />
             </div>
             <p className="flex items-center gap-1 text-xs text-muted-foreground">
-              Idle timeout {data.idle_timeout_seconds ? formatDurationSeconds(data.idle_timeout_seconds) : "never"}
+              Automatic scale-down:{" "}
+              {data.idle_timeout_seconds === -1
+                ? "when no dependent needs it"
+                : data.idle_timeout_seconds
+                  ? `after ${formatDurationSeconds(data.idle_timeout_seconds)} idle`
+                  : "disabled"}
               <HelpTip entry={HELP.idleTimeout} />
             </p>
-            {data.status.last_error && <p className="break-words text-xs text-destructive">{data.status.last_error}</p>}
+            {data.status.last_error && (
+              <p className="break-words text-xs text-destructive">
+                {data.status.last_error}
+              </p>
+            )}
           </>
         )}
       </PipelineCard>
