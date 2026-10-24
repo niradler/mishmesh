@@ -16,6 +16,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connections"
+	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/services"
@@ -51,6 +52,8 @@ type API struct {
 	connectionRegistry *connections.Registry
 	secretBox          *secrets.Box
 	hostCommands       bool
+	identity           *identity.Service
+	apiPublicURL       string
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
@@ -150,6 +153,7 @@ const (
 	ctxActor
 	ctxRole
 	ctxAdmin
+	ctxPrincipalType
 )
 
 func (a *API) orgScope(r *http.Request) string {
@@ -258,6 +262,13 @@ func (a *API) routes() []route {
 		{"GET /api/v1/audit", a.require(authz.ActionAuditRead, a.listAuditHandler)},
 		{"GET /api/v1/status", a.require(authz.ActionStatusRead, a.statusHandler)},
 
+		{"GET /api/v1/service-accounts", a.require(authz.ActionMemberRead, a.listServiceAccountsHandler)},
+		{"POST /api/v1/service-accounts", a.require(authz.ActionMemberManage, a.createServiceAccountHandler)},
+		{"GET /api/v1/service-accounts/{id}", a.require(authz.ActionMemberRead, a.getServiceAccountHandler)},
+		{"PATCH /api/v1/service-accounts/{id}", a.require(authz.ActionMemberManage, a.patchServiceAccountHandler)},
+		{"DELETE /api/v1/service-accounts/{id}", a.require(authz.ActionMemberManage, a.deleteServiceAccountHandler)},
+		{"POST /api/v1/service-accounts/{id}/rotate", a.require(authz.ActionMemberManage, a.rotateServiceAccountHandler)},
+
 		{"GET /api/v1/policy", a.require(authz.ActionPolicyRead, a.getPolicyHandler)},
 		{"PUT /api/v1/policy", a.require(authz.ActionPolicyWrite, a.putPolicyHandler)},
 	}
@@ -271,8 +282,8 @@ func (a *API) routes() []route {
 	}
 	if a.reachInEnabled {
 		routes = append(routes,
-			route{"POST /api/v1/reach/{agent_id}/http", a.require(authz.ActionAgentWrite, a.reachInHTTPHandler)},
-			route{"GET /api/v1/reach/{agent_id}/stream", a.require(authz.ActionAgentWrite, a.reachInStreamHandler)},
+			route{"POST /api/v1/reach/{agent_id}/http", a.requireMachine(authz.ActionAgentWrite, a.reachInHTTPHandler)},
+			route{"GET /api/v1/reach/{agent_id}/stream", a.requireMachine(authz.ActionAgentWrite, a.reachInStreamHandler)},
 		)
 	}
 	return routes
@@ -283,6 +294,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /readyz", a.ready)
 
 	a.registerAuthRoutes(mux)
+	a.registerOAuthRoutes(mux)
 
 	for _, rt := range a.routes() {
 		mux.HandleFunc(rt.pattern, rt.handler)
@@ -326,8 +338,9 @@ func (a *API) permitted(r *http.Request, action authz.Action) bool {
 		return false
 	}
 	role, _ := r.Context().Value(ctxRole).(string)
+	principalType, _ := r.Context().Value(ctxPrincipalType).(authz.EntityType)
 	org := a.orgScope(r)
-	return a.authorizerFor(r.Context(), org).Authorize(authz.Principal{ID: a.actor(r), Role: role, Org: org}, action)
+	return a.authorizerFor(r.Context(), org).Authorize(authz.Principal{ID: a.actor(r), Type: principalType, Role: role, Org: org}, action)
 }
 
 func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context, bool) {

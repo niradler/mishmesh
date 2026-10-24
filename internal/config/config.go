@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -99,6 +100,8 @@ type Server struct {
 	HealthTimeout  time.Duration
 
 	SecretKeyFile  string
+	TokenKeyFile   string
+	APIPublicURL   string
 	DockerHost     string
 	HostCommands   bool
 	CloudflaredBin string
@@ -205,6 +208,8 @@ func LoadServer() Server {
 		HealthTimeout:  strictDuration("HEALTH_TIMEOUT", "3s"),
 
 		SecretKeyFile:  env("SECRET_KEY_FILE", ""),
+		TokenKeyFile:   env("TOKEN_KEY_FILE", ""),
+		APIPublicURL:   env("API_PUBLIC_URL", ""),
 		DockerHost:     env("DOCKER_HOST", ""),
 		HostCommands:   envBool("HOST_COMMANDS", signupMode == "invite"),
 		CloudflaredBin: env("CLOUDFLARED_BIN", ""),
@@ -258,6 +263,15 @@ func (s Server) EffectiveSecretKeyFile() string {
 		return secretKeyFileName
 	}
 	return filepath.Join(filepath.Dir(path), secretKeyFileName)
+}
+
+const tokenKeyFileName = "token-signing.key"
+
+func (s Server) EffectiveTokenKeyFile() string {
+	if s.TokenKeyFile != "" {
+		return s.TokenKeyFile
+	}
+	return filepath.Join(filepath.Dir(s.EffectiveSecretKeyFile()), tokenKeyFileName)
 }
 
 func (s Server) validateCluster() error {
@@ -318,6 +332,12 @@ func (s Server) Validate() error {
 	}
 	if s.DataQueryTimeout <= 0 {
 		return fmt.Errorf("config: DATA_QUERY_TIMEOUT must be a positive duration")
+	}
+	if s.APIPublicURL != "" {
+		u, err := url.Parse(s.APIPublicURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("config: API_PUBLIC_URL must be an absolute http(s) URL without query or fragment")
+		}
 	}
 	if s.TLSPassthroughEnabled && (s.TLSPassthroughPublicPort < 1 || s.TLSPassthroughPublicPort > 65535) {
 		return fmt.Errorf("config: TLS_PASSTHROUGH_PUBLIC_PORT must be between 1 and 65535")

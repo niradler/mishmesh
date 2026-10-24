@@ -7,14 +7,11 @@ import (
 	"slices"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
+	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-type DecisionScope struct {
-	OrgID         string
-	AgentID       string
-	SessionIDHash string
-}
+type DecisionScope = identity.Scope
 
 type serverDecider struct {
 	api   *API
@@ -57,7 +54,12 @@ func (d serverDecider) facts(ctx context.Context, req authz.DecisionRequest) (au
 			return facts, err
 		}
 	}
-	if d.scope.SessionIDHash != "" {
+	switch {
+	case d.scope.TokenSessionID != "":
+		if facts.Session, err = d.tokenSession(ctx, req.Principal); err != nil {
+			return facts, err
+		}
+	case d.scope.SessionIDHash != "":
 		if facts.Session, err = d.session(ctx, req.Principal); err != nil {
 			return facts, err
 		}
@@ -102,8 +104,29 @@ func (d serverDecider) subject(ctx context.Context, ref authz.EntityRef) (*authz
 		return &authz.Subject{Ref: ref, Name: ag.Name, Disabled: ag.Status != store.AgentActive}, nil
 	case authz.EntityUser:
 		return d.userSubject(ctx, ref)
+	case authz.EntityServiceAccount:
+		return d.serviceAccountSubject(ctx, ref)
 	}
 	return nil, nil
+}
+
+func (d serverDecider) serviceAccountSubject(ctx context.Context, ref authz.EntityRef) (*authz.Subject, error) {
+	sa, err := d.api.data.GetServiceAccount(ctx, d.scope.OrgID, ref.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load service account: %w", err)
+	}
+	groups, err := d.api.data.ListMemberGroups(ctx, d.scope.OrgID, store.GroupMemberServiceAccount, ref.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load groups: %w", err)
+	}
+	subject := &authz.Subject{Ref: ref, Name: sa.Name, Role: sa.Role, Disabled: sa.Disabled}
+	for _, g := range groups {
+		subject.Groups = append(subject.Groups, authz.GroupRef{ID: g.ID, Name: g.Name})
+	}
+	return subject, nil
 }
 
 func (d serverDecider) userSubject(ctx context.Context, ref authz.EntityRef) (*authz.Subject, error) {
@@ -169,5 +192,21 @@ func (d serverDecider) session(ctx context.Context, principal authz.EntityRef) (
 		return nil, fmt.Errorf("load session: %w", err)
 	}
 	owned := principal.Type == authz.EntityUser && s.UserID == principal.ID && s.OrgID == d.scope.OrgID
+	return &authz.SessionFacts{ExpiresAt: s.ExpiresAt, Revoked: !owned}, nil
+}
+
+func (d serverDecider) tokenSession(ctx context.Context, principal authz.EntityRef) (*authz.SessionFacts, error) {
+	if d.api.identity == nil {
+		return &authz.SessionFacts{Revoked: true}, nil
+	}
+	s, err := d.api.identity.Sessions().GetTokenSession(ctx, d.scope.TokenSessionID)
+	if errors.Is(err, store.ErrNotFound) {
+		return &authz.SessionFacts{Revoked: true}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load token session: %w", err)
+	}
+	entity, _ := identity.EntityType(s.SubjectType)
+	owned := entity == principal.Type && s.SubjectID == principal.ID && s.OrgID == d.scope.OrgID
 	return &authz.SessionFacts{ExpiresAt: s.ExpiresAt, Revoked: !owned}, nil
 }

@@ -70,7 +70,7 @@ func TestRewriteRequestStripsGateCredentials(t *testing.T) {
 		{"oidc session cookie removed", nil, "mm_oidc=tok; app=1", "", "app=1", ""},
 		{"only oidc cookie drops header", nil, "mm_oidc=tok", "", "", ""},
 		{"state cookie removed", nil, "a=1; mm_oidc_state=n; b=2", "", "a=1; b=2", ""},
-		{"similar cookie name kept", nil, "mm_oidc2=x; mm_oidc=tok", "", "mm_oidc2=x", ""},
+		{"every mm_ cookie is reserved", nil, "mm_oidc2=x; mm_oidc=tok; mmx=1", "", "mmx=1", ""},
 		{"basic auth consumed is stripped", &store.EndpointPolicy{BasicAuthUser: "u", BasicAuthHash: "h"}, "", "Basic dTpw", "", ""},
 		{"authorization kept without basic auth policy", nil, "", "Bearer abc", "", "Bearer abc"},
 	}

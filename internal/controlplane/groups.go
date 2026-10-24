@@ -126,13 +126,19 @@ func (a *API) addGroupMemberHandler(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Type != store.GroupMemberUser {
-		writeError(w, http.StatusBadRequest, "only user members are supported")
-		return
-	}
 	org := a.orgScope(r)
 	groupID := r.PathValue("id")
-	if _, err := a.data.GetMembership(r.Context(), org, req.ID); a.handleErr(w, err) {
+	switch req.Type {
+	case store.GroupMemberUser:
+		if _, err := a.data.GetMembership(r.Context(), org, req.ID); a.handleErr(w, err) {
+			return
+		}
+	case store.GroupMemberServiceAccount:
+		if _, err := a.data.GetServiceAccount(r.Context(), org, req.ID); a.handleErr(w, err) {
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "member type must be user or service_account")
 		return
 	}
 	m := &store.GroupMember{OrgID: org, GroupID: groupID, MemberType: req.Type, MemberID: req.ID, CreatedAt: time.Now()}

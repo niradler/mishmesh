@@ -214,6 +214,12 @@ func serve() error {
 		MaxBandwidthBytes: cfg.QuotaMaxBandwidthBytes,
 	})
 	cp.SetReachInEnabled(cfg.ReachInEnabled)
+	idSvc, err := newIdentityService(cfg, conns)
+	if err != nil {
+		return err
+	}
+	cp.SetIdentity(idSvc)
+	cp.SetAPIPublicURL(cfg.APIPublicURL)
 	cp.SetDomainVerification(cfg.DomainVerification, nil)
 	cp.ConfigureAuth(controlplane.AuthOptions{
 		Enabled:            cfg.AuthEnabled,
@@ -266,6 +272,8 @@ func serve() error {
 			DisablePathRouting:      !cfg.PathRouting,
 			UpstreamResponseTimeout: cfg.UpstreamResponseTimeout,
 			Services:                network.ingressWaker(),
+			Identity:                idSvc,
+			Deciders:                cp,
 		})
 		cp.SetIngressInvalidator(ing.InvalidateCaches)
 		network.invalidateIngress = ing.InvalidateCaches

@@ -161,6 +161,7 @@ func (i *Ingress) rewriteRequest(pr *httputil.ProxyRequest) {
 	if ep := u.ep; ep.Policy != nil && ep.Policy.HostHeader != "" {
 		out.Host = ep.Policy.HostHeader
 	}
+	sanitizeUpstreamRequest(out.Header, u.ep)
 	setForwardedHeaders(pr.In, out, u.trusted)
 	stripGateCredentials(out.Header, u.ep)
 	applyRequestPolicy(out, u.ep)
@@ -251,6 +252,7 @@ func (i *Ingress) modifyResponse(resp *http.Response) error {
 		resp.Header.Del("Content-Length")
 		resp.ContentLength = -1
 	}
+	sanitizeUpstreamResponse(resp.Header)
 	applyResponsePolicy(resp.Header, u.ep)
 	if shouldCompress(u.ep, resp.Request, resp) {
 		resp.Header.Del("Content-Length")

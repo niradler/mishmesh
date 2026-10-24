@@ -30,6 +30,7 @@ type tenantFixture struct {
 	service    string
 	connection string
 	group      string
+	sa         string
 }
 
 func newTenantFixture(t *testing.T) *tenantFixture {
@@ -80,6 +81,7 @@ func (f *tenantFixture) fill(pattern string) (string, string) {
 		"/services/{id}", "/services/"+f.service,
 		"/connections/{id}", "/connections/"+f.connection,
 		"/groups/{id}", "/groups/"+f.group,
+		"/service-accounts/{id}", "/service-accounts/"+f.sa,
 		"{type}", "user",
 		"{member_id}", f.userA,
 	)
@@ -125,6 +127,11 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/groups", `{"name":"alice-grp"}`, http.StatusCreated, &grp)
 	f.group = grp.ID
 	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/groups/"+f.group+"/members", `{"type":"user","id":"`+f.userA+`"}`, http.StatusNoContent, nil)
+	var sa struct {
+		ServiceAccount serviceAccountDTO `json:"service_account"`
+	}
+	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/service-accounts", `{"name":"alice-robot"}`, http.StatusCreated, &sa)
+	f.sa = sa.ServiceAccount.ID
 
 	type probe struct {
 		body string
@@ -161,6 +168,12 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"DELETE /api/v1/groups/{id}":                            {"", notFound},
 		"POST /api/v1/groups/{id}/members":                      {`{"type":"user","id":"` + f.userA + `"}`, notFound},
 		"DELETE /api/v1/groups/{id}/members/{type}/{member_id}": {"", notFound},
+		"GET /api/v1/service-accounts":                          {"", http.StatusOK},
+		"POST /api/v1/service-accounts":                         {`{"name":"bob-robot"}`, http.StatusCreated},
+		"GET /api/v1/service-accounts/{id}":                     {"", notFound},
+		"PATCH /api/v1/service-accounts/{id}":                   {`{"disabled":true}`, notFound},
+		"DELETE /api/v1/service-accounts/{id}":                  {"", notFound},
+		"POST /api/v1/service-accounts/{id}/rotate":             {"", notFound},
 		"POST /api/v1/members":                                  {`{"email":"carol@example.com","role":"member"}`, http.StatusCreated},
 		"GET /api/v1/orgs":                                      {"", http.StatusOK},
 		"POST /api/v1/orgs":                                     {`{"name":"bobs-second"}`, http.StatusCreated},
@@ -190,7 +203,7 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"PUT /api/v1/policy":                                    {`{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"],"member":["agent:read"]}}`, http.StatusOK},
 	}
 
-	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, f.group, "alice-credential"}
+	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, f.group, "alice-credential", f.sa, "alice-robot"}
 
 	for _, rt := range f.api.routes() {
 		pr, ok := probes[rt.pattern]

@@ -106,6 +106,7 @@ type EndpointPolicy struct {
 	ServiceID             string            `json:"service_id,omitempty"`
 	Connect               *ConnectPolicy    `json:"connect,omitempty"`
 	Access                []AccessRef       `json:"access,omitempty"`
+	Identity              *EndpointIdentity `json:"identity,omitempty"`
 }
 
 type AccessRef struct {
@@ -257,6 +258,18 @@ type GroupMember struct {
 	CreatedAt  time.Time
 }
 
+type ServiceAccount struct {
+	ID         string
+	OrgID      string
+	Name       string
+	Role       string
+	ClientID   string
+	SecretHash string
+	Disabled   bool
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type Invite struct {
 	ID        string
 	TokenHash string
@@ -402,6 +415,13 @@ type DataStore interface {
 	RemoveGroupMember(ctx context.Context, orgID, groupID, memberType, memberID string) error
 	ListGroupMembers(ctx context.Context, orgID, groupID string) ([]*GroupMember, error)
 	ListMemberGroups(ctx context.Context, orgID, memberType, memberID string) ([]*Group, error)
+
+	CreateServiceAccount(ctx context.Context, sa *ServiceAccount) error
+	GetServiceAccount(ctx context.Context, orgID, id string) (*ServiceAccount, error)
+	GetServiceAccountByClientID(ctx context.Context, clientID string) (*ServiceAccount, error)
+	ListServiceAccounts(ctx context.Context, orgID string) ([]*ServiceAccount, error)
+	UpdateServiceAccount(ctx context.Context, sa *ServiceAccount) error
+	DeleteServiceAccount(ctx context.Context, orgID, id string) error
 
 	CreateInvite(ctx context.Context, i *Invite) error
 	GetInviteByTokenHash(ctx context.Context, tokenHash string) (*Invite, error)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/connections"
+	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
@@ -39,6 +40,8 @@ type Options struct {
 	LookupCacheTTL          time.Duration
 	DisablePathRouting      bool
 	Services                ServiceWaker
+	Identity                *identity.Service
+	Deciders                identity.Deciders
 }
 
 type Ingress struct {
@@ -53,6 +56,8 @@ type Ingress struct {
 	limiter     ratelimit.Limiter
 	proxy       *httputil.ReverseProxy
 	services    ServiceWaker
+	identity    *identity.Service
+	deciders    identity.Deciders
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
@@ -74,6 +79,8 @@ func New(opts Options) *Ingress {
 		limiter:     opts.Limiter,
 		pathRouting: !opts.DisablePathRouting,
 		services:    opts.Services,
+		identity:    opts.Identity,
+		deciders:    opts.Deciders,
 
 		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
@@ -98,6 +105,7 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		i.oidc.handleCallback(w, r)
 		return
 	}
+	dropH2CUpgrade(r.Header)
 	ep, outPath, err := i.resolve(r)
 	if err != nil {
 		i.writeResolveError(w, err)
@@ -116,8 +124,12 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !applyPolicyGate(w, r, ep, i.gateDeps()) {
 		return
 	}
-	conn, ok := i.conns.ResolveEndpoint(ep.ID)
+	r, ok := i.applyIdentityGate(w, r, ep, outPath)
 	if !ok {
+		return
+	}
+	conn, online := i.conns.ResolveEndpoint(ep.ID)
+	if !online {
 		http.Error(w, "tunnel offline: no agent is connected for this endpoint", http.StatusServiceUnavailable)
 		i.recordCode(http.StatusServiceUnavailable)
 		return
@@ -280,6 +292,7 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 	}
 	stripHopHeaders(outReq.Header)
 	preserveUpgradeHeaders(outReq.Header, r.Header)
+	sanitizeUpstreamRequest(outReq.Header, ep)
 	setForwardedHeaders(r, outReq, i.trusted)
 	stripGateCredentials(outReq.Header, ep)
 	applyRequestPolicy(outReq, ep)

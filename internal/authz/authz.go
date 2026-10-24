@@ -58,6 +58,7 @@ func AllActions() []Action {
 
 type Principal struct {
 	ID   string
+	Type EntityType
 	Role string
 	Org  string
 }
@@ -152,7 +153,11 @@ func New(policySrc []byte) (*Authorizer, error) {
 }
 
 func (a *Authorizer) Authorize(p Principal, action Action) bool {
-	principalUID := types.NewEntityUID("User", types.String(p.ID))
+	principalType := p.Type
+	if principalType == "" {
+		principalType = EntityUser
+	}
+	principalUID := types.NewEntityUID(types.EntityType(principalType), types.String(p.ID))
 	roleUID := types.NewEntityUID("Role", types.String(p.Role))
 	orgUID := types.NewEntityUID("Org", types.String(p.Org))
 
