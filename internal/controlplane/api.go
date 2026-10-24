@@ -260,6 +260,7 @@ func (a *API) routes() []route {
 		{"PUT /api/v1/quota", a.require(authz.ActionQuotaWrite, a.putQuotaHandler)},
 
 		{"GET /api/v1/audit", a.require(authz.ActionAuditRead, a.listAuditHandler)},
+		{"GET /api/v1/access-log", a.require(authz.ActionAuditRead, a.listAccessLogHandler)},
 		{"GET /api/v1/status", a.require(authz.ActionStatusRead, a.statusHandler)},
 
 		{"GET /api/v1/service-accounts", a.require(authz.ActionMemberRead, a.listServiceAccountsHandler)},

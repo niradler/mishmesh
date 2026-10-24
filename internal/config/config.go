@@ -40,6 +40,7 @@ type Server struct {
 	UDPPortMax               int
 	UDPIdleTimeout           time.Duration
 	UDPMaxFlows              int
+	AccessLogRetention       time.Duration
 	TLSPassthroughAddr       string
 	TLSPassthroughEnabled    bool
 	TLSPassthroughPublicPort int
@@ -148,6 +149,7 @@ func LoadServer() Server {
 		UDPPortMax:               envInt("UDP_PORT_MAX", 10300),
 		UDPIdleTimeout:           envDuration("UDP_IDLE_TIMEOUT", 60*time.Second),
 		UDPMaxFlows:              envInt("UDP_MAX_FLOWS", 1024),
+		AccessLogRetention:       envDuration("ACCESS_LOG_RETENTION", 168*time.Hour),
 		TLSPassthroughAddr:       env("TLS_PASSTHROUGH_ADDR", "127.0.0.1:8444"),
 		TLSPassthroughEnabled:    envBool("TLS_PASSTHROUGH_ENABLED", false),
 		TLSPassthroughPublicPort: envInt("TLS_PASSTHROUGH_PUBLIC_PORT", 8444),

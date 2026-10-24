@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
 )
@@ -132,6 +135,12 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	}
 	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/service-accounts", `{"name":"alice-robot"}`, http.StatusCreated, &sa)
 	f.sa = sa.ServiceAccount.ID
+	if err := f.api.data.AppendAccessEvents(context.Background(), []*store.AccessEvent{{
+		ID: "acc_alice", OrgID: f.orgA, At: time.Now().UTC(), Source: store.AccessSourceIngress, Decision: store.AccessAllow,
+		PrincipalType: "User", PrincipalID: f.userA, EndpointID: f.endpoint, Path: "/alice-access-path",
+	}}); err != nil {
+		t.Fatal(err)
+	}
 
 	type probe struct {
 		body string
@@ -180,6 +189,7 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"GET /api/v1/quota":                                     {"", http.StatusOK},
 		"PUT /api/v1/quota":                                     {`{"max_agents":1,"max_endpoints":1,"max_bandwidth_bytes":1}`, http.StatusForbidden},
 		"GET /api/v1/audit":                                     {"", http.StatusOK},
+		"GET /api/v1/access-log":                                {"", http.StatusOK},
 		"GET /api/v1/status":                                    {"", http.StatusOK},
 		"GET /api/v1/policy":                                    {"", http.StatusOK},
 		"GET /api/v1/services":                                  {"", http.StatusOK},
@@ -203,7 +213,7 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"PUT /api/v1/policy":                                    {`{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"],"member":["agent:read"]}}`, http.StatusOK},
 	}
 
-	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, f.group, "alice-credential", f.sa, "alice-robot"}
+	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, f.group, "alice-credential", f.sa, "alice-robot", "/alice-access-path", "acc_alice"}
 
 	for _, rt := range f.api.routes() {
 		pr, ok := probes[rt.pattern]

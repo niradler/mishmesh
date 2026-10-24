@@ -14,3 +14,7 @@ func TestServiceAccounts(t *testing.T) {
 func TestMembershipDisable(t *testing.T) {
 	storetest.RunMembershipDisable(t, func(t *testing.T) store.DataStore { return newStore(t) })
 }
+
+func TestAccessLog(t *testing.T) {
+	storetest.RunAccessLog(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}

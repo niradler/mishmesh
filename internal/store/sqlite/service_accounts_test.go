@@ -55,3 +55,7 @@ INSERT INTO sessions VALUES ('sh_1', 'usr_1', 'org_1', 1, 9999999999999999);
 		_ = data.Close()
 	}
 }
+
+func TestAccessLog(t *testing.T) {
+	storetest.RunAccessLog(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}

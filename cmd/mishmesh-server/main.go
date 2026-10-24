@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/accesslog"
 	"github.com/mishmesh/mishmesh/internal/cluster"
 	"github.com/mishmesh/mishmesh/internal/config"
 	"github.com/mishmesh/mishmesh/internal/connect/bridge"
@@ -256,6 +257,15 @@ func serve() error {
 	servers := []*http.Server{newHTTPServer(cfg.APIAddr, apiMux, nil)}
 	log.Info("api listener", "addr", cfg.APIAddr)
 
+	accessLog := accesslog.New(data, accesslog.Options{Retention: cfg.AccessLogRetention, Log: log})
+	accessCtx, stopAccessLog := context.WithCancel(context.Background())
+	accessDone := make(chan struct{})
+	go func() {
+		defer close(accessDone)
+		accessLog.Run(accessCtx)
+	}()
+	defer stopAccessLog()
+
 	if cfg.IngressEnabled {
 		ing := ingress.New(ingress.Options{
 			Data:                    data,
@@ -275,6 +285,7 @@ func serve() error {
 			Identity:                idSvc,
 			Deciders:                cp,
 			APIPublicURL:            cfg.APIPublicURL,
+			AccessLog:               accessLog,
 		})
 		cp.SetIngressInvalidator(ing.InvalidateCaches)
 		network.invalidateIngress = ing.InvalidateCaches
@@ -351,6 +362,11 @@ func serve() error {
 		onServersStopped: func(ctx context.Context) {
 			network.stop(ctx, log)
 			clusterRT.drain(ctx)
+			stopAccessLog()
+			select {
+			case <-accessDone:
+			case <-ctx.Done():
+			}
 		},
 	}
 	if err := network.start(); err != nil {

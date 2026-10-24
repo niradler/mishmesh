@@ -175,7 +175,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at INTEGER NOT NULL
 );
 `
-	if _, err := tx.ExecContext(ctx, schema+networkSchema+groupsSchema+zeroTrustSchema); err != nil {
+	if _, err := tx.ExecContext(ctx, schema+networkSchema+groupsSchema+zeroTrustSchema+accessLogSchema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	if err := migrateZeroTrustColumns(ctx, tx); err != nil {

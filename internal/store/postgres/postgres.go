@@ -215,7 +215,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at BIGINT NOT NULL
 );
 `
-	if _, err := tx.ExecContext(ctx, schema+networkSchema+groupsSchema+zeroTrustSchema+zeroTrustColumns); err != nil {
+	if _, err := tx.ExecContext(ctx, schema+networkSchema+groupsSchema+zeroTrustSchema+zeroTrustColumns+accessLogSchema); err != nil {
 		return fmt.Errorf("postgres migrate: %w", err)
 	}
 	return tx.Commit()

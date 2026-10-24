@@ -112,6 +112,7 @@ func (i *Ingress) applyIdentityGate(w http.ResponseWriter, r *http.Request, ep *
 		return r, false
 	}
 	decision, err := i.decideEndpoint(r, ep, outPath, principal)
+	accessFrom(r).setDecision(principal, decision)
 	if err != nil || decision.Reason == authz.ReasonUnavailable {
 		i.log.Error("endpoint decision unavailable", "endpoint_id", ep.ID, "err", err)
 		writeIdentityUnavailable(w)

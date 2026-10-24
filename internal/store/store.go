@@ -462,6 +462,10 @@ type DataStore interface {
 	AppendAudit(ctx context.Context, e *AuditEvent) error
 	ListAudit(ctx context.Context, orgID string, limit int) ([]*AuditEvent, error)
 
+	AppendAccessEvents(ctx context.Context, events []*AccessEvent) error
+	ListAccessEvents(ctx context.Context, orgID string, q AccessLogQuery) ([]*AccessEvent, error)
+	PruneAccessEvents(ctx context.Context, before time.Time) (int64, error)
+
 	Close() error
 }
 
@@ -473,6 +477,60 @@ type AuditEvent struct {
 	Target    string
 	Detail    string
 	CreatedAt time.Time
+}
+
+const (
+	AccessSourceIngress = "ingress"
+	AccessSourceConnect = "connect"
+	AccessSourceEgress  = "egress"
+
+	AccessAllow = "allow"
+	AccessDeny  = "deny"
+
+	MaxAccessLogLimit     = 1000
+	DefaultAccessLogLimit = 200
+)
+
+type AccessEvent struct {
+	ID            string
+	OrgID         string
+	At            time.Time
+	Source        string
+	Decision      string
+	Reason        string
+	PrincipalType string
+	PrincipalID   string
+	SessionID     string
+	AgentID       string
+	EndpointID    string
+	Destination   string
+	PolicyIDs     []string
+	ClientIP      string
+	Method        string
+	Path          string
+	Status        int
+	Protocol      string
+	BytesIn       int64
+	BytesOut      int64
+	DurationMs    int64
+	LatencyMs     int64
+}
+
+type AccessLogQuery struct {
+	Decision    string
+	Source      string
+	PrincipalID string
+	EndpointID  string
+	Since       time.Time
+	Until       time.Time
+	Limit       int
+}
+
+func (q AccessLogQuery) EffectiveLimit() int {
+	if q.Limit <= 0 {
+		return DefaultAccessLogLimit
+	}
+	return min(q.Limit, MaxAccessLogLimit)
 }
 
 type AgentConn interface {

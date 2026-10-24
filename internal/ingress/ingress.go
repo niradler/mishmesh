@@ -43,6 +43,7 @@ type Options struct {
 	Identity                *identity.Service
 	Deciders                identity.Deciders
 	APIPublicURL            string
+	AccessLog               AccessRecorder
 }
 
 type Ingress struct {
@@ -61,6 +62,7 @@ type Ingress struct {
 	deciders    identity.Deciders
 	apiURL      string
 	secure      bool
+	access      AccessRecorder
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
@@ -86,6 +88,7 @@ func New(opts Options) *Ingress {
 		deciders:    opts.Deciders,
 		apiURL:      strings.TrimRight(opts.APIPublicURL, "/"),
 		secure:      opts.CookieSecure,
+		access:      opts.AccessLog,
 
 		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
@@ -116,6 +119,13 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		i.writeResolveError(w, err)
 		return
 	}
+	start := time.Now()
+	sw, r, rec := i.beginAccess(w, r)
+	defer i.finishAccess(sw, r, ep, rec, start)
+	i.serveEndpoint(sw, r, ep, outPath)
+}
+
+func (i *Ingress) serveEndpoint(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, outPath string) {
 	if ep.Kind != "" && ep.Kind != store.KindHTTP {
 		i.writeResolveError(w, errTunnelNotFound)
 		return
@@ -148,6 +158,7 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	accessFrom(r).markForwarded()
 	if isUpgrade(r) {
 		i.proxyUpgrade(w, r, conn, ep, outPath, limit)
 		return
@@ -325,7 +336,8 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 	}
 	defer client.Close()
 
-	tunnel.Splice(&bufferedConn{Conn: client, r: clientBuf.Reader}, &bufferedConn{Conn: stream, r: br})
+	in, out := tunnel.Splice(&bufferedConn{Conn: client, r: clientBuf.Reader}, &bufferedConn{Conn: stream, r: br})
+	accessFrom(r).markUpgraded(in, out)
 }
 
 type bufferedConn struct {
