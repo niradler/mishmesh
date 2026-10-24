@@ -114,3 +114,51 @@ func TestIngressEmitsOneAccessEventPerRequest(t *testing.T) {
 		t.Fatalf("unresolved request must not emit an org event: %+v", events)
 	}
 }
+
+func TestIngressAccessEventCarriesHardCheckReason(t *testing.T) {
+	data, err := sqlite.Open(filepath.Join(t.TempDir(), "access.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = data.Close() })
+	ctx := context.Background()
+	_ = data.CreateOrg(ctx, &store.Org{ID: "org_1", Name: "o", CreatedAt: time.Now()})
+	_ = data.CreateAgent(ctx, &store.Agent{ID: "ag_test", OrgID: "org_1", Name: "a", Status: store.AgentActive, CreatedAt: time.Now()})
+	ep := &store.Endpoint{ID: "ep_1", AgentID: "ag_test", OrgID: "org_1", Kind: store.KindHTTP, Subdomain: "app", CreatedAt: time.Now(),
+		Policy: &store.EndpointPolicy{Identity: &store.EndpointIdentity{Required: true}}}
+	if err := data.CreateEndpoint(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+	conns := memory.NewConnStore()
+	conns.AddAgent(&fakeAgentConn{backend: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("hard-check deny reached the upstream: %s", r.URL.Path)
+	})})
+	conns.BindEndpoint("ep_1", "ag_test")
+	svc := newIdentityService(t)
+	deciders := &fakeDeciders{decide: allowAll}
+	access := &recordedAccess{}
+	ing := New(Options{Data: data, Conns: conns, Log: discardLogger(), BaseDomain: "example.com", Identity: svc, Deciders: deciders, AccessLog: access})
+	saToken := issueSAToken(t, svc, "org_1")
+
+	for _, reason := range []authz.Reason{
+		authz.ReasonSessionExpired, authz.ReasonSessionRevoked, authz.ReasonUserDisabled,
+		authz.ReasonAgentDisabled, authz.ReasonAuthStale, authz.ReasonNoPolicyMatch,
+	} {
+		t.Run(string(reason), func(t *testing.T) {
+			deciders.decide = func(authz.DecisionRequest) (authz.Decision, error) {
+				return authz.Decision{Reason: reason}, nil
+			}
+			r := httptest.NewRequest(http.MethodGet, "http://app.example.com/x", nil)
+			r.Header.Set(identityAuthHeader, "Bearer "+saToken)
+			w := httptest.NewRecorder()
+			ing.ServeHTTP(w, r)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", w.Code)
+			}
+			events := access.take()
+			if len(events) != 1 || events[0].Decision != store.AccessDeny || events[0].Reason != string(reason) || events[0].PrincipalID != "sa_1" {
+				t.Fatalf("events = %+v, want one deny with reason %s", events, reason)
+			}
+		})
+	}
+}

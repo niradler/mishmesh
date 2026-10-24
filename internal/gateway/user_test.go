@@ -230,6 +230,29 @@ func TestDecisionRequestDeniedWithoutDecider(t *testing.T) {
 	}
 }
 
+func TestDecisionRequestOversizeRefusedBeforeDecider(t *testing.T) {
+	dec := &fakeDecider{answer: tunnel.DecisionAnswer{Allowed: true}, got: make(chan tunnel.DecisionQuery, 1)}
+	g, ag, _, data := newRegisterFixture(t, Options{Egress: dec})
+	srv := httptest.NewServer(http.HandlerFunc(g.HandleAgentConnect))
+	t.Cleanup(srv.Close)
+	a := dialAgent(t, srv, agentToken(t, data, ag), "")
+
+	q := tunnel.DecisionQuery{ID: 11, Action: tunnel.DecisionActionEgressRequest, HTTP: &tunnel.HTTPQuery{
+		Host: "api.example.com", Port: 443, Method: "GET", Path: "/" + strings.Repeat("a", authz.MaxDecisionRequestBytes),
+	}}
+	if err := a.ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgDecisionRequest, Decision: &q}); err != nil {
+		t.Fatal(err)
+	}
+	msg := a.recvType(t, tunnel.MsgDecisionResponse)
+	if msg.Answer == nil || msg.Answer.ID != 11 || msg.Answer.Allowed || msg.Answer.Reason != string(authz.ReasonInvalidRequest) {
+		t.Fatalf("answer = %+v, want invalid_request deny", msg.Answer)
+	}
+	if len(dec.got) != 0 {
+		t.Fatal("oversize query reached the decider")
+	}
+	a.ping(t)
+}
+
 func TestDecisionRequestDispatchedByAction(t *testing.T) {
 	connect := &fakeDecider{answer: tunnel.DecisionAnswer{Allowed: true, Reason: "connect"}, got: make(chan tunnel.DecisionQuery, 4)}
 	egress := &fakeDecider{answer: tunnel.DecisionAnswer{Allowed: true, Reason: "egress", Credential: &tunnel.SealedCredential{Name: "billing", Header: "Authorization", Sealed: []byte{1}}}, got: make(chan tunnel.DecisionQuery, 4)}

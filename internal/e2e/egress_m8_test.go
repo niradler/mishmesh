@@ -36,6 +36,25 @@ func (h *egressHarness) serviceAccountToken(orgID, name string) (string, string)
 	return sa.ID, issued.Token
 }
 
+func (h *egressHarness) userToken(orgID, email string) (string, string) {
+	h.t.Helper()
+	u := &store.User{ID: store.NewID("usr"), Email: email, Name: email, CreatedAt: time.Now()}
+	if err := h.data.CreateUser(h.ctx, u); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := h.data.CreateMembership(h.ctx, &store.Membership{OrgID: orgID, UserID: u.ID, Role: string(authz.RoleMember), CreatedAt: time.Now()}); err != nil {
+		h.t.Fatal(err)
+	}
+	issued, err := h.ids.Issue(h.ctx, identity.IssueRequest{
+		OrgID: orgID, Subject: authz.EntityRef{Type: authz.EntityUser, ID: u.ID},
+		Type: token.TypeAccess, AuthMethod: authz.AuthMethodPassword, TTL: time.Hour,
+	})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return u.ID, issued.Token
+}
+
 func basicAuth(user, pass string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 }
@@ -114,8 +133,9 @@ func TestEgressSharedGatewayAttributesEachCaller(t *testing.T) {
 	listen := h.runNamedAgent(orgID, "shared", agent.EgressSpec{Listen: freeAddr(t, "tcp"), RequireAuth: true}, nil)
 	saA, rawA := h.serviceAccountToken(orgID, "build")
 	saB, rawB := h.serviceAccountToken(orgID, "deploy")
+	userID, rawUser := h.userToken(orgID, "dev@example.com")
 
-	for _, auth := range []string{"Bearer " + rawA, basicAuth("deploy", rawB)} {
+	for _, auth := range []string{"Bearer " + rawA, basicAuth("deploy", rawB), "Bearer " + rawUser} {
 		c, br, resp := proxyConnectAuth(t, listen, echo, auth)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("CONNECT status = %d, want 200", resp.StatusCode)
@@ -123,10 +143,10 @@ func TestEgressSharedGatewayAttributesEachCaller(t *testing.T) {
 		assertEcho(t, c, br)
 		_ = c.Close()
 	}
-	for _, id := range []string{saA, saB} {
+	for id, kind := range map[string]authz.EntityType{saA: authz.EntityServiceAccount, saB: authz.EntityServiceAccount, userID: authz.EntityUser} {
 		ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.PrincipalID == id })
-		if ev.Decision != store.AccessAllow || ev.PrincipalType != string(authz.EntityServiceAccount) {
-			t.Fatalf("access event for %s = %+v", id, ev)
+		if ev.Decision != store.AccessAllow || ev.PrincipalType != string(kind) {
+			t.Fatalf("access event for %s = %+v, want %s", id, ev, kind)
 		}
 	}
 }

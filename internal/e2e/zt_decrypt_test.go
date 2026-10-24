@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -178,6 +179,7 @@ type decryptFixture struct {
 	testCA    *testCA
 	orgRoots  *x509.CertPool
 	proxyAddr string
+	agentID   string
 }
 
 func newDecryptFixture(t *testing.T) *decryptFixture {
@@ -235,7 +237,7 @@ permit (principal, action == Action::"egress:request", resource) when { (resourc
 	}
 	orgRoots := x509.NewCertPool()
 	orgRoots.AddCert(root)
-	return &decryptFixture{t: t, s: s, owner: owner, clock: clock, upstream: upstream, bad: bad, testCA: ca, orgRoots: orgRoots, proxyAddr: proxyAddr}
+	return &decryptFixture{t: t, s: s, owner: owner, clock: clock, upstream: upstream, bad: bad, testCA: ca, orgRoots: orgRoots, proxyAddr: proxyAddr, agentID: agentID}
 }
 
 func (f *decryptFixture) target(host string) string {
@@ -493,5 +495,78 @@ func TestDecryptDisabledOrgPassesThrough(t *testing.T) {
 	})
 	if r := f.get(decryptWSHost, "/x", f.orgRoots, false, nil); r.err == nil {
 		t.Fatal("a host was still decrypted after the org disabled decryption")
+	}
+}
+
+func TestDecryptIntermediateNameConstraintsHoldAgainstOrgRoot(t *testing.T) {
+	f := newDecryptFixture(t)
+	presented := f.mustDecrypted(decryptAPIHost, "/v1/a", false, nil).chain[1]
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "probe"}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag, err := f.s.data.GetAgent(f.s.ctx, f.agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := f.s.egressCA.IssueDecryptCert(f.s.ctx, ag, csr)
+	if err != nil || resp.Error != "" || len(resp.Chain) == 0 {
+		t.Fatalf("issue = %+v, %v", resp, err)
+	}
+	inter, err := x509.ParseCertificate(resp.Chain[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(inter.PermittedDNSDomains, presented.PermittedDNSDomains) || !slices.Equal(inter.ExcludedDNSDomains, presented.ExcludedDNSDomains) || !presented.PermittedDNSDomainsCritical {
+		t.Fatalf("agent intermediate constraints %v / %v differ from issued %v / %v", presented.PermittedDNSDomains, presented.ExcludedDNSDomains, inter.PermittedDNSDomains, inter.ExcludedDNSDomains)
+	}
+	intermediates := x509.NewCertPool()
+	intermediates.AddCert(inter)
+
+	for _, tc := range []struct {
+		name  string
+		dns   []string
+		ips   []net.IP
+		valid bool
+	}{
+		{"allowlisted host", []string{decryptAPIHost}, nil, true},
+		{"outside the allowlist", []string{"evil.test"}, nil, false},
+		{"bypassed host", []string{decryptBankHost}, nil, false},
+		{"allowlisted plus outside name", []string{decryptAPIHost, "evil.test"}, nil, false},
+		{"ip address", nil, []net.IP{net.ParseIP("127.0.0.1")}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := f.clock.Now()
+			der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+				SerialNumber: big.NewInt(now.UnixNano()),
+				Subject:      pkix.Name{CommonName: "leaf"},
+				DNSNames:     tc.dns,
+				IPAddresses:  tc.ips,
+				NotBefore:    now.Add(-time.Minute),
+				NotAfter:     now.Add(time.Hour),
+				KeyUsage:     x509.KeyUsageDigitalSignature,
+				ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			}, inter, &leafKey.PublicKey, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaf, err := x509.ParseCertificate(der)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = leaf.Verify(x509.VerifyOptions{Roots: f.orgRoots, Intermediates: intermediates, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+			if (err == nil) != tc.valid {
+				t.Fatalf("verify err = %v, want valid=%v", err, tc.valid)
+			}
+		})
 	}
 }
