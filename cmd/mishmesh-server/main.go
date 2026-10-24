@@ -210,8 +210,8 @@ func serve() error {
 	gwOpts.Egress = egress.New(egress.Options{Conns: conns, Log: log, Meter: mx, Deciders: cp, Dialer: proxyGuard, Access: accessLog, Revocations: idSvc, Auth: idSvc, Agents: data})
 	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)
 	gw := gateway.New(gwOpts)
-	idSvc.OnFlush(gw.FlushAll)
-	cp.SetDecisionFlusher(idSvc.FlushAll)
+	idSvc.OnFlush(gw.FlushOrg)
+	cp.SetDecisionFlusher(idSvc.FlushOrg)
 	if bus, ok := conns.(store.EventBus); ok {
 		stopBus, err := idSvc.AttachBus(bus, log)
 		if err != nil {

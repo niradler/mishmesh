@@ -9,7 +9,13 @@ import (
 func TestMutationsThatChangeDecisionsFlushThem(t *testing.T) {
 	api, srv := newTestAPI(t)
 	var flushes atomic.Int32
-	api.SetDecisionFlusher(func() { flushes.Add(1) })
+	var unscoped atomic.Bool
+	api.SetDecisionFlusher(func(org string) {
+		flushes.Add(1)
+		if org == "" {
+			unscoped.Store(true)
+		}
+	})
 
 	var created struct {
 		Agent agentDTO `json:"agent"`
@@ -36,5 +42,8 @@ func TestMutationsThatChangeDecisionsFlushThem(t *testing.T) {
 		if got := flushes.Load() > before; got != s.flushes {
 			t.Errorf("%s: flushed = %v, want %v", s.name, got, s.flushes)
 		}
+	}
+	if unscoped.Load() {
+		t.Error("a single-org mutation flushed every org")
 	}
 }

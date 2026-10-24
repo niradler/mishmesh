@@ -125,8 +125,8 @@ func newZTStack(t *testing.T, verifierClient *http.Client) *ztStack {
 		Data: data, Conns: conns, Log: log, BaseDomain: "localhost", PublicScheme: "http",
 		Users: idSvc, Connect: connect,
 	})
-	idSvc.OnFlush(gw.FlushAll)
-	cp.SetDecisionFlusher(idSvc.FlushAll)
+	idSvc.OnFlush(gw.FlushOrg)
+	cp.SetDecisionFlusher(idSvc.FlushOrg)
 	cp.SetPublicConfig("localhost", "http")
 	cp.ConfigureAuth(controlplane.AuthOptions{Enabled: true, PasswordEnabled: true})
 

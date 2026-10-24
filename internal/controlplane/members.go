@@ -140,7 +140,7 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 		if err := a.data.UpdateMembership(r.Context(), &store.Membership{OrgID: orgID, UserID: userID, Role: role}); a.handleErr(w, err) {
 			return
 		}
-		a.flushDecisions()
+		a.flushDecisions(orgID)
 		a.audit(r, "member.update", userID, role)
 	}
 	disabled := target.DisabledAt != nil

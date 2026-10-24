@@ -49,7 +49,7 @@ type API struct {
 	servicesMu         sync.Mutex
 	serviceRegistry    *services.Registry
 	invalidateIngress  func()
-	decisionFlush      func()
+	decisionFlush      func(orgID string)
 	endpointHealth     HealthSource
 	connections        ConnectionControl
 	connectionRegistry *connections.Registry
@@ -145,9 +145,13 @@ type authzEntry struct {
 	expires time.Time
 }
 
-func (a *API) ClearAuthzCache() {
+func (a *API) ClearAuthzCache(orgID string) {
 	a.authzMu.Lock()
-	clear(a.authzCache)
+	if orgID == "" {
+		clear(a.authzCache)
+	} else {
+		delete(a.authzCache, orgID)
+	}
 	a.authzMu.Unlock()
 }
 
@@ -155,14 +159,14 @@ func (a *API) invalidateAuthz(orgID string) {
 	a.authzMu.Lock()
 	delete(a.authzCache, orgID)
 	a.authzMu.Unlock()
-	a.flushDecisions()
+	a.flushDecisions(orgID)
 }
 
-func (a *API) SetDecisionFlusher(flush func()) { a.decisionFlush = flush }
+func (a *API) SetDecisionFlusher(flush func(orgID string)) { a.decisionFlush = flush }
 
-func (a *API) flushDecisions() {
+func (a *API) flushDecisions(orgID string) {
 	if a.decisionFlush != nil {
-		a.decisionFlush()
+		a.decisionFlush(orgID)
 	}
 }
 
@@ -594,7 +598,7 @@ func (a *API) patchAgentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Status != "" {
-		a.flushDecisions()
+		a.flushDecisions(ag.OrgID)
 	}
 	writeJSON(w, http.StatusOK, a.toAgentDTO(ag))
 }

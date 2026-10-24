@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/connect/flows"
 	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/identity"
@@ -121,6 +122,7 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dropH2CUpgrade(r.Header)
+	r = r.WithContext(context.WithValue(r.Context(), flushEpochKey{}, i.upgrades.Epoch()))
 	ep, outPath, err := i.resolve(r)
 	if err != nil {
 		i.writeResolveError(w, err)
@@ -323,6 +325,11 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 		i.recordCode(http.StatusServiceUnavailable)
 		return
 	}
+	if flow != nil && !i.upgrades.Confirm(flow, flushEpochFrom(r)) {
+		http.Error(w, "access changed while the upgrade was being set up", http.StatusForbidden)
+		i.recordCode(http.StatusForbidden)
+		return
+	}
 
 	outReq := r.Clone(r.Context())
 	outReq.RequestURI = ""
@@ -425,6 +432,13 @@ func newUpgradeTracker(i *Ingress, ids *identity.Service) *flows.Tracker {
 	return flows.NewTracker(i.log, "ingress upgrade", ids)
 }
 
+type flushEpochKey struct{}
+
+func flushEpochFrom(r *http.Request) uint64 {
+	epoch, _ := r.Context().Value(flushEpochKey{}).(uint64)
+	return epoch
+}
+
 func (i *Ingress) trackUpgrade(r *http.Request, stream net.Conn, ep *store.Endpoint, outPath string) (*flows.Flow, func(), error) {
 	var principal *identity.Principal
 	if id := identityFrom(r); id != nil {
@@ -450,8 +464,11 @@ func (i *Ingress) upgradeRecheck(r *http.Request, endpointID, outPath string, pr
 	}
 	return func(ctx context.Context) error {
 		ep, err := i.data.GetEndpoint(ctx, endpointID)
-		if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
 			return fmt.Errorf("endpoint %s: %w", endpointID, err)
+		case err != nil:
+			return fmt.Errorf("endpoint %s: %w: %w", endpointID, flows.ErrTransient, err)
 		}
 		if ep.Policy == nil || ep.Policy.Identity == nil {
 			return nil
@@ -461,8 +478,8 @@ func (i *Ingress) upgradeRecheck(r *http.Request, endpointID, outPath string, pr
 		}
 		decision, err := i.decideEndpoint(r.WithContext(ctx), ep, outPath, principal)
 		switch {
-		case err != nil:
-			return err
+		case err != nil || decision.Reason == authz.ReasonUnavailable:
+			return fmt.Errorf("endpoint %s decision: %w: %v", endpointID, flows.ErrTransient, err)
 		case !decision.Allowed:
 			return fmt.Errorf("endpoint access re-evaluated to %s", decision.Reason)
 		}

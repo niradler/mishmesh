@@ -114,7 +114,7 @@ func (a *API) deleteGroupHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, a.data.DeleteGroup(r.Context(), a.orgScope(r), id)) {
 		return
 	}
-	a.flushDecisions()
+	a.flushDecisions(a.orgScope(r))
 	a.audit(r, "group.delete", id, "")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -146,7 +146,7 @@ func (a *API) addGroupMemberHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, a.data.AddGroupMember(r.Context(), m)) {
 		return
 	}
-	a.flushDecisions()
+	a.flushDecisions(org)
 	a.audit(r, "group.member.add", groupID, req.Type+":"+req.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -158,7 +158,7 @@ func (a *API) removeGroupMemberHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, a.data.RemoveGroupMember(r.Context(), a.orgScope(r), groupID, memberType, memberID)) {
 		return
 	}
-	a.flushDecisions()
+	a.flushDecisions(a.orgScope(r))
 	a.audit(r, "group.member.remove", groupID, memberType+":"+memberID)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -81,12 +82,13 @@ func TestRevocationReachesOtherNodesOnce(t *testing.T) {
 
 func TestFlushReachesOtherNodesOnce(t *testing.T) {
 	a, b := clusterPair(t, &loopBus{})
-	var flushA, flushB int
-	a.OnFlush(func() { flushA++ })
-	b.OnFlush(func() { flushB++ })
+	var orgsA, orgsB []string
+	a.OnFlush(func(org string) { orgsA = append(orgsA, org) })
+	b.OnFlush(func(org string) { orgsB = append(orgsB, org) })
+	a.FlushOrg("org_1")
 	a.FlushAll()
-	if flushA != 1 || flushB != 1 {
-		t.Fatalf("flushes a=%d b=%d, want 1 each", flushA, flushB)
+	if !slices.Equal(orgsA, []string{"org_1", ""}) || !slices.Equal(orgsB, []string{"org_1", ""}) {
+		t.Fatalf("flushes a=%q b=%q, want the org then every org on each node", orgsA, orgsB)
 	}
 }
 

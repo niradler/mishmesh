@@ -183,7 +183,7 @@ func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		return
 	}
-	ac := newAgentConn(agent.ID, sess, g.metrics)
+	ac := newAgentConn(agent.ID, agent.OrgID, sess, g.metrics)
 	if user != nil {
 		ac.boundOrg, ac.boundSession = user.OrgID, user.SessionID
 	}
@@ -231,10 +231,16 @@ func (g *Gateway) bindUser(w http.ResponseWriter, r *http.Request, agent *store.
 }
 
 func (g *Gateway) FlushAll() {
+	g.FlushOrg("")
+}
+
+func (g *Gateway) FlushOrg(orgID string) {
 	g.liveMu.Lock()
 	conns := make([]*agentConn, 0, len(g.live))
 	for ac := range g.live {
-		conns = append(conns, ac)
+		if orgID == "" || ac.orgID == orgID {
+			conns = append(conns, ac)
+		}
 	}
 	g.liveMu.Unlock()
 	for _, ac := range conns {

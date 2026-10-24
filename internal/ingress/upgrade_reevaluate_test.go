@@ -123,3 +123,23 @@ func TestUpgradeSurvivesFlushWhenStillAllowed(t *testing.T) {
 		t.Fatalf("echo after flush = %q, %v", got, err)
 	}
 }
+
+func TestUpgradeRefusedWhenPolicyFlushedDuringSetup(t *testing.T) {
+	f := newReevaluateFixture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), flushEpochKey{}, f.ing.upgrades.Epoch()))
+		r, ok := f.ing.applyIdentityGate(w, r, f.ep, "/ws")
+		if !ok {
+			return
+		}
+		f.deciders.deny.Store(true)
+		f.svc.FlushOrg("org_1")
+		f.ing.upgrades.WaitReevaluated()
+		f.ing.proxyUpgrade(w, r, upgradeEchoAgent{}, f.ep, "/ws", 0)
+	}))
+	t.Cleanup(srv.Close)
+	_, _, resp := dialUpgrade(t, srv.Listener.Addr().String(), issueSAToken(t, f.svc, "org_1"))
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for an upgrade whose policy changed mid-setup", resp.StatusCode)
+	}
+}

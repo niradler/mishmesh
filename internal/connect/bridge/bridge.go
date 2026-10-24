@@ -115,6 +115,9 @@ func (b *Bridge) recheck(ctx context.Context, agent *store.Agent, init tunnel.St
 			ctx = identity.WithPrincipal(ctx, p)
 		}
 		_, err := b.decide(ctx, agent, ref, kind)
+		if errors.Is(err, ErrUnavailable) {
+			return fmt.Errorf("%w: %w", flows.ErrTransient, err)
+		}
 		return err
 	}
 }

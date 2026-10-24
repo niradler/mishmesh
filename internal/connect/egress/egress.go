@@ -166,10 +166,14 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		}
 	}
 	flow, untrack := h.flows.Track(agent.OrgID, p.SessionID, stream, func(ctx context.Context) error {
-		if d, status := h.decideAll(ctx, agent, p, hasPrincipal, dest, targets, exit); status != tunnel.EgressOK {
-			return fmt.Errorf("egress %s re-evaluated to %s", dest, d.Reason)
+		d, status := h.decideAll(ctx, agent, p, hasPrincipal, dest, targets, exit)
+		switch status {
+		case tunnel.EgressOK:
+			return nil
+		case tunnel.EgressUnavailable:
+			return fmt.Errorf("egress %s re-evaluation: %w", dest, flows.ErrTransient)
 		}
-		return nil
+		return fmt.Errorf("egress %s re-evaluated to %s", dest, d.Reason)
 	})
 	defer untrack()
 	decision, status := h.decideAll(ctx, agent, p, hasPrincipal, dest, targets, exit)

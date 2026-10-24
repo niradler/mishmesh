@@ -2,6 +2,7 @@ package flows
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"slices"
@@ -20,16 +21,20 @@ type SessionChecker interface {
 }
 
 type Flushes interface {
-	OnFlush(fn func()) func()
+	OnFlush(fn func(orgID string)) func()
 }
 
 type Recheck func(ctx context.Context) error
+
+var ErrTransient = errors.New("flows: re-evaluation unavailable")
 
 const (
 	defaultSweepEvery = 30 * time.Second
 	sweepCheckTimeout = 2 * time.Second
 	recheckTimeout    = 5 * time.Second
 	recheckParallel   = 8
+	recheckAttempts   = 3
+	defaultBackoff    = time.Second
 )
 
 type Flow struct {
@@ -45,17 +50,23 @@ type Tracker struct {
 	label      string
 	checker    SessionChecker
 	sweepEvery time.Duration
+	backoff    time.Duration
 
 	mu           sync.Mutex
 	flows        map[*Flow]struct{}
 	sweeping     bool
 	reevaluating bool
-	pending      bool
+	pending      map[string]struct{}
+	epoch        uint64
+	flushedAt    map[string]uint64
 	idle         *sync.Cond
 }
 
 func NewTracker(log *slog.Logger, label string, revocations Revocations) *Tracker {
-	t := &Tracker{log: log, label: label, sweepEvery: defaultSweepEvery, flows: make(map[*Flow]struct{})}
+	t := &Tracker{
+		log: log, label: label, sweepEvery: defaultSweepEvery, backoff: defaultBackoff,
+		flows: make(map[*Flow]struct{}), pending: make(map[string]struct{}), flushedAt: make(map[string]uint64),
+	}
 	t.idle = sync.NewCond(&t.mu)
 	if revocations != nil {
 		revocations.Subscribe(t.Revoke)
@@ -175,15 +186,35 @@ func (t *Tracker) sweepSession(ref sessionRef) {
 	}
 }
 
-func (t *Tracker) Reevaluate() {
+func (t *Tracker) Reevaluate(orgID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.epoch++
+	t.flushedAt[orgID] = t.epoch
 	if t.reevaluating {
-		t.pending = true
+		t.pending[orgID] = struct{}{}
 		return
 	}
 	t.reevaluating = true
-	go t.reevaluateLoop()
+	go t.reevaluateLoop(map[string]struct{}{orgID: {}})
+}
+
+func (t *Tracker) Epoch() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.epoch
+}
+
+func (t *Tracker) Confirm(f *Flow, epoch uint64) bool {
+	t.mu.Lock()
+	stale := t.flushedAt[f.orgID] > epoch || t.flushedAt[""] > epoch
+	t.mu.Unlock()
+	if stale && f.recheck != nil {
+		t.recheckFlow(f)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return !f.revoked
 }
 
 func (t *Tracker) WaitReevaluated() {
@@ -194,26 +225,28 @@ func (t *Tracker) WaitReevaluated() {
 	}
 }
 
-func (t *Tracker) reevaluateLoop() {
+func (t *Tracker) reevaluateLoop(orgs map[string]struct{}) {
 	for {
-		t.reevaluateOnce()
+		t.reevaluateOnce(orgs)
 		t.mu.Lock()
-		if !t.pending {
+		if len(t.pending) == 0 {
 			t.reevaluating = false
 			t.idle.Broadcast()
 			t.mu.Unlock()
 			return
 		}
-		t.pending = false
+		orgs = t.pending
+		t.pending = make(map[string]struct{})
 		t.mu.Unlock()
 	}
 }
 
-func (t *Tracker) reevaluateOnce() {
+func (t *Tracker) reevaluateOnce(orgs map[string]struct{}) {
+	_, everyOrg := orgs[""]
 	t.mu.Lock()
 	checks := make([]*Flow, 0, len(t.flows))
 	for f := range t.flows {
-		if !f.revoked && f.recheck != nil {
+		if _, hit := orgs[f.orgID]; (everyOrg || hit) && !f.revoked && f.recheck != nil {
 			checks = append(checks, f)
 		}
 	}
@@ -231,9 +264,7 @@ func (t *Tracker) reevaluateOnce() {
 }
 
 func (t *Tracker) recheckFlow(f *Flow) {
-	ctx, cancel := context.WithTimeout(context.Background(), recheckTimeout)
-	defer cancel()
-	err := f.recheck(ctx)
+	err := t.recheckWithRetry(f)
 	if err == nil {
 		return
 	}
@@ -245,4 +276,21 @@ func (t *Tracker) recheckFlow(f *Flow) {
 		_ = c.Close()
 	}
 	t.log.Info("closed "+t.label+" flow after policy re-evaluation", "org_id", f.orgID, "err", err)
+}
+
+func (t *Tracker) recheckWithRetry(f *Flow) error {
+	var err error
+	for attempt := range recheckAttempts {
+		if attempt > 0 {
+			time.Sleep(t.backoff << (attempt - 1))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), recheckTimeout)
+		err = f.recheck(ctx)
+		cancel()
+		if err == nil || !errors.Is(err, ErrTransient) {
+			return err
+		}
+		t.log.Warn(t.label+" flow re-evaluation unavailable; retrying", "org_id", f.orgID, "attempt", attempt+1, "err", err)
+	}
+	return err
 }
