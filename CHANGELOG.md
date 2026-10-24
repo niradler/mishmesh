@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.9
+
+- The gateway now refuses agent decision queries larger than 8 KiB with `invalid_request` before any policy decision runs. Before, the cap was only enforced when decoding over the API.
+- Cloudflare connection sync looks up DNS records for up to 8 hostnames at a time instead of one after another. On a 13-hostname connection a sync took about 7s; adding and removing hostnames wait for that sync, so they get faster too.
+- Zero-trust coverage: new tests for M0 hard-check reasons in the access log, M4 live streams dropped on control disconnect, M8 user and service-account attribution on a shared gateway, and M10 intermediate name constraints issued end to end. Exit-agent e2e tests wait for registration, which fixes an `exit_offline` flake.
+- Dependency updates: Go `modernc.org/sqlite` 1.61.0, `prometheus/client_golang`, `coder/websocket` 1.8.15 and `miniredis` 2.40.0; web `@tanstack/react-query`, `tailwind-merge`, `@types/node` and `lucide-react` 1.x; CI and release actions `setup-go`, `setup-node`, `build-push-action`, `goreleaser-action`, `setup-qemu-action` and `login-action`. `@vitejs/plugin-react` 6 is held back until the vite 8 migration.
+
 ## v0.1.0-beta.8
 
 - Agent HTTP origination: `egress.originate` listeners (name → listen, upstream, token) and absolute-form `http://` / `https://` requests on the egress proxy are proxied per request, with TLS originated by the agent and strict upstream certificate verification (502 with a clear body on failure).
