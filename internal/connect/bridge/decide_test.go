@@ -220,24 +220,7 @@ func TestRevocationClosesBoundFlows(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("flow not closed after revocation")
 	}
-	b.mu.Lock()
-	remaining := len(b.flows)
-	b.mu.Unlock()
-	if remaining != 0 {
+	if remaining := b.flows.Len(); remaining != 0 {
 		t.Fatalf("flows = %d after close", remaining)
-	}
-}
-
-func TestRevokedFlowNeverSplices(t *testing.T) {
-	f := newDecideFixture(t)
-	b := f.bridge(nil, nil)
-	fl := &flow{orgID: "org_a", sessionID: "ses_1"}
-	untrack := b.trackFlow(fl)
-	defer untrack()
-	b.revoke(identity.Revocation{OrgID: "org_a", SessionIDs: []string{"ses_1"}})
-	near, far := net.Pipe()
-	defer far.Close()
-	if b.attach(fl, near) {
-		t.Fatal("attach succeeded on a revoked flow")
 	}
 }

@@ -189,14 +189,15 @@ func parseClientIP(s string) (types.IPAddr, error) {
 }
 
 func destinationEntity(id string) (types.Entity, error) {
-	host, portStr, err := net.SplitHostPort(id)
+	normalized, err := NormalizeDestination(id)
 	if err != nil {
 		return types.Entity{}, err
 	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port < 1 || port > 65535 || host == "" {
-		return types.Entity{}, invalid("destination %q must be host:port", truncate(id))
+	if normalized != id {
+		return types.Entity{}, invalid("destination %q is not normalized", truncate(id))
 	}
+	host, portStr, _ := net.SplitHostPort(id)
+	port, _ := strconv.Atoi(portStr)
 	uid := types.NewEntityUID(types.EntityType(EntityDestination), types.String(id))
 	return types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
 		"host": types.String(host),

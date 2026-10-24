@@ -401,3 +401,49 @@ func TestFindConfig(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestParseConfigEgress(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want *EgressSpec
+	}{
+		{name: "absent", yaml: "gateway: ws://x:1", want: nil},
+		{name: "null", yaml: "egress:", want: nil},
+		{name: "defaults", yaml: "egress: {}", want: &EgressSpec{Listen: DefaultEgressListen}},
+		{name: "port only", yaml: "egress: {listen: 8080}", want: &EgressSpec{Listen: "127.0.0.1:8080"}},
+		{name: "host port", yaml: "egress: {listen: \"127.0.0.2:3129\"}", want: &EgressSpec{Listen: "127.0.0.2:3129"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseConfig("t.yml", []byte(tt.yaml), mapLookup(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (cfg.Egress == nil) != (tt.want == nil) || (tt.want != nil && *cfg.Egress != *tt.want) {
+				t.Fatalf("egress = %+v, want %+v", cfg.Egress, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseConfigEgressValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "list", yaml: "egress: [a]", want: "egress must be a mapping"},
+		{name: "unknown key", yaml: "egress: {listen: 1, upstream: x}", want: `unknown field "upstream"`},
+		{name: "bad listen", yaml: "egress: {listen: nope}", want: `listen "nope" must be a port or host:port`},
+		{name: "clashes with connect", yaml: "connects:\n  pg: {proto: tcp, listen: 3128}\negress: {}", want: `already used by connect "pg"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseConfig("t.yml", []byte(tt.yaml), mapLookup(nil))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}

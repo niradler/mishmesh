@@ -21,6 +21,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/cluster"
 	"github.com/mishmesh/mishmesh/internal/config"
 	"github.com/mishmesh/mishmesh/internal/connect/bridge"
+	"github.com/mishmesh/mishmesh/internal/connect/egress"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connect/sshfwd"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
@@ -202,7 +203,9 @@ func serve() error {
 	cp.SetIdentity(idSvc)
 	cp.SetWorkloadVerifier(workload.NewVerifier(workload.Options{Client: safehttp.Client(false, cfg.OIDCAllowPrivate)}))
 	gwOpts.Users = idSvc
+	accessLog := accesslog.New(data, accesslog.Options{Retention: cfg.AccessLogRetention, Log: log})
 	gwOpts.Connect = bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Meter: mx, Deciders: cp, Revocations: idSvc})
+	gwOpts.Egress = egress.New(egress.Options{Conns: conns, Log: log, Meter: mx, Deciders: cp, Dialer: proxyGuard, Access: accessLog, Revocations: idSvc})
 	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)
 	gw := gateway.New(gwOpts)
 	cp.SetDecisionFlusher(gw.FlushAll)
@@ -265,7 +268,6 @@ func serve() error {
 	servers := []*http.Server{newHTTPServer(cfg.APIAddr, apiMux, nil)}
 	log.Info("api listener", "addr", cfg.APIAddr)
 
-	accessLog := accesslog.New(data, accesslog.Options{Retention: cfg.AccessLogRetention, Log: log})
 	accessCtx, stopAccessLog := context.WithCancel(context.Background())
 	accessDone := make(chan struct{})
 	go func() {

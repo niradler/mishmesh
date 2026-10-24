@@ -2,10 +2,13 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 )
+
+var ErrBlocked = errors.New("proxy: blocked target")
 
 var (
 	alwaysBlockedNets = mustCIDRs(
@@ -49,6 +52,7 @@ type Guard struct {
 	allowLoopback bool
 	allowPrivate  bool
 	allowed       []*net.IPNet
+	lookup        func(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
 func NewGuard(allowLoopback, allowPrivate bool, allowedCIDRs []string) (*Guard, error) {
@@ -130,12 +134,12 @@ func (g *Guard) ValidateTarget(target string) error {
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if !g.IPAllowed(ip) {
-			return fmt.Errorf("proxy: target %q is a blocked address", target)
+			return fmt.Errorf("%w: target %q is a blocked address", ErrBlocked, target)
 		}
 		return nil
 	}
 	if !g.nameAllowed(host) {
-		return fmt.Errorf("proxy: target %q is an internal name", target)
+		return fmt.Errorf("%w: target %q is an internal name", ErrBlocked, target)
 	}
 	return nil
 }
@@ -147,14 +151,18 @@ func (g *Guard) Resolve(ctx context.Context, target string) (string, error) {
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if !g.IPAllowed(ip) {
-			return "", fmt.Errorf("proxy: target %q resolves to a blocked address", target)
+			return "", fmt.Errorf("%w: target %q resolves to a blocked address", ErrBlocked, target)
 		}
 		return net.JoinHostPort(normalizeIP(ip).String(), port), nil
 	}
 	if !g.nameAllowed(host) {
-		return "", fmt.Errorf("proxy: target %q is an internal name", target)
+		return "", fmt.Errorf("%w: target %q is an internal name", ErrBlocked, target)
 	}
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	lookup := g.lookup
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupIPAddr
+	}
+	addrs, err := lookup(ctx, host)
 	if err != nil {
 		return "", fmt.Errorf("proxy: resolve %q: %w", host, err)
 	}
@@ -163,7 +171,7 @@ func (g *Guard) Resolve(ctx context.Context, target string) (string, error) {
 	}
 	for _, a := range addrs {
 		if !g.IPAllowed(a.IP) {
-			return "", fmt.Errorf("proxy: target %q resolves to a blocked address", target)
+			return "", fmt.Errorf("%w: target %q resolves to a blocked address", ErrBlocked, target)
 		}
 	}
 	return net.JoinHostPort(normalizeIP(addrs[0].IP).String(), port), nil

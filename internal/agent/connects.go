@@ -42,6 +42,14 @@ func (a *Agent) startConnects(ctx context.Context) (func(), error) {
 		}
 		closers = append(closers, closeFn)
 	}
+	if a.opts.Egress != nil {
+		closeFn, err := a.listenEgress(*a.opts.Egress, &wg)
+		if err != nil {
+			stop()
+			return nil, fmt.Errorf("egress: %w", err)
+		}
+		closers = append(closers, closeFn)
+	}
 	if len(closers) > 0 {
 		go func() {
 			<-ctx.Done()

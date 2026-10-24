@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -114,5 +115,48 @@ func TestGuardResolveBlocksNameResolvingToPrivate(t *testing.T) {
 func TestNewGuardRejectsBadCIDR(t *testing.T) {
 	if _, err := NewGuard(false, false, []string{"not-a-cidr"}); err == nil {
 		t.Fatal("expected error for invalid cidr")
+	}
+}
+
+func TestGuardResolveRejectsAnyBlockedAnswer(t *testing.T) {
+	answers := func(ips ...string) func(context.Context, string) ([]net.IPAddr, error) {
+		return func(context.Context, string) ([]net.IPAddr, error) {
+			out := make([]net.IPAddr, len(ips))
+			for i, ip := range ips {
+				out[i] = net.IPAddr{IP: net.ParseIP(ip)}
+			}
+			return out, nil
+		}
+	}
+	tests := []struct {
+		name    string
+		answers []string
+		ok      bool
+	}{
+		{"public only", []string{"93.184.216.34"}, true},
+		{"unspecified v4", []string{"0.0.0.0"}, false},
+		{"unspecified v6", []string{"::"}, false},
+		{"zero network", []string{"0.1.2.3"}, false},
+		{"public then unspecified", []string{"93.184.216.34", "0.0.0.0"}, false},
+		{"public then loopback", []string{"93.184.216.34", "127.0.0.1"}, false},
+		{"metadata", []string{"169.254.169.254"}, false},
+		{"mapped loopback", []string{"::ffff:127.0.0.1"}, false},
+		{"private", []string{"10.0.0.5"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := DefaultGuard()
+			g.lookup = answers(tt.answers...)
+			addr, err := g.Resolve(context.Background(), "api.example.com:443")
+			if (err == nil) != tt.ok {
+				t.Fatalf("Resolve = %q, %v; want ok=%v", addr, err, tt.ok)
+			}
+			if err != nil && !errors.Is(err, ErrBlocked) {
+				t.Fatalf("err = %v, want ErrBlocked", err)
+			}
+			if tt.ok && addr != "93.184.216.34:443" {
+				t.Fatalf("addr = %q, want the checked answer", addr)
+			}
+		})
 	}
 }

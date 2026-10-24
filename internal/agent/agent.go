@@ -49,6 +49,7 @@ type Options struct {
 	Endpoints  []EndpointSpec
 	Allowlist  []string
 	Connects   []ConnectSpec
+	Egress     *EgressSpec
 	Out        io.Writer
 	UserToken  func(ctx context.Context) (string, error)
 }

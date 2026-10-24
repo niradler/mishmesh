@@ -44,6 +44,7 @@ func buildStartOptions(configPath, gateway, token, allow string, names []string)
 		Out:        os.Stdout,
 		Endpoints:  specs,
 		Connects:   file.Connects,
+		Egress:     file.Egress,
 		Allowlist:  file.Allow,
 	}
 	if allow != "" {

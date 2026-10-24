@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"slices"
-	"sync"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
+	"github.com/mishmesh/mishmesh/internal/connect/flows"
 	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
@@ -20,9 +19,7 @@ type Meter interface {
 	AddBytes(kind string, in, out int64)
 }
 
-type Revocations interface {
-	Subscribe(fn func(identity.Revocation)) func()
-}
+type Revocations = flows.Revocations
 
 type Options struct {
 	Data        store.DataStore
@@ -33,22 +30,13 @@ type Options struct {
 	Revocations Revocations
 }
 
-type flow struct {
-	orgID     string
-	sessionID string
-	conns     []net.Conn
-	revoked   bool
-}
-
 type Bridge struct {
 	data     store.DataStore
 	conns    store.ConnectionStore
 	log      *slog.Logger
 	meter    Meter
 	deciders identity.Deciders
-
-	mu    sync.Mutex
-	flows map[*flow]struct{}
+	flows    *flows.Tracker
 }
 
 const (
@@ -70,19 +58,23 @@ func New(opts Options) *Bridge {
 	if log == nil {
 		log = slog.Default()
 	}
-	b := &Bridge{data: opts.Data, conns: opts.Conns, log: log, meter: opts.Meter, deciders: opts.Deciders, flows: make(map[*flow]struct{})}
-	if opts.Revocations != nil {
-		opts.Revocations.Subscribe(b.revoke)
+	return &Bridge{
+		data:     opts.Data,
+		conns:    opts.Conns,
+		log:      log,
+		meter:    opts.Meter,
+		deciders: opts.Deciders,
+		flows:    flows.NewTracker(log, "connect", opts.Revocations),
 	}
-	return b
 }
 
 func (b *Bridge) HandleConnect(ctx context.Context, agent *store.Agent, stream net.Conn, init tunnel.StreamInit) {
 	defer stream.Close()
-	var f *flow
+	var f *flows.Flow
 	if p, ok := identity.PrincipalFrom(ctx); ok {
-		f = &flow{orgID: agent.OrgID, sessionID: p.SessionID, conns: []net.Conn{stream}}
-		defer b.trackFlow(f)()
+		var untrack func()
+		f, untrack = b.flows.Track(agent.OrgID, p.SessionID, stream)
+		defer untrack()
 	}
 	ep, origin, err := b.authorize(ctx, agent, init)
 	if err != nil {
@@ -99,7 +91,7 @@ func (b *Bridge) HandleConnect(ctx context.Context, agent *store.Agent, stream n
 		return
 	}
 	defer upstream.Close()
-	if f != nil && !b.attach(f, upstream) {
+	if f != nil && !b.flows.Attach(f, upstream) {
 		b.log.Info("connect flow revoked before splice", "agent_id", agent.ID, "endpoint_id", ep.ID)
 		return
 	}
@@ -211,48 +203,4 @@ func (b *Bridge) legacyAuthorize(ctx context.Context, agent *store.Agent, ref, k
 		return nil, ErrNotAllowed
 	}
 	return ep, nil
-}
-
-func (b *Bridge) trackFlow(f *flow) func() {
-	b.mu.Lock()
-	b.flows[f] = struct{}{}
-	b.mu.Unlock()
-	return func() {
-		b.mu.Lock()
-		delete(b.flows, f)
-		b.mu.Unlock()
-	}
-}
-
-func (b *Bridge) attach(f *flow, c net.Conn) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if f.revoked {
-		return false
-	}
-	f.conns = append(f.conns, c)
-	return true
-}
-
-func (b *Bridge) revoke(rev identity.Revocation) {
-	if len(rev.SessionIDs) == 0 {
-		return
-	}
-	var doomed []net.Conn
-	hits := 0
-	b.mu.Lock()
-	for f := range b.flows {
-		if f.orgID == rev.OrgID && slices.Contains(rev.SessionIDs, f.sessionID) {
-			f.revoked = true
-			doomed = append(doomed, f.conns...)
-			hits++
-		}
-	}
-	b.mu.Unlock()
-	for _, c := range doomed {
-		_ = c.Close()
-	}
-	if hits > 0 {
-		b.log.Info("closed connect flows for revoked sessions", "org_id", rev.OrgID, "flows", hits)
-	}
 }

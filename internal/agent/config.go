@@ -26,6 +26,7 @@ type FileConfig struct {
 	LogLevel string
 	Tunnels  []NamedTunnel
 	Connects []ConnectSpec
+	Egress   *EgressSpec
 }
 
 type NamedTunnel struct {
@@ -65,9 +66,10 @@ func (e *ConfigError) Error() string {
 var (
 	envRef        = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
 	tunnelName    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
-	rootKeys      = []string{"gateway", "token", "allow", "log_level", "tunnels", "connects"}
+	rootKeys      = []string{"gateway", "token", "allow", "log_level", "tunnels", "connects", "egress"}
 	tunnelKeys    = []string{"proto", "addr", "subdomain", "domain", "port", "reserved", "private", "target_https", "insecure", "policy"}
 	connectKeys   = []string{"endpoint", "proto", "listen", "idle_timeout"}
+	egressKeys    = []string{"listen"}
 	validProtos   = []string{store.KindHTTP, store.KindTCP, store.KindTLS, store.KindUDP}
 	validProtoMsg = strings.Join(validProtos, ", ")
 )
@@ -179,6 +181,7 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 		LogLevel string    `yaml:"log_level"`
 		Tunnels  yaml.Node `yaml:"tunnels"`
 		Connects yaml.Node `yaml:"connects"`
+		Egress   yaml.Node `yaml:"egress"`
 	}
 	if err := root.Decode(&raw); err != nil {
 		p.addf(root.Line, "%s", strings.ReplaceAll(strings.TrimPrefix(err.Error(), "yaml: "), "\n", "; "))
@@ -209,7 +212,40 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 	default:
 		cfg.Connects = p.parseConnects(&raw.Connects)
 	}
+	switch {
+	case raw.Egress.Kind == 0 || raw.Egress.Tag == "!!null":
+	case raw.Egress.Kind != yaml.MappingNode:
+		p.addf(raw.Egress.Line, "egress must be a mapping")
+	default:
+		cfg.Egress = p.parseEgress(&raw.Egress, cfg.Connects)
+	}
 	return cfg
+}
+
+type egressConfig struct {
+	Listen string `yaml:"listen"`
+}
+
+func (p *configParser) parseEgress(n *yaml.Node, connects []ConnectSpec) *EgressSpec {
+	p.checkKeys(n, egressKeys, "egress")
+	var ec egressConfig
+	if err := n.Decode(&ec); err != nil {
+		p.addf(n.Line, "egress: %s", strings.ReplaceAll(strings.TrimPrefix(err.Error(), "yaml: unmarshal errors:\n  "), "\n  ", "; "))
+		return nil
+	}
+	spec := &EgressSpec{Listen: DefaultEgressListen}
+	if strings.TrimSpace(ec.Listen) != "" {
+		spec.Listen = normalizeListen(ec.Listen)
+	}
+	if _, _, err := net.SplitHostPort(spec.Listen); err != nil {
+		p.addf(n.Line, "egress: listen %q must be a port or host:port", ec.Listen)
+	}
+	for _, c := range connects {
+		if c.Kind == store.KindTCP && c.Listen == spec.Listen {
+			p.addf(n.Line, "egress: listen %s is already used by connect %q", spec.Listen, c.Name)
+		}
+	}
+	return spec
 }
 
 type connectConfig struct {

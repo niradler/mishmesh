@@ -28,6 +28,10 @@ type ConnectHandler interface {
 	HandleConnect(ctx context.Context, agent *store.Agent, stream net.Conn, init tunnel.StreamInit)
 }
 
+type EgressHandler interface {
+	HandleEgress(ctx context.Context, agent *store.Agent, stream net.Conn, init tunnel.StreamInit)
+}
+
 type ConnectDecider interface {
 	DecideConnect(ctx context.Context, agent *store.Agent, q tunnel.DecisionQuery) tunnel.DecisionAnswer
 }
@@ -62,6 +66,7 @@ type Options struct {
 	Ports              PortOpener
 	UDPPorts           PortOpener
 	Connect            ConnectHandler
+	Egress             EgressHandler
 	Metrics            Metrics
 	Users              UserAuthenticator
 
@@ -79,6 +84,7 @@ type Gateway struct {
 	ports              PortOpener
 	udpPorts           PortOpener
 	connect            ConnectHandler
+	egress             EgressHandler
 	metrics            Metrics
 	users              UserAuthenticator
 	unavailable        map[string]string
@@ -103,6 +109,7 @@ func New(opts Options) *Gateway {
 		ports:              opts.Ports,
 		udpPorts:           opts.UDPPorts,
 		connect:            opts.Connect,
+		egress:             opts.Egress,
 		metrics:            opts.Metrics,
 		users:              opts.Users,
 		unavailable:        opts.KindUnavailable,
@@ -379,12 +386,7 @@ func (g *Gateway) acceptConnects(ctx context.Context, agent *store.Agent, ac *ag
 	for {
 		stream, err := ac.sess.AcceptStream()
 		if err != nil {
-			select {
-			case <-ac.sess.CloseChan():
-				return
-			default:
-				continue
-			}
+			return
 		}
 		select {
 		case pending <- struct{}{}:
@@ -404,12 +406,16 @@ func (g *Gateway) handleAgentStream(ctx context.Context, agent *store.Agent, str
 	if err != nil {
 		return
 	}
-	if g.connect == nil || init.Meta[tunnel.MetaConnect] == "" {
-		g.log.Warn("rejecting agent-opened stream", "agent_id", agent.ID, "kind", init.Kind, "connect_enabled", g.connect != nil)
+	connectRef, egressDest := init.Meta[tunnel.MetaConnect], init.Meta[tunnel.MetaEgress]
+	switch {
+	case connectRef != "" && egressDest == "" && g.connect != nil:
+		g.connect.HandleConnect(ctx, agent, stream, init)
+	case egressDest != "" && connectRef == "" && g.egress != nil:
+		g.egress.HandleEgress(ctx, agent, stream, init)
+	default:
+		g.log.Warn("rejecting agent-opened stream", "agent_id", agent.ID, "kind", init.Kind, "connect_enabled", g.connect != nil, "egress_enabled", g.egress != nil)
 		_ = stream.Close()
-		return
 	}
-	g.connect.HandleConnect(ctx, agent, stream, init)
 }
 
 func (g *Gateway) publicHost() string {
