@@ -142,3 +142,24 @@ func TestCustomPolicyOverridesDefault(t *testing.T) {
 		t.Error("custom policy grants only agent:write, not agent:read")
 	}
 }
+
+func TestAuthorizeServiceAccountPrincipal(t *testing.T) {
+	az := Default()
+	sa := Principal{ID: "sa_1", Type: EntityServiceAccount, Role: RoleMember, Org: "org_1"}
+	if !az.Authorize(sa, ActionAgentRead) {
+		t.Fatal("member service account denied agent:read")
+	}
+	if az.Authorize(sa, ActionMemberManage) {
+		t.Fatal("member service account allowed member:manage")
+	}
+	restricted, err := New([]byte(`permit (principal is User, action, resource);`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restricted.Authorize(sa, ActionAgentRead) {
+		t.Fatal("user-only policy matched service account")
+	}
+	if !restricted.Authorize(Principal{ID: "u", Role: RoleMember, Org: "org_1"}, ActionAgentRead) {
+		t.Fatal("untyped principal not treated as user")
+	}
+}

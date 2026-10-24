@@ -63,6 +63,7 @@ func (a *API) invalidateIngressCaches() {
 	if a.invalidateIngress != nil {
 		a.invalidateIngress()
 	}
+	a.flushDecisions()
 }
 
 func (a *API) SetHealth(h HealthSource) {

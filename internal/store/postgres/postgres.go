@@ -215,7 +215,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at BIGINT NOT NULL
 );
 `
-	if _, err := tx.ExecContext(ctx, schema+networkSchema); err != nil {
+	if _, err := tx.ExecContext(ctx, schema+networkSchema+groupsSchema+zeroTrustSchema+zeroTrustColumns+accessLogSchema+orgSecretsSchema+workloadIdentitiesSchema); err != nil {
 		return fmt.Errorf("postgres migrate: %w", err)
 	}
 	return tx.Commit()
@@ -639,20 +639,20 @@ func (s *Store) CreateMembership(ctx context.Context, m *store.Membership) error
 func (s *Store) GetMembership(ctx context.Context, orgID, userID string) (*store.Membership, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	row := s.db.QueryRowContext(ctx, `SELECT org_id, user_id, role, created_at FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID)
+	row := s.db.QueryRowContext(ctx, `SELECT org_id, user_id, role, created_at, disabled_at FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID)
 	return scanMembership(row.Scan)
 }
 
 func (s *Store) ListMembershipsByUser(ctx context.Context, userID string) ([]*store.Membership, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	return s.queryMemberships(ctx, `SELECT org_id, user_id, role, created_at FROM memberships WHERE user_id = $1 ORDER BY created_at`, userID)
+	return s.queryMemberships(ctx, `SELECT org_id, user_id, role, created_at, disabled_at FROM memberships WHERE user_id = $1 ORDER BY created_at`, userID)
 }
 
 func (s *Store) ListMembershipsByOrg(ctx context.Context, orgID string) ([]*store.Membership, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	return s.queryMemberships(ctx, `SELECT org_id, user_id, role, created_at FROM memberships WHERE org_id = $1 ORDER BY created_at`, orgID)
+	return s.queryMemberships(ctx, `SELECT org_id, user_id, role, created_at, disabled_at FROM memberships WHERE org_id = $1 ORDER BY created_at`, orgID)
 }
 
 func (s *Store) queryMemberships(ctx context.Context, query string, args ...any) ([]*store.Membership, error) {
@@ -682,17 +682,32 @@ func (s *Store) UpdateMembership(ctx context.Context, m *store.Membership) error
 func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID)
-	return wrap("delete membership", err)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("delete membership", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM group_members WHERE org_id = $1 AND member_type = $2 AND member_id = $3`, orgID, store.GroupMemberUser, userID); err != nil {
+		return wrap("delete membership groups", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID); err != nil {
+		return wrap("delete membership", err)
+	}
+	return wrap("delete membership", tx.Commit())
 }
 
 func scanMembership(scan func(...any) error) (*store.Membership, error) {
 	var m store.Membership
 	var created int64
-	if err := scan(&m.OrgID, &m.UserID, &m.Role, &created); err != nil {
+	var disabled sql.NullInt64
+	if err := scan(&m.OrgID, &m.UserID, &m.Role, &created, &disabled); err != nil {
 		return nil, scanErr("scan membership", err)
 	}
 	m.CreatedAt = fromNS(created)
+	if disabled.Valid {
+		at := fromNS(disabled.Int64)
+		m.DisabledAt = &at
+	}
 	return &m, nil
 }
 
@@ -700,18 +715,18 @@ func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id_hash, user_id, org_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)`,
-		sess.IDHash, sess.UserID, sess.OrgID, ns(sess.CreatedAt), ns(sess.ExpiresAt))
+		`INSERT INTO sessions (id_hash, user_id, org_id, created_at, expires_at, auth_method) VALUES ($1, $2, $3, $4, $5, $6)`,
+		sess.IDHash, sess.UserID, sess.OrgID, ns(sess.CreatedAt), ns(sess.ExpiresAt), sess.AuthMethod)
 	return wrap("create session", err)
 }
 
 func (s *Store) GetSession(ctx context.Context, idHash string) (*store.Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	row := s.db.QueryRowContext(ctx, `SELECT id_hash, user_id, org_id, created_at, expires_at FROM sessions WHERE id_hash = $1`, idHash)
+	row := s.db.QueryRowContext(ctx, `SELECT id_hash, user_id, org_id, created_at, expires_at, auth_method FROM sessions WHERE id_hash = $1`, idHash)
 	var sess store.Session
 	var created, expires int64
-	if err := row.Scan(&sess.IDHash, &sess.UserID, &sess.OrgID, &created, &expires); err != nil {
+	if err := row.Scan(&sess.IDHash, &sess.UserID, &sess.OrgID, &created, &expires, &sess.AuthMethod); err != nil {
 		return nil, scanErr("get session", err)
 	}
 	sess.CreatedAt = fromNS(created)

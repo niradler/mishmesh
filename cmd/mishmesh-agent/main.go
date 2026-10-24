@@ -27,6 +27,12 @@ func main() {
 	switch args[0] {
 	case "start":
 		err = startCmd(args[1:])
+	case "login":
+		err = loginCmd(args[1:], os.Stdout)
+	case "logout":
+		err = logoutCmd(args[1:], os.Stdout)
+	case "status":
+		err = statusCmd(args[1:], os.Stdout)
 	case "validate":
 		err = validateCmd(args[1:], os.Stdout)
 	case "http", "tcp", "tls", "udp":
@@ -101,7 +107,10 @@ func newLogger(level string) *slog.Logger {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage:
-  mishmesh-agent start [name ...] [--config path] [--gateway url] [--token t] [--allow rules]
+  mishmesh-agent start [name ...] [--config path] [--gateway url] [--token t] [--allow rules] [--as-user]
+  mishmesh-agent login [--server url] [--org id] [--device] [--no-browser]
+  mishmesh-agent logout
+  mishmesh-agent status
   mishmesh-agent validate [--config path]
   mishmesh-agent http <port|host:port> [--subdomain x] [--reserved] [--target-https] [--insecure]
   mishmesh-agent tcp  <port|host:port> [--port N] [--reserved]

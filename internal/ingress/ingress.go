@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -12,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/connect/flows"
 	"github.com/mishmesh/mishmesh/internal/connections"
+	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
@@ -39,6 +42,11 @@ type Options struct {
 	LookupCacheTTL          time.Duration
 	DisablePathRouting      bool
 	Services                ServiceWaker
+	Identity                *identity.Service
+	Deciders                identity.Deciders
+	APIPublicURL            string
+	AccessLog               AccessRecorder
+	Secrets                 SecretOpener
 }
 
 type Ingress struct {
@@ -53,6 +61,13 @@ type Ingress struct {
 	limiter     ratelimit.Limiter
 	proxy       *httputil.ReverseProxy
 	services    ServiceWaker
+	identity    *identity.Service
+	deciders    identity.Deciders
+	apiURL      string
+	secure      bool
+	access      AccessRecorder
+	secrets     SecretOpener
+	upgrades    *flows.Tracker
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
@@ -74,6 +89,12 @@ func New(opts Options) *Ingress {
 		limiter:     opts.Limiter,
 		pathRouting: !opts.DisablePathRouting,
 		services:    opts.Services,
+		identity:    opts.Identity,
+		deciders:    opts.Deciders,
+		apiURL:      strings.TrimRight(opts.APIPublicURL, "/"),
+		secure:      opts.CookieSecure,
+		access:      opts.AccessLog,
+		secrets:     opts.Secrets,
 
 		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
@@ -82,9 +103,10 @@ func New(opts Options) *Ingress {
 	if i.limiter == nil {
 		i.limiter = ratelimit.NewMemory()
 	}
+	i.upgrades = newUpgradeTracker(i, opts.Identity)
 	i.proxy = i.newProxy(opts.UpstreamResponseTimeout)
 	if len(opts.OIDCSignKey) > 0 {
-		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.CookieSecure, false, opts.OIDCAllowPrivate, log)
+		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.Identity, opts.CookieSecure, false, opts.OIDCAllowPrivate, log)
 	}
 	return i
 }
@@ -98,11 +120,19 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		i.oidc.handleCallback(w, r)
 		return
 	}
+	dropH2CUpgrade(r.Header)
 	ep, outPath, err := i.resolve(r)
 	if err != nil {
 		i.writeResolveError(w, err)
 		return
 	}
+	start := time.Now()
+	sw, r, rec := i.beginAccess(w, r)
+	defer i.finishAccess(sw, r, ep, rec, start)
+	i.serveEndpoint(sw, r, ep, outPath)
+}
+
+func (i *Ingress) serveEndpoint(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, outPath string) {
 	if ep.Kind != "" && ep.Kind != store.KindHTTP {
 		i.writeResolveError(w, errTunnelNotFound)
 		return
@@ -116,8 +146,16 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !applyPolicyGate(w, r, ep, i.gateDeps()) {
 		return
 	}
-	conn, ok := i.conns.ResolveEndpoint(ep.ID)
+	if outPath == identity.EndpointCallbackPath {
+		i.handleEndpointCallback(w, r, ep)
+		return
+	}
+	r, ok := i.applyIdentityGate(w, r, ep, outPath)
 	if !ok {
+		return
+	}
+	conn, online := i.conns.ResolveEndpoint(ep.ID)
+	if !online {
 		http.Error(w, "tunnel offline: no agent is connected for this endpoint", http.StatusServiceUnavailable)
 		i.recordCode(http.StatusServiceUnavailable)
 		return
@@ -127,6 +165,7 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	accessFrom(r).markForwarded()
 	if isUpgrade(r) {
 		i.proxyUpgrade(w, r, conn, ep, outPath, limit)
 		return
@@ -271,6 +310,19 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 	defer stream.Close()
 	stop := context.AfterFunc(r.Context(), func() { _ = stream.Close() })
 	defer stop()
+	flow, untrack, err := i.trackUpgrade(r, stream)
+	defer untrack()
+	if errors.Is(err, store.ErrNotFound) {
+		writeIdentityUnauthorized(w)
+		i.recordCode(http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		i.log.Error("upgrade session lookup failed", "endpoint_id", ep.ID, "err", err)
+		writeIdentityUnavailable(w)
+		i.recordCode(http.StatusServiceUnavailable)
+		return
+	}
 
 	outReq := r.Clone(r.Context())
 	outReq.RequestURI = ""
@@ -280,9 +332,11 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 	}
 	stripHopHeaders(outReq.Header)
 	preserveUpgradeHeaders(outReq.Header, r.Header)
+	sanitizeUpstreamRequest(outReq.Header, ep)
 	setForwardedHeaders(r, outReq, i.trusted)
 	stripGateCredentials(outReq.Header, ep)
 	applyRequestPolicy(outReq, ep)
+	applyUpstreamCredential(outReq.Header, r, ep)
 	if err := outReq.Write(stream); err != nil {
 		http.Error(w, upstreamUnreachableMessage(""), http.StatusBadGateway)
 		i.recordCode(http.StatusBadGateway)
@@ -295,6 +349,18 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 		i.recordCode(http.StatusBadGateway)
 		return
 	}
+	resp, err := readUpgradeResponse(br, outReq)
+	if err != nil {
+		http.Error(w, upstreamUnreachableMessage(""), http.StatusBadGateway)
+		i.recordCode(http.StatusBadGateway)
+		return
+	}
+	sanitizeUpstreamResponse(resp.Header)
+	applyResponsePolicy(resp.Header, ep)
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		i.relayRefusedUpgrade(w, resp)
+		return
+	}
 
 	client, clientBuf, err := hj.Hijack()
 	if err != nil {
@@ -302,8 +368,73 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 		return
 	}
 	defer client.Close()
+	if flow != nil && !i.upgrades.Attach(flow, client) {
+		return
+	}
+	if err := writeUpgradeHead(client, resp); err != nil {
+		return
+	}
 
-	tunnel.Splice(&bufferedConn{Conn: client, r: clientBuf.Reader}, &bufferedConn{Conn: stream, r: br})
+	in, out := tunnel.Splice(&bufferedConn{Conn: client, r: clientBuf.Reader}, &bufferedConn{Conn: stream, r: br})
+	accessFrom(r).markUpgraded(in, out)
+}
+
+func (i *Ingress) relayRefusedUpgrade(w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
+	stripHopHeaders(resp.Header)
+	for k, vs := range resp.Header {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	i.recordCode(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func readUpgradeResponse(br *bufio.Reader, req *http.Request) (*http.Response, error) {
+	for {
+		resp, err := http.ReadResponse(br, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusSwitchingProtocols || resp.StatusCode < 100 || resp.StatusCode >= 200 {
+			return resp, nil
+		}
+	}
+}
+
+func writeUpgradeHead(w io.Writer, resp *http.Response) error {
+	bw := bufio.NewWriter(w)
+	if _, err := fmt.Fprintf(bw, "HTTP/1.1 %s\r\n", resp.Status); err != nil {
+		return err
+	}
+	if err := resp.Header.Write(bw); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("\r\n"); err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+func newUpgradeTracker(i *Ingress, ids *identity.Service) *flows.Tracker {
+	if ids == nil {
+		return flows.NewTracker(i.log, "ingress upgrade", nil)
+	}
+	return flows.NewTracker(i.log, "ingress upgrade", ids)
+}
+
+func (i *Ingress) trackUpgrade(r *http.Request, stream net.Conn) (*flows.Flow, func(), error) {
+	id := identityFrom(r)
+	if id == nil || id.principal == nil || id.principal.SessionID == "" {
+		return nil, func() {}, nil
+	}
+	flow, untrack := i.upgrades.Track(id.principal.OrgID, id.principal.SessionID, stream)
+	if _, err := i.identity.Sessions().GetTokenSession(r.Context(), id.principal.SessionID); err != nil {
+		return nil, untrack, err
+	}
+	return flow, untrack, nil
 }
 
 type bufferedConn struct {

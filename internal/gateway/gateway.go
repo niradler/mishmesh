@@ -7,10 +7,15 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/token"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
@@ -22,6 +27,25 @@ type PortOpener interface {
 type ConnectHandler interface {
 	HandleConnect(ctx context.Context, agent *store.Agent, stream net.Conn, init tunnel.StreamInit)
 }
+
+type EgressHandler interface {
+	HandleEgress(ctx context.Context, agent *store.Agent, stream net.Conn, init tunnel.StreamInit)
+}
+
+type ConnectDecider interface {
+	DecideConnect(ctx context.Context, agent *store.Agent, q tunnel.DecisionQuery) tunnel.DecisionAnswer
+}
+
+type UserAuthenticator interface {
+	Authenticate(ctx context.Context, raw string, allowed ...token.Type) (identity.Principal, error)
+	Subscribe(fn func(identity.Revocation)) func()
+}
+
+const (
+	maxPendingDecisions = 16
+	maxPendingInits     = 64
+	firstControlTimeout = 30 * time.Second
+)
 
 type Metrics interface {
 	AgentConnected()
@@ -42,7 +66,9 @@ type Options struct {
 	Ports              PortOpener
 	UDPPorts           PortOpener
 	Connect            ConnectHandler
+	Egress             EgressHandler
 	Metrics            Metrics
+	Users              UserAuthenticator
 
 	KindUnavailable map[string]string
 }
@@ -58,8 +84,13 @@ type Gateway struct {
 	ports              PortOpener
 	udpPorts           PortOpener
 	connect            ConnectHandler
+	egress             EgressHandler
 	metrics            Metrics
+	users              UserAuthenticator
 	unavailable        map[string]string
+
+	liveMu sync.Mutex
+	live   map[*agentConn]struct{}
 }
 
 func New(opts Options) *Gateway {
@@ -67,7 +98,7 @@ func New(opts Options) *Gateway {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Gateway{
+	g := &Gateway{
 		data:               opts.Data,
 		conns:              opts.Conns,
 		log:                log,
@@ -78,8 +109,30 @@ func New(opts Options) *Gateway {
 		ports:              opts.Ports,
 		udpPorts:           opts.UDPPorts,
 		connect:            opts.Connect,
+		egress:             opts.Egress,
 		metrics:            opts.Metrics,
+		users:              opts.Users,
 		unavailable:        opts.KindUnavailable,
+		live:               make(map[*agentConn]struct{}),
+	}
+	if g.users != nil {
+		g.users.Subscribe(g.revoke)
+	}
+	return g
+}
+
+func (g *Gateway) revoke(rev identity.Revocation) {
+	g.liveMu.Lock()
+	var hit []*agentConn
+	for ac := range g.live {
+		if ac.boundOrg == rev.OrgID && ac.boundSession != "" && slices.Contains(rev.SessionIDs, ac.boundSession) {
+			hit = append(hit, ac)
+		}
+	}
+	g.liveMu.Unlock()
+	for _, ac := range hit {
+		_ = ac.Flush()
+		g.log.Info("bound user session revoked; agent decisions flushed", "agent_id", ac.agentID)
 	}
 }
 
@@ -108,6 +161,10 @@ func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agent not active", http.StatusForbidden)
 		return
 	}
+	user, ok := g.bindUser(w, r, agent)
+	if !ok {
+		return
+	}
 
 	conn, err := tunnel.Accept(w, r)
 	if err != nil {
@@ -127,6 +184,9 @@ func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ac := newAgentConn(agent.ID, sess, g.metrics)
+	if user != nil {
+		ac.boundOrg, ac.boundSession = user.OrgID, user.SessionID
+	}
 	if superseded := g.conns.AddAgent(ac); superseded != nil {
 		g.log.Info("superseding existing agent connection", "agent_id", agent.ID)
 		_ = superseded.Close()
@@ -135,9 +195,70 @@ func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
 	if g.metrics != nil {
 		g.metrics.AgentConnected()
 	}
-	g.log.Info("agent connected", "agent_id", agent.ID, "org_id", agent.OrgID)
+	serveCtx := context.WithoutCancel(ctx)
+	if user != nil {
+		serveCtx = identity.WithPrincipal(serveCtx, *user)
+		g.log.Info("agent connected", "agent_id", agent.ID, "org_id", agent.OrgID, "user_id", user.Ref.ID)
+	} else {
+		g.log.Info("agent connected", "agent_id", agent.ID, "org_id", agent.OrgID)
+	}
 
-	g.serve(context.WithoutCancel(ctx), agent, ac)
+	g.serve(serveCtx, agent, ac)
+}
+
+func (g *Gateway) bindUser(w http.ResponseWriter, r *http.Request, agent *store.Agent) (*identity.Principal, bool) {
+	raw := strings.TrimSpace(r.Header.Get(tunnel.UserTokenHeader))
+	if raw == "" {
+		return nil, true
+	}
+	if g.users == nil {
+		http.Error(w, "user binding is not available on this gateway", http.StatusUnauthorized)
+		return nil, false
+	}
+	p, err := g.users.Authenticate(r.Context(), raw, token.TypeAgentUser)
+	switch {
+	case errors.Is(err, identity.ErrUnavailable):
+		g.unavailable503(w, "user token lookup failed", err)
+		return nil, false
+	case err != nil:
+		http.Error(w, "invalid user token", http.StatusUnauthorized)
+		return nil, false
+	case p.OrgID != agent.OrgID:
+		http.Error(w, "user token belongs to another organization", http.StatusForbidden)
+		return nil, false
+	}
+	return &p, true
+}
+
+func (g *Gateway) FlushAll() {
+	g.liveMu.Lock()
+	conns := make([]*agentConn, 0, len(g.live))
+	for ac := range g.live {
+		conns = append(conns, ac)
+	}
+	g.liveMu.Unlock()
+	for _, ac := range conns {
+		if err := ac.Flush(); err != nil {
+			g.log.Debug("flush agent decision cache failed", "agent_id", ac.agentID, "err", err)
+		}
+	}
+}
+
+func (g *Gateway) track(ac *agentConn) func() {
+	g.liveMu.Lock()
+	g.live[ac] = struct{}{}
+	g.liveMu.Unlock()
+	return func() {
+		g.liveMu.Lock()
+		delete(g.live, ac)
+		g.liveMu.Unlock()
+	}
+}
+
+func (g *Gateway) recoverPanic(where, agentID string) {
+	if v := recover(); v != nil {
+		g.log.Error("recovered panic", "where", where, "agent_id", agentID, "panic", v, "stack", string(debug.Stack()))
+	}
 }
 
 func (g *Gateway) unavailable503(w http.ResponseWriter, msg string, err error) {
@@ -147,7 +268,9 @@ func (g *Gateway) unavailable503(w http.ResponseWriter, msg string, err error) {
 }
 
 func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) {
+	untrack := g.track(ac)
 	defer func() {
+		untrack()
 		g.conns.RemoveAgent(ac)
 		_ = ac.Close()
 		if g.agentHasLiveSession(agent.ID) {
@@ -160,18 +283,25 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 		}
 		g.log.Info("agent disconnected", "agent_id", agent.ID)
 	}()
+	defer g.recoverPanic("serve", agent.ID)
 
-	ctrl, err := ac.sess.AcceptControl()
+	ctrl, err := g.acceptControl(ac)
 	if err != nil {
 		return
 	}
+	ac.setControl(ctrl)
 	go g.acceptConnects(ctx, agent, ac)
+	decisions := make(chan struct{}, maxPendingDecisions)
 	for {
 		msg, err := ctrl.Recv()
 		if err != nil {
 			return
 		}
 		switch msg.Type {
+		case tunnel.MsgDecisionRequest:
+			if msg.Decision != nil {
+				g.answerDecision(ctx, agent, ctrl, *msg.Decision, decisions)
+			}
 		case tunnel.MsgRegister:
 			ack := g.handleRegister(ctx, agent, msg.Register)
 			if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgRegisterAck, RegisterAck: ack}); err != nil {
@@ -205,23 +335,86 @@ func (g *Gateway) cleanupEphemeral(ctx context.Context, agentID string) {
 	}
 }
 
+func (g *Gateway) acceptControl(ac *agentConn) (*tunnel.Control, error) {
+	type result struct {
+		ctrl *tunnel.Control
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ctrl, err := ac.sess.AcceptControl()
+		done <- result{ctrl, err}
+	}()
+	select {
+	case r := <-done:
+		return r.ctrl, r.err
+	case <-time.After(firstControlTimeout):
+		_ = ac.Close()
+		return nil, errors.New("gateway: agent did not open a control stream in time")
+	}
+}
+
+func (g *Gateway) answerDecision(ctx context.Context, agent *store.Agent, ctrl *tunnel.Control, q tunnel.DecisionQuery, slots chan struct{}) {
+	decider, ok := g.connect.(ConnectDecider)
+	if !ok {
+		_ = ctrl.Send(denyAnswer(q.ID, "unsupported"))
+		return
+	}
+	select {
+	case slots <- struct{}{}:
+	default:
+		_ = ctrl.Send(denyAnswer(q.ID, "busy"))
+		return
+	}
+	go func() {
+		defer func() { <-slots }()
+		defer g.recoverPanic("decision", agent.ID)
+		answer := decider.DecideConnect(ctx, agent, q)
+		answer.ID = q.ID
+		answer.TTLSeconds = min(max(answer.TTLSeconds, 0), tunnel.MaxDecisionTTLSeconds)
+		_ = ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgDecisionResponse, Answer: &answer})
+	}()
+}
+
+func denyAnswer(id uint64, reason string) tunnel.ControlMessage {
+	return tunnel.ControlMessage{Type: tunnel.MsgDecisionResponse, Answer: &tunnel.DecisionAnswer{ID: id, Reason: reason}}
+}
+
 func (g *Gateway) acceptConnects(ctx context.Context, agent *store.Agent, ac *agentConn) {
+	defer g.recoverPanic("accept_connects", agent.ID)
+	pending := make(chan struct{}, maxPendingInits)
 	for {
-		stream, init, err := ac.sess.AcceptData()
+		stream, err := ac.sess.AcceptStream()
 		if err != nil {
-			select {
-			case <-ac.sess.CloseChan():
-				return
-			default:
-				continue
-			}
+			return
 		}
-		if g.connect == nil || init.Meta[tunnel.MetaConnect] == "" {
-			g.log.Warn("rejecting agent-opened stream", "agent_id", agent.ID, "kind", init.Kind, "connect_enabled", g.connect != nil)
+		select {
+		case pending <- struct{}{}:
+		default:
+			g.log.Warn("rejecting agent-opened stream: too many pending stream inits", "agent_id", agent.ID)
 			_ = stream.Close()
 			continue
 		}
-		go g.connect.HandleConnect(ctx, agent, stream, init)
+		go g.handleAgentStream(ctx, agent, stream, pending)
+	}
+}
+
+func (g *Gateway) handleAgentStream(ctx context.Context, agent *store.Agent, stream net.Conn, pending chan struct{}) {
+	defer g.recoverPanic("agent_stream", agent.ID)
+	init, err := tunnel.ReadStreamInit(stream)
+	<-pending
+	if err != nil {
+		return
+	}
+	connectRef, egressDest := init.Meta[tunnel.MetaConnect], init.Meta[tunnel.MetaEgress]
+	switch {
+	case connectRef != "" && egressDest == "" && g.connect != nil:
+		g.connect.HandleConnect(ctx, agent, stream, init)
+	case egressDest != "" && connectRef == "" && g.egress != nil:
+		g.egress.HandleEgress(ctx, agent, stream, init)
+	default:
+		g.log.Warn("rejecting agent-opened stream", "agent_id", agent.ID, "kind", init.Kind, "connect_enabled", g.connect != nil, "egress_enabled", g.egress != nil)
+		_ = stream.Close()
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ type FileConfig struct {
 	LogLevel string
 	Tunnels  []NamedTunnel
 	Connects []ConnectSpec
+	Egress   *EgressSpec
 }
 
 type NamedTunnel struct {
@@ -65,9 +67,10 @@ func (e *ConfigError) Error() string {
 var (
 	envRef        = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
 	tunnelName    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
-	rootKeys      = []string{"gateway", "token", "allow", "log_level", "tunnels", "connects"}
+	rootKeys      = []string{"gateway", "token", "allow", "log_level", "tunnels", "connects", "egress"}
 	tunnelKeys    = []string{"proto", "addr", "subdomain", "domain", "port", "reserved", "private", "target_https", "insecure", "policy"}
 	connectKeys   = []string{"endpoint", "proto", "listen", "idle_timeout"}
+	egressKeys    = []string{"listen", "socks_listen", "require_auth", "exit", "serve_exit", "exit_allow"}
 	validProtos   = []string{store.KindHTTP, store.KindTCP, store.KindTLS, store.KindUDP}
 	validProtoMsg = strings.Join(validProtos, ", ")
 )
@@ -179,6 +182,7 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 		LogLevel string    `yaml:"log_level"`
 		Tunnels  yaml.Node `yaml:"tunnels"`
 		Connects yaml.Node `yaml:"connects"`
+		Egress   yaml.Node `yaml:"egress"`
 	}
 	if err := root.Decode(&raw); err != nil {
 		p.addf(root.Line, "%s", strings.ReplaceAll(strings.TrimPrefix(err.Error(), "yaml: "), "\n", "; "))
@@ -209,7 +213,78 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 	default:
 		cfg.Connects = p.parseConnects(&raw.Connects)
 	}
+	switch {
+	case raw.Egress.Kind == 0 || raw.Egress.Tag == "!!null":
+	case raw.Egress.Kind != yaml.MappingNode:
+		p.addf(raw.Egress.Line, "egress must be a mapping")
+	default:
+		cfg.Egress = p.parseEgress(&raw.Egress, cfg.Connects)
+	}
 	return cfg
+}
+
+type egressConfig struct {
+	Listen      string   `yaml:"listen"`
+	SocksListen string   `yaml:"socks_listen"`
+	RequireAuth bool     `yaml:"require_auth"`
+	Exit        string   `yaml:"exit"`
+	ServeExit   bool     `yaml:"serve_exit"`
+	ExitAllow   []string `yaml:"exit_allow"`
+}
+
+func (p *configParser) parseEgress(n *yaml.Node, connects []ConnectSpec) *EgressSpec {
+	p.checkKeys(n, egressKeys, "egress")
+	var ec egressConfig
+	if err := n.Decode(&ec); err != nil {
+		p.addf(n.Line, "egress: %s", strings.ReplaceAll(strings.TrimPrefix(err.Error(), "yaml: unmarshal errors:\n  "), "\n  ", "; "))
+		return nil
+	}
+	spec := &EgressSpec{RequireAuth: ec.RequireAuth, Exit: strings.TrimSpace(ec.Exit), ServeExit: ec.ServeExit}
+	switch {
+	case strings.TrimSpace(ec.Listen) != "":
+		spec.Listen = normalizeListen(ec.Listen)
+	case strings.TrimSpace(ec.SocksListen) == "" && !ec.ServeExit:
+		spec.Listen = DefaultEgressListen
+	}
+	if strings.TrimSpace(ec.SocksListen) != "" {
+		spec.SocksListen = normalizeListen(ec.SocksListen)
+	}
+	used := map[string]string{}
+	for _, c := range connects {
+		if c.Kind == store.KindTCP {
+			used[c.Listen] = "connect " + strconv.Quote(c.Name)
+		}
+	}
+	for _, l := range []struct{ key, raw, addr string }{{"listen", ec.Listen, spec.Listen}, {"socks_listen", ec.SocksListen, spec.SocksListen}} {
+		if l.addr == "" {
+			continue
+		}
+		if _, _, err := net.SplitHostPort(l.addr); err != nil {
+			p.addf(n.Line, "egress: %s %q must be a port or host:port", l.key, l.raw)
+			continue
+		}
+		if owner, taken := used[l.addr]; taken {
+			p.addf(n.Line, "egress: %s %s is already used by %s", l.key, l.addr, owner)
+		}
+		used[l.addr] = "egress " + l.key
+	}
+	for _, c := range ec.ExitAllow {
+		cidr := strings.TrimSpace(c)
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			p.addf(n.Line, "egress: exit_allow %q is not a CIDR", c)
+			continue
+		}
+		spec.ExitAllow = append(spec.ExitAllow, cidr)
+	}
+	switch {
+	case len(ec.ExitAllow) > 0 && !spec.ServeExit:
+		p.addf(n.Line, "egress: exit_allow needs serve_exit")
+	case spec.RequireAuth && spec.SocksListen != "":
+		p.addf(n.Line, "egress: require_auth cannot cover socks_listen: SOCKS5 passwords are capped at 255 bytes, shorter than mishmesh tokens")
+	case spec.RequireAuth && spec.Listen == "":
+		p.addf(n.Line, "egress: require_auth needs listen")
+	}
+	return spec
 }
 
 type connectConfig struct {

@@ -49,7 +49,10 @@ type Options struct {
 	Endpoints  []EndpointSpec
 	Allowlist  []string
 	Connects   []ConnectSpec
+	Egress     *EgressSpec
+	ExitDialer ExitDialer
 	Out        io.Writer
+	UserToken  func(ctx context.Context) (string, error)
 }
 
 type Agent struct {
@@ -61,6 +64,7 @@ type Agent struct {
 	targets map[string]localTarget
 	acked   atomic.Bool
 	sess    atomic.Pointer[tunnel.Session]
+	dec     *remoteDecider
 }
 
 func New(opts Options) *Agent {
@@ -72,7 +76,10 @@ func New(opts Options) *Agent {
 	if out == nil {
 		out = os.Stdout
 	}
-	return &Agent{opts: opts, log: log, out: out, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget)}
+	if opts.ExitDialer == nil && opts.Egress != nil && opts.Egress.ServeExit {
+		opts.ExitDialer = exitGuard(opts.Egress.ExitAllow, log)
+	}
+	return &Agent{opts: opts, log: log, out: out, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget), dec: newRemoteDecider(time.Now)}
 }
 
 func (a *Agent) Run(parent context.Context) error {
@@ -136,8 +143,20 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
+	dialOpts := tunnel.DialOptions{Token: a.opts.Token}
+	if a.opts.UserToken != nil {
+		userToken, err := a.opts.UserToken(ctx)
+		if err != nil {
+			if errors.Is(err, ErrLoginRequired) {
+				fail(err)
+				return err
+			}
+			return fmt.Errorf("user credentials: %w", err)
+		}
+		dialOpts.UserToken = userToken
+	}
 	dialURL := strings.TrimRight(a.opts.GatewayURL, "/") + tunnel.AgentConnectPath
-	conn, err := tunnel.Dial(ctx, dialURL, tunnel.DialOptions{Token: a.opts.Token})
+	conn, err := tunnel.Dial(ctx, dialURL, dialOpts)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
@@ -157,6 +176,8 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 	if err != nil {
 		return fmt.Errorf("open control: %w", err)
 	}
+	gen := a.dec.attach(ctrl)
+	defer a.dec.detach(gen)
 
 	refTarget := make(map[string]localTarget, len(a.opts.Endpoints))
 	refSpec := make(map[string]EndpointSpec, len(a.opts.Endpoints))
@@ -182,8 +203,8 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 	}
 
 	a.sess.Store(sess)
-	go a.readControl(ctx, ctrl, refTarget, refSpec, fail)
-	go a.pingLoop(ctx, ctrl)
+	go a.readControl(ctx, ctrl, gen, refTarget, refSpec, fail)
+	go a.pingLoop(ctx, ctrl, cancel)
 
 	a.log.Info("tunnel connected", "gateway", a.opts.GatewayURL)
 	for {
@@ -195,14 +216,19 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 	}
 }
 
-func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, refTarget map[string]localTarget, refSpec map[string]EndpointSpec, fail context.CancelCauseFunc) {
+func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, gen uint64, refTarget map[string]localTarget, refSpec map[string]EndpointSpec, fail context.CancelCauseFunc) {
 	for ctx.Err() == nil {
 		msg, err := ctrl.Recv()
 		if err != nil {
 			return
 		}
-		if msg.Type == tunnel.MsgRegisterAck && msg.RegisterAck != nil {
+		switch {
+		case msg.Type == tunnel.MsgRegisterAck && msg.RegisterAck != nil:
 			a.handleAck(msg.RegisterAck, refTarget, refSpec, fail)
+		case msg.Type == tunnel.MsgDecisionResponse && msg.Answer != nil:
+			a.dec.deliver(gen, *msg.Answer)
+		case msg.Type == tunnel.MsgFlush:
+			a.dec.flush()
 		}
 	}
 }
@@ -229,14 +255,27 @@ func (a *Agent) handleAck(ack *tunnel.RegisterAckPayload, refTarget map[string]l
 	a.acked.Store(true)
 }
 
-func (a *Agent) pingLoop(ctx context.Context, ctrl *tunnel.Control) {
-	t := time.NewTicker(30 * time.Second)
+const (
+	pingInterval     = 30 * time.Second
+	suspendThreshold = 3 * pingInterval
+)
+
+func (a *Agent) pingLoop(ctx context.Context, ctrl *tunnel.Control, reconnect context.CancelFunc) {
+	t := time.NewTicker(pingInterval)
 	defer t.Stop()
+	last := time.Now().Round(0)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			now := time.Now().Round(0)
+			if gap := now.Sub(last); gap > suspendThreshold {
+				a.log.Warn("clock jumped; assuming suspend and reconnecting", "gap", gap)
+				reconnect()
+				return
+			}
+			last = now
 			if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgPing}); err != nil {
 				return
 			}
@@ -246,6 +285,10 @@ func (a *Agent) pingLoop(ctx context.Context, ctrl *tunnel.Control) {
 
 func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 	defer stream.Close()
+	if dest, ok := init.Meta[tunnel.MetaEgressExit]; ok && init.EndpointID == "" {
+		a.serveExit(stream, dest)
+		return
+	}
 	tgt, ok := a.resolveStreamTarget(init)
 	if !ok {
 		reportStreamFailure(stream, init, notServedReason(init))

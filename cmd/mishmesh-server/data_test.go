@@ -232,3 +232,35 @@ func TestShouldRejectIncompleteKnownSchemasBeforeCreatingKey(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldRefuseNewKeyWhenOrgSecretsExist(t *testing.T) {
+	directory := t.TempDir()
+	cfg := config.Server{DataDSN: filepath.Join(directory, "secrets.db"), SecretKeyFile: filepath.Join(directory, "original.key")}
+	data, box, err := openDataStoreWithBox(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := data.CreateOrg(ctx, &store.Org{ID: "org", Name: "org", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := box.Seal([]byte("synthetic"), store.OrgSecretContext("org", "api"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := data.PutOrgSecret(ctx, &store.OrgSecret{OrgID: "org", Name: "api", ValueEnc: sealed, UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	data.Close()
+	cfg.SecretKeyFile = filepath.Join(directory, "missing.key")
+	reopened, _, err := openDataStoreWithBox(cfg)
+	if reopened != nil {
+		reopened.Close()
+	}
+	if err == nil {
+		t.Fatal("opened org secrets with a freshly generated key")
+	}
+	if _, statErr := os.Stat(cfg.SecretKeyFile); !os.IsNotExist(statErr) {
+		t.Fatalf("key file created: %v", statErr)
+	}
+}

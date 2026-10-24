@@ -1,0 +1,84 @@
+entity Org;
+entity Role;
+entity Group { name: String };
+entity User in [Role, Group] { email: String };
+entity ServiceAccount in [Role, Group] { name: String };
+entity Agent { name: String };
+entity Anonymous;
+entity Endpoint {
+  kind: String,
+  method: String,
+  connect_any_agent: Bool,
+  connect_agents: Set<Agent>
+};
+entity Destination { host: String, port: Long };
+
+action "agent:read", "agent:write",
+  "endpoint:read", "endpoint:write",
+  "quota:read", "quota:write",
+  "member:read", "member:manage",
+  "audit:read", "status:read",
+  "policy:read", "policy:write",
+  "service:read", "service:write",
+  "connection:manage", "host:exec"
+  appliesTo {
+    principal: [User, ServiceAccount],
+    resource: [Org],
+    context: {}
+  };
+
+action "endpoint:access" appliesTo {
+  principal: [User, ServiceAccount, Anonymous],
+  resource: [Endpoint],
+  context: {
+    client_ip: ipaddr,
+    now: datetime,
+    host: String,
+    tls: Bool,
+    auth_method: String,
+    auth_time?: datetime
+  }
+};
+
+action "http:request" appliesTo {
+  principal: [User, ServiceAccount, Anonymous],
+  resource: [Endpoint],
+  context: {
+    client_ip: ipaddr,
+    now: datetime,
+    host: String,
+    tls: Bool,
+    auth_method: String,
+    auth_time?: datetime,
+    method: String,
+    path: String
+  }
+};
+
+action "agent:connect" appliesTo {
+  principal: [User, ServiceAccount, Agent],
+  resource: [Endpoint],
+  context: {
+    agent: Agent,
+    client_ip: ipaddr,
+    now: datetime,
+    protocol: String,
+    auth_method: String,
+    auth_time?: datetime
+  }
+};
+
+action "egress:connect" appliesTo {
+  principal: [User, ServiceAccount, Agent],
+  resource: [Destination],
+  context: {
+    agent: Agent,
+    client_ip: ipaddr,
+    now: datetime,
+    auth_method: String,
+    auth_time?: datetime,
+    sni?: String,
+    exit?: Agent,
+    resolved_ip?: ipaddr
+  }
+};

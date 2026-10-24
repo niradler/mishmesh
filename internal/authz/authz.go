@@ -1,7 +1,9 @@
 package authz
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"sort"
@@ -56,6 +58,7 @@ func AllActions() []Action {
 
 type Principal struct {
 	ID   string
+	Type EntityType
 	Role string
 	Org  string
 }
@@ -110,16 +113,25 @@ func dedupeSorted(actions []Action) []Action {
 
 type Authorizer struct {
 	policies *cedar.PolicySet
+	version  string
+	owner    string
+	scopes   map[Action]CacheScope
 }
 
 func DefaultPolicySource() []byte {
-	src := make([]byte, len(defaultPolicy))
-	copy(src, defaultPolicy)
-	return src
+	return appendDataPlane(defaultPolicy)
+}
+
+func DenyAll() *Authorizer {
+	az, err := New(nil)
+	if err != nil {
+		panic("authz: empty policy invalid: " + err.Error())
+	}
+	return az
 }
 
 func Default() *Authorizer {
-	az, err := New(defaultPolicy)
+	az, err := New(DefaultPolicySource())
 	if err != nil {
 		panic("authz: embedded default policy invalid: " + err.Error())
 	}
@@ -131,11 +143,21 @@ func New(policySrc []byte) (*Authorizer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse cedar policy: %w", err)
 	}
-	return &Authorizer{policies: ps}, nil
+	sum := sha256.Sum256(policySrc)
+	return &Authorizer{
+		policies: ps,
+		version:  hex.EncodeToString(sum[:]),
+		owner:    OwnerDefault,
+		scopes:   computeScopes(ps),
+	}, nil
 }
 
 func (a *Authorizer) Authorize(p Principal, action Action) bool {
-	principalUID := types.NewEntityUID("User", types.String(p.ID))
+	principalType := p.Type
+	if principalType == "" {
+		principalType = EntityUser
+	}
+	principalUID := types.NewEntityUID(types.EntityType(principalType), types.String(p.ID))
 	roleUID := types.NewEntityUID("Role", types.String(p.Role))
 	orgUID := types.NewEntityUID("Org", types.String(p.Org))
 

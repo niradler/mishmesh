@@ -12,13 +12,14 @@ import (
 	"fmt"
 	"hash"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/identity"
+	"github.com/mishmesh/mishmesh/internal/safehttp"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -30,13 +31,13 @@ const (
 	oidcSessionTTL    = 12 * time.Hour
 	jwksTTL           = time.Hour
 
-	tokenPurposeState   = "state"
-	tokenPurposeSession = "session"
+	tokenPurposeState = "state"
 )
 
 type oidcGate struct {
 	data          store.DataStore
 	signKey       []byte
+	sessions      *identity.Service
 	cookieSecure  bool
 	allowLoopback bool
 	log           *slog.Logger
@@ -53,80 +54,36 @@ type oidcProvider struct {
 	keysAt                time.Time
 }
 
-func newOIDCGate(data store.DataStore, signKey []byte, cookieSecure, allowLoopback, allowPrivate bool, log *slog.Logger) *oidcGate {
+func newOIDCGate(data store.DataStore, signKey []byte, sessions *identity.Service, cookieSecure, allowLoopback, allowPrivate bool, log *slog.Logger) *oidcGate {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &oidcGate{
 		data:          data,
 		signKey:       signKey,
+		sessions:      sessions,
 		cookieSecure:  cookieSecure,
 		allowLoopback: allowLoopback,
 		log:           log,
-		httpClient:    ssrfSafeHTTPClient(allowLoopback, allowPrivate),
+		httpClient:    safehttp.Client(allowLoopback, allowPrivate),
 		providers:     make(map[string]*oidcProvider),
 	}
 }
 
-var oidcMetadataIP = net.IPv4(169, 254, 169, 254)
-
-func oidcBlockedTarget(ip net.IP, allowLoopback, allowPrivate bool) bool {
-	if ip.Equal(oidcMetadataIP) || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-		return true
-	}
-	if ip.IsLoopback() {
-		return !allowLoopback
-	}
-	if !allowPrivate {
-		if ip.IsPrivate() {
-			return true
-		}
-		if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1]&0xc0 == 64 {
-			return true
-		}
-	}
-	return false
-}
-
-func ssrfSafeHTTPClient(allowLoopback, allowPrivate bool) *http.Client {
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	transport := &http.Transport{
-		ForceAttemptHTTP2: true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-			if err != nil {
-				return nil, err
-			}
-			for _, ip := range ips {
-				if oidcBlockedTarget(ip.IP, allowLoopback, allowPrivate) {
-					return nil, fmt.Errorf("oidc: host %q resolves to blocked address %s", host, ip.IP)
-				}
-			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
-		},
-	}
-	return &http.Client{
-		Timeout:   10 * time.Second,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("oidc: too many redirects")
-			}
-			if !allowLoopback && req.URL.Scheme != "https" {
-				return fmt.Errorf("oidc: insecure redirect scheme %q", req.URL.Scheme)
-			}
-			return nil
-		},
-	}
-}
-
 func (g *oidcGate) authenticate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint) bool {
-	if c, err := r.Cookie(oidcSessionCookie); err == nil {
-		if email, ok := g.verifySession(c.Value, ep.ID); ok && allowlistPermits(email, ep.Policy.OIDC) {
+	if g.sessions == nil {
+		http.Error(w, "endpoint oidc sessions unavailable", http.StatusServiceUnavailable)
+		return false
+	}
+	if c, err := r.Cookie(oidcSessionCookie); err == nil && c.Value != "" {
+		email, err := g.sessions.AuthenticateGuest(r.Context(), c.Value, ep.ID)
+		if errors.Is(err, identity.ErrUnavailable) {
+			g.log.Error("oidc session lookup failed", "endpoint_id", ep.ID, "err", err)
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "endpoint oidc sessions unavailable", http.StatusServiceUnavailable)
+			return false
+		}
+		if err == nil && allowlistPermits(email, ep.Policy.OIDC) {
 			return true
 		}
 	}
@@ -203,10 +160,20 @@ func (g *oidcGate) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "access denied for this account", http.StatusForbidden)
 		return
 	}
+	if g.sessions == nil {
+		http.Error(w, "endpoint oidc sessions unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	issued, err := g.sessions.IssueGuest(r.Context(), ep.OrgID, ep.ID, strings.ToLower(claims.Email), oidcSessionTTL)
+	if err != nil {
+		g.log.Error("oidc session issue failed", "endpoint_id", ep.ID, "err", err)
+		http.Error(w, "endpoint oidc sessions unavailable", http.StatusServiceUnavailable)
+		return
+	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name: oidcSessionCookie, Value: g.signSession(ep.ID, claims.Email), Path: "/", HttpOnly: true,
-		Secure: g.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: time.Now().Add(oidcSessionTTL),
+		Name: oidcSessionCookie, Value: issued.Token, Path: "/", HttpOnly: true,
+		Secure: g.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: issued.Session.ExpiresAt,
 	})
 	http.Redirect(w, r, state.Ret, http.StatusFound)
 }
@@ -302,32 +269,6 @@ func (g *oidcGate) verifyState(token string) (*stateClaims, error) {
 		return nil, errors.New("state expired")
 	}
 	return &c, nil
-}
-
-type sessionClaims struct {
-	Ep    string `json:"ep"`
-	Email string `json:"email"`
-	Exp   int64  `json:"exp"`
-}
-
-func (g *oidcGate) signSession(epID, email string) string {
-	payload, _ := json.Marshal(sessionClaims{Ep: epID, Email: email, Exp: time.Now().Add(oidcSessionTTL).Unix()})
-	return g.sign(tokenPurposeSession, payload)
-}
-
-func (g *oidcGate) verifySession(token, epID string) (string, bool) {
-	payload, err := g.unsign(tokenPurposeSession, token)
-	if err != nil {
-		return "", false
-	}
-	var c sessionClaims
-	if err := json.Unmarshal(payload, &c); err != nil {
-		return "", false
-	}
-	if c.Ep != epID || c.Email == "" || time.Now().Unix() > c.Exp {
-		return "", false
-	}
-	return c.Email, true
 }
 
 func (g *oidcGate) purposeMAC(purpose string) hash.Hash {

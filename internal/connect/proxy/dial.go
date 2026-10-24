@@ -103,7 +103,7 @@ func (g *Guard) Dial(ctx context.Context, target string, otls *store.OriginTLS, 
 			return nil, err
 		}
 	}
-	addr, err := g.Resolve(ctx, target)
+	addrs, err := g.ResolveAll(ctx, target)
 	if err != nil {
 		return nil, err
 	}
@@ -116,8 +116,7 @@ func (g *Guard) Dial(ctx context.Context, target string, otls *store.OriginTLS, 
 	if t.Datagram() {
 		network = "udp"
 	}
-	var d net.Dialer
-	raw, err := d.DialContext(ctx, network, addr)
+	raw, err := dialFirst(ctx, network, addrs)
 	if err != nil {
 		return nil, fmt.Errorf("proxy: dial %s: %w", target, err)
 	}
@@ -130,4 +129,20 @@ func (g *Guard) Dial(ctx context.Context, target string, otls *store.OriginTLS, 
 		return nil, fmt.Errorf("proxy: tls handshake with %s: %w", target, err)
 	}
 	return tc, nil
+}
+
+func dialFirst(ctx context.Context, network string, addrs []string) (net.Conn, error) {
+	var d net.Dialer
+	var errs []error
+	for _, addr := range addrs {
+		c, err := d.DialContext(ctx, network, addr)
+		if err == nil {
+			return c, nil
+		}
+		errs = append(errs, err)
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, errors.Join(errs...)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
@@ -12,6 +13,7 @@ import (
 var (
 	ErrTokenRejected = errors.New("token invalid or revoked")
 	ErrAgentDisabled = errors.New("agent disabled")
+	ErrLoginRequired = errors.New("user login required: run mishmesh-agent login")
 )
 
 type RegistrationError struct {
@@ -26,7 +28,7 @@ func (e *RegistrationError) Error() string {
 
 func isFatal(err error) bool {
 	var reg *RegistrationError
-	return errors.Is(err, ErrTokenRejected) || errors.Is(err, ErrAgentDisabled) || errors.As(err, &reg)
+	return errors.Is(err, ErrTokenRejected) || errors.Is(err, ErrAgentDisabled) || errors.Is(err, ErrLoginRequired) || errors.As(err, &reg)
 }
 
 func fatalCause(ctx context.Context) error {
@@ -43,6 +45,9 @@ func classifyDialError(err error) error {
 	}
 	switch he.StatusCode {
 	case http.StatusUnauthorized:
+		if strings.Contains(he.Message, "user token") {
+			return fmt.Errorf("%w (gateway rejected the user token)", ErrLoginRequired)
+		}
 		return fmt.Errorf("%w (gateway answered 401)", ErrTokenRejected)
 	case http.StatusForbidden:
 		return fmt.Errorf("%w (gateway answered 403)", ErrAgentDisabled)

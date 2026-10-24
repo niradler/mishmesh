@@ -75,3 +75,20 @@ func TestNilReceiverNoPanic(t *testing.T) {
 	resp := httptest.NewRecorder()
 	m.Handler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 }
+
+type fakeAccessLogStats struct{ dropped, suppressed, failed int64 }
+
+func (f fakeAccessLogStats) Dropped() int64       { return f.dropped }
+func (f fakeAccessLogStats) Suppressed() int64    { return f.suppressed }
+func (f fakeAccessLogStats) WriteFailures() int64 { return f.failed }
+
+func TestAccessLogCountersScrape(t *testing.T) {
+	m := New()
+	m.RegisterAccessLog(fakeAccessLogStats{dropped: 7, suppressed: 3, failed: 2})
+	body := scrape(t, m)
+	assertContains(t, body, "mishmesh_access_log_dropped_total 7")
+	assertContains(t, body, "mishmesh_access_log_suppressed_total 3")
+	assertContains(t, body, "mishmesh_access_log_write_failures_total 2")
+	var nilMetrics *Metrics
+	nilMetrics.RegisterAccessLog(fakeAccessLogStats{})
+}

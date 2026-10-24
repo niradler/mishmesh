@@ -44,6 +44,7 @@ func buildStartOptions(configPath, gateway, token, allow string, names []string)
 		Out:        os.Stdout,
 		Endpoints:  specs,
 		Connects:   file.Connects,
+		Egress:     file.Egress,
 		Allowlist:  file.Allow,
 	}
 	if allow != "" {
@@ -79,6 +80,7 @@ func startCmd(args []string) error {
 	gateway := fs.String("gateway", "", "gateway URL, overrides the config file")
 	token := fs.String("token", "", "agent authtoken, overrides the config file")
 	allow := fs.String("allow", "", "reach-in allowlist rules, overrides the config file")
+	asUser := fs.Bool("as-user", false, "bind the session to the signed-in user (run login first)")
 	names, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -86,6 +88,16 @@ func startCmd(args []string) error {
 	opts, err := buildStartOptions(*configPath, *gateway, *token, *allow, names)
 	if err != nil {
 		return err
+	}
+	if *asUser {
+		store, err := credentialStore()
+		if err != nil {
+			return err
+		}
+		if _, err := store.Load(); err != nil {
+			return err
+		}
+		opts.UserToken = store.AccessToken
 	}
 	return runManaged(opts)
 }

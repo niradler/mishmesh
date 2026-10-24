@@ -2,10 +2,14 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 )
+
+var ErrBlocked = errors.New("proxy: blocked target")
 
 var (
 	alwaysBlockedNets = mustCIDRs(
@@ -27,9 +31,12 @@ var (
 		"240.0.0.0/4",
 		"fc00::/7",
 		"64:ff9b::/96",
+		"64:ff9b:1::/48",
+		"fec0::/10",
 		"2001::/32",
 		"2002::/16",
 	)
+	embeddedIPv4Nets     = mustCIDRs("64:ff9b::/96", "::/96")
 	internalNameSuffixes = []string{".localhost", ".svc", ".cluster.local", ".local", ".internal"}
 )
 
@@ -49,6 +56,7 @@ type Guard struct {
 	allowLoopback bool
 	allowPrivate  bool
 	allowed       []*net.IPNet
+	lookup        func(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
 func NewGuard(allowLoopback, allowPrivate bool, allowedCIDRs []string) (*Guard, error) {
@@ -91,10 +99,20 @@ func (g *Guard) IPAllowed(ip net.IP) bool {
 	if ip.IsLoopback() {
 		return g.allowLoopback
 	}
+	if v4 := embeddedIPv4(ip); v4 != nil && !g.IPAllowed(v4) {
+		return false
+	}
 	if ip.IsPrivate() || inAny(privateNets, ip) {
 		return g.allowPrivate || inAny(g.allowed, ip)
 	}
 	return true
+}
+
+func embeddedIPv4(ip net.IP) net.IP {
+	if len(ip) != net.IPv6len || !inAny(embeddedIPv4Nets, ip) {
+		return nil
+	}
+	return net.IPv4(ip[12], ip[13], ip[14], ip[15]).To4()
 }
 
 func (g *Guard) nameAllowed(host string) bool {
@@ -130,41 +148,60 @@ func (g *Guard) ValidateTarget(target string) error {
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if !g.IPAllowed(ip) {
-			return fmt.Errorf("proxy: target %q is a blocked address", target)
+			return fmt.Errorf("%w: target %q is a blocked address", ErrBlocked, target)
 		}
 		return nil
 	}
 	if !g.nameAllowed(host) {
-		return fmt.Errorf("proxy: target %q is an internal name", target)
+		return fmt.Errorf("%w: target %q is an internal name", ErrBlocked, target)
 	}
 	return nil
 }
 
+const maxResolvedAddrs = 8
+
 func (g *Guard) Resolve(ctx context.Context, target string) (string, error) {
-	host, port, err := splitTarget(target)
+	addrs, err := g.ResolveAll(ctx, target)
 	if err != nil {
 		return "", err
 	}
+	return addrs[0], nil
+}
+
+func (g *Guard) ResolveAll(ctx context.Context, target string) ([]string, error) {
+	host, port, err := splitTarget(target)
+	if err != nil {
+		return nil, err
+	}
 	if ip := net.ParseIP(host); ip != nil {
 		if !g.IPAllowed(ip) {
-			return "", fmt.Errorf("proxy: target %q resolves to a blocked address", target)
+			return nil, fmt.Errorf("%w: target %q resolves to a blocked address", ErrBlocked, target)
 		}
-		return net.JoinHostPort(normalizeIP(ip).String(), port), nil
+		return []string{net.JoinHostPort(normalizeIP(ip).String(), port)}, nil
 	}
 	if !g.nameAllowed(host) {
-		return "", fmt.Errorf("proxy: target %q is an internal name", target)
+		return nil, fmt.Errorf("%w: target %q is an internal name", ErrBlocked, target)
 	}
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	lookup := g.lookup
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupIPAddr
+	}
+	addrs, err := lookup(ctx, host)
 	if err != nil {
-		return "", fmt.Errorf("proxy: resolve %q: %w", host, err)
+		return nil, fmt.Errorf("proxy: resolve %q: %w", host, err)
 	}
 	if len(addrs) == 0 {
-		return "", fmt.Errorf("proxy: target %q did not resolve", target)
+		return nil, fmt.Errorf("proxy: target %q did not resolve", target)
 	}
+	out := make([]string, 0, min(len(addrs), maxResolvedAddrs))
 	for _, a := range addrs {
 		if !g.IPAllowed(a.IP) {
-			return "", fmt.Errorf("proxy: target %q resolves to a blocked address", target)
+			return nil, fmt.Errorf("%w: target %q resolves to a blocked address", ErrBlocked, target)
+		}
+		addr := net.JoinHostPort(normalizeIP(a.IP).String(), port)
+		if len(out) < maxResolvedAddrs && !slices.Contains(out, addr) {
+			out = append(out, addr)
 		}
 	}
-	return net.JoinHostPort(normalizeIP(addrs[0].IP).String(), port), nil
+	return out, nil
 }

@@ -125,3 +125,23 @@ func (m *Metrics) HTTPRequest(code int) {
 	class := fmt.Sprintf("%dxx", code/100)
 	m.httpRequests.WithLabelValues(class).Inc()
 }
+
+type AccessLogStats interface {
+	Dropped() int64
+	Suppressed() int64
+	WriteFailures() int64
+}
+
+func (m *Metrics) RegisterAccessLog(s AccessLogStats) {
+	if m == nil || s == nil {
+		return
+	}
+	counter := func(name, help string, read func() int64) prometheus.Collector {
+		return prometheus.NewCounterFunc(prometheus.CounterOpts{Name: name, Help: help}, func() float64 { return float64(read()) })
+	}
+	m.registry.MustRegister(
+		counter("mishmesh_access_log_dropped_total", "Access events dropped because the write queue was full.", s.Dropped),
+		counter("mishmesh_access_log_suppressed_total", "Repeated auth-failure access events suppressed by rate limiting.", s.Suppressed),
+		counter("mishmesh_access_log_write_failures_total", "Access events lost to store write failures.", s.WriteFailures),
+	)
+}
