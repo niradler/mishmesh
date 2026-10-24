@@ -29,9 +29,29 @@ func closedAddr(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := ln.Addr().String()
-	ln.Close()
-	return addr
+	defer ln.Close()
+	holder, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := ln.Accept()
+	if err != nil {
+		holder.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		holder.Close()
+		accepted.Close()
+	})
+	return holder.LocalAddr().String()
+}
+
+func TestClosedAddrRefuses(t *testing.T) {
+	addr := closedAddr(t)
+	if c, err := net.DialTimeout("tcp", addr, 5*time.Second); err == nil {
+		c.Close()
+		t.Fatalf("dial %s succeeded, want refused", addr)
+	}
 }
 
 func liveAddr(t *testing.T) string {
