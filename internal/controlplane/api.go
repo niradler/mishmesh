@@ -16,6 +16,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connections"
+	"github.com/mishmesh/mishmesh/internal/egressca"
 	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/orgsecret"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
@@ -55,6 +56,7 @@ type API struct {
 	connectionRegistry *connections.Registry
 	secretBox          *secrets.Box
 	vault              *orgsecret.Vault
+	egressCA           *egressca.Authority
 	workload           *workload.Verifier
 	hostCommands       bool
 	identity           *identity.Service
@@ -308,6 +310,9 @@ func (a *API) routes() []route {
 		{"GET /api/v1/egress/credentials/{name}", a.require(authz.ActionPolicyRead, a.getEgressCredentialHandler)},
 		{"PUT /api/v1/egress/credentials/{name}", a.require(authz.ActionPolicyWrite, a.putEgressCredentialHandler)},
 		{"DELETE /api/v1/egress/credentials/{name}", a.require(authz.ActionPolicyWrite, a.deleteEgressCredentialHandler)},
+		{"GET /api/v1/egress/ca", a.require(authz.ActionPolicyRead, a.getEgressCAHandler)},
+		{"GET /api/v1/egress/decrypt", a.require(authz.ActionPolicyRead, a.getEgressDecryptHandler)},
+		{"PUT /api/v1/egress/decrypt", a.require(authz.ActionPolicyWrite, a.putEgressDecryptHandler)},
 	}
 	if a.domainVerification {
 		routes = append(routes,

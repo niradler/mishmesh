@@ -25,6 +25,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connect/sshfwd"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
+	"github.com/mishmesh/mishmesh/internal/egressca"
 	"github.com/mishmesh/mishmesh/internal/gateway"
 	"github.com/mishmesh/mishmesh/internal/ingress"
 	"github.com/mishmesh/mishmesh/internal/metrics"
@@ -196,6 +197,9 @@ func serve() error {
 	vault := orgsecret.New(data, box)
 	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
 	cp.SetSecretVault(vault)
+	ca := egressca.New(data, box)
+	cp.SetEgressCA(ca)
+	gwOpts.Certs = ca
 	idSvc, err := newIdentityService(cfg, conns)
 	if err != nil {
 		return err

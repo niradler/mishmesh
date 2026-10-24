@@ -293,3 +293,53 @@ func TestFlushAllAndRevocationFlushBoundAgentsOnly(t *testing.T) {
 	bound.recvType(t, tunnel.MsgFlush)
 	plain.expectNoMessage(t)
 }
+
+type fakeCertIssuer struct {
+	resp tunnel.CertResponse
+	err  error
+	got  chan []byte
+}
+
+func (f *fakeCertIssuer) IssueDecryptCert(_ context.Context, _ *store.Agent, csr []byte) (tunnel.CertResponse, error) {
+	f.got <- csr
+	return f.resp, f.err
+}
+
+func TestCertRequestAnswered(t *testing.T) {
+	ok := &fakeCertIssuer{resp: tunnel.CertResponse{ID: 999, Chain: [][]byte{{1}}, Allow: []string{"api.example.com"}}, got: make(chan []byte, 1)}
+	failing := &fakeCertIssuer{err: errors.New("store down: secret detail"), got: make(chan []byte, 1)}
+	tests := []struct {
+		name      string
+		issuer    CertIssuer
+		wantError string
+		wantChain bool
+	}{
+		{"no issuer", nil, "egress decryption is not available on this server", false},
+		{"issuer error is generic", failing, "certificate issuance unavailable", false},
+		{"issued", ok, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := Options{}
+			if tt.issuer != nil {
+				opts.Certs = tt.issuer
+			}
+			g, ag, _, data := newRegisterFixture(t, opts)
+			srv := httptest.NewServer(http.HandlerFunc(g.HandleAgentConnect))
+			t.Cleanup(srv.Close)
+			a := dialAgent(t, srv, agentToken(t, data, ag), "")
+			if err := a.ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgCertRequest, CertRequest: &tunnel.CertRequest{ID: 42, CSR: []byte("csr")}}); err != nil {
+				t.Fatal(err)
+			}
+			msg := a.recvType(t, tunnel.MsgCertResponse)
+			if msg.Cert == nil || msg.Cert.ID != 42 || msg.Cert.Error != tt.wantError || (len(msg.Cert.Chain) > 0) != tt.wantChain {
+				t.Fatalf("cert = %+v", msg.Cert)
+			}
+			if fi, isFake := tt.issuer.(*fakeCertIssuer); isFake {
+				if got := <-fi.got; string(got) != "csr" {
+					t.Fatalf("issuer got csr %q", got)
+				}
+			}
+		})
+	}
+}

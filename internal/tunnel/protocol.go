@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 )
 
 const (
@@ -24,6 +25,8 @@ const (
 	MsgDecisionRequest  MsgType = "decision_request"
 	MsgDecisionResponse MsgType = "decision_response"
 	MsgFlush            MsgType = "flush"
+	MsgCertRequest      MsgType = "cert_request"
+	MsgCertResponse     MsgType = "cert_response"
 )
 
 const (
@@ -109,6 +112,20 @@ type RegisterPayload struct {
 	Endpoints []EndpointRequest `json:"endpoints"`
 }
 
+type CertRequest struct {
+	ID  uint64 `json:"id"`
+	CSR []byte `json:"csr"`
+}
+
+type CertResponse struct {
+	ID       uint64    `json:"id"`
+	Chain    [][]byte  `json:"chain,omitempty"`
+	Allow    []string  `json:"allow,omitempty"`
+	Bypass   []string  `json:"bypass,omitempty"`
+	NotAfter time.Time `json:"not_after"`
+	Error    string    `json:"error,omitempty"`
+}
+
 type RegisterAckPayload struct {
 	OrgID     string            `json:"org_id,omitempty"`
 	AgentID   string            `json:"agent_id,omitempty"`
@@ -121,6 +138,8 @@ type ControlMessage struct {
 	RegisterAck *RegisterAckPayload `json:"register_ack,omitempty"`
 	Decision    *DecisionQuery      `json:"decision,omitempty"`
 	Answer      *DecisionAnswer     `json:"answer,omitempty"`
+	CertRequest *CertRequest        `json:"cert_request,omitempty"`
+	Cert        *CertResponse       `json:"cert,omitempty"`
 	Error       string              `json:"error,omitempty"`
 }
 
