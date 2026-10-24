@@ -73,6 +73,15 @@ type egressHarness struct {
 
 func newEgressHarness(t *testing.T, allowLoopback bool) *egressHarness {
 	t.Helper()
+	guard, err := proxy.NewGuard(allowLoopback, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newEgressHarnessWithGuard(t, guard)
+}
+
+func newEgressHarnessWithGuard(t *testing.T, guard *proxy.Guard) *egressHarness {
+	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx := context.Background()
 	data, err := sqlite.Open(filepath.Join(t.TempDir(), "egress.db"))
@@ -82,10 +91,6 @@ func newEgressHarness(t *testing.T, allowLoopback bool) *egressHarness {
 	t.Cleanup(func() { _ = data.Close() })
 	conns := memory.NewConnStore()
 	cp := controlplane.New(data, conns, "", log)
-	guard, err := proxy.NewGuard(allowLoopback, false, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	access := &accessRecorder{}
 	keys, err := token.NewKeyring(bytes.Repeat([]byte{9}, 32))
 	if err != nil {

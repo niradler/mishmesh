@@ -205,3 +205,8 @@ func (g *Guard) ResolveAll(ctx context.Context, target string) ([]string, error)
 	}
 	return out, nil
 }
+
+func (g *Guard) WithResolver(r *net.Resolver) *Guard {
+	g.lookup = r.LookupIPAddr
+	return g
+}
