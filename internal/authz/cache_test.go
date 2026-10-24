@@ -66,3 +66,21 @@ func TestShouldBeSafeForConcurrentUse(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestDenyAllDeniesEveryAction(t *testing.T) {
+	az := DenyAll()
+	for _, act := range AllActions() {
+		if az.Authorize(Principal{ID: "u", Role: RoleOwner, Org: "o"}, act) {
+			t.Errorf("deny-all permitted %s", act)
+		}
+	}
+	req := DecisionRequest{
+		Principal: EntityRef{Type: EntityAnonymous, ID: AnonymousID},
+		Action:    ActionHTTPRequest,
+		Resource:  EntityRef{Type: EntityEndpoint, ID: "ep_1"},
+		Context:   RequestContext{ClientIP: "203.0.113.7", Host: "a.example.com", Method: "GET", Path: "/", Protocol: "http", AuthMethod: AuthMethodNone},
+	}
+	if d := az.Decide(req, Facts{Subject: &Subject{Ref: req.Principal}, Endpoint: &EndpointEntity{ID: "ep_1", Kind: "http"}}); d.Allowed || d.Reason != ReasonNoPolicyMatch {
+		t.Fatalf("deny-all decision = %+v", d)
+	}
+}

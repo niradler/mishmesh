@@ -54,6 +54,8 @@ type API struct {
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
 	authzCache   map[string]authzEntry
+	denyAuthz    *authz.Authorizer
+	policies     *authz.Cache
 	now          func() time.Time
 }
 
@@ -85,6 +87,8 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 		adminToken:   adminToken,
 		limiter:      ratelimit.NewMemory(),
 		defaultAuthz: authz.Default(),
+		denyAuthz:    authz.DenyAll(),
+		policies:     authz.NewCache(authz.DefaultCacheSize),
 		authzCache:   make(map[string]authzEntry),
 		now:          time.Now,
 
@@ -101,17 +105,17 @@ func (a *API) authorizerFor(ctx context.Context, orgID string) *authz.Authorizer
 	}
 	pol, err := a.data.GetOrgPolicy(ctx, orgID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		a.log.Warn("org policy lookup failed, using defaults", "org", orgID, "err", err)
-		return a.defaultAuthz
+		a.log.Error("org policy lookup failed, denying", "org", orgID, "err", err)
+		return a.denyAuthz.WithOwner(orgID)
 	}
 	az := a.defaultAuthz
 	if err == nil && pol.CedarSrc != "" {
-		parsed, perr := authz.New([]byte(pol.CedarSrc))
+		parsed, perr := a.policies.Get(authz.ForOrgSource([]byte(pol.CedarSrc)))
 		if perr != nil {
-			a.log.Warn("org policy parse failed, using defaults", "org", orgID, "err", perr)
-		} else {
-			az = parsed
+			a.log.Error("org policy parse failed, denying", "org", orgID, "err", perr)
+			parsed = a.denyAuthz
 		}
+		az = parsed.WithOwner(orgID)
 	}
 	a.authzCache[orgID] = authzEntry{az: az, expires: now.Add(authzCacheTTL)}
 	return az
@@ -193,6 +197,14 @@ func (a *API) routes() []route {
 		{"DELETE /api/v1/members/{user_id}", a.require(authz.ActionMemberManage, a.removeMemberHandler)},
 		{"GET /api/v1/invites", a.require(authz.ActionMemberManage, a.listInvitesHandler)},
 		{"DELETE /api/v1/invites/{id}", a.require(authz.ActionMemberManage, a.revokeInviteHandler)},
+
+		{"GET /api/v1/groups", a.require(authz.ActionMemberRead, a.listGroupsHandler)},
+		{"POST /api/v1/groups", a.require(authz.ActionMemberManage, a.createGroupHandler)},
+		{"GET /api/v1/groups/{id}", a.require(authz.ActionMemberRead, a.getGroupHandler)},
+		{"PATCH /api/v1/groups/{id}", a.require(authz.ActionMemberManage, a.renameGroupHandler)},
+		{"DELETE /api/v1/groups/{id}", a.require(authz.ActionMemberManage, a.deleteGroupHandler)},
+		{"POST /api/v1/groups/{id}/members", a.require(authz.ActionMemberManage, a.addGroupMemberHandler)},
+		{"DELETE /api/v1/groups/{id}/members/{type}/{member_id}", a.require(authz.ActionMemberManage, a.removeGroupMemberHandler)},
 
 		{"POST /api/v1/agents", a.require(authz.ActionAgentWrite, a.createAgentHandler)},
 		{"GET /api/v1/agents", a.require(authz.ActionAgentRead, a.listAgentsHandler)},

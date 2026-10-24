@@ -121,6 +121,14 @@ func DefaultPolicySource() []byte {
 	return appendDataPlane(defaultPolicy)
 }
 
+func DenyAll() *Authorizer {
+	az, err := New(nil)
+	if err != nil {
+		panic("authz: empty policy invalid: " + err.Error())
+	}
+	return az
+}
+
 func Default() *Authorizer {
 	az, err := New(DefaultPolicySource())
 	if err != nil {

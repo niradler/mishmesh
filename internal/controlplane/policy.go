@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -53,22 +54,36 @@ func (a *API) putPolicyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Matrix map[string][]string `json:"matrix"`
+		Matrix   map[string][]string `json:"matrix"`
+		CedarSrc *string             `json:"cedar_src"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	matrix, ok := normalizeMatrix(w, req.Matrix)
-	if !ok {
+	if (req.Matrix == nil) == (req.CedarSrc == nil) {
+		writeError(w, http.StatusBadRequest, "provide exactly one of matrix or cedar_src")
 		return
 	}
-	src := authz.CompileMatrix(matrix)
-	if _, err := authz.New([]byte(src)); err != nil {
-		writeError(w, http.StatusBadRequest, "policy compilation failed")
+	var src []byte
+	if req.CedarSrc != nil {
+		src = []byte(*req.CedarSrc)
+	} else {
+		matrix, ok := normalizeMatrix(w, req.Matrix)
+		if !ok {
+			return
+		}
+		src = authz.CompileOrgPolicy(matrix)
+	}
+	if err := authz.Validate(src); err != nil {
+		if !errors.Is(err, authz.ErrInvalidPolicy) {
+			a.handleErr(w, err)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	org := a.orgScope(r)
-	if err := a.data.SetOrgPolicy(r.Context(), &store.OrgPolicy{OrgID: org, CedarSrc: src, UpdatedAt: time.Now()}); err != nil {
+	if err := a.data.SetOrgPolicy(r.Context(), &store.OrgPolicy{OrgID: org, CedarSrc: string(src), UpdatedAt: time.Now()}); err != nil {
 		a.handleErr(w, err)
 		return
 	}
