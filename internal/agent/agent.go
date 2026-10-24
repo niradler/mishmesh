@@ -53,6 +53,7 @@ type Options struct {
 	Egress        *EgressSpec
 	ExitDialer    ExitDialer
 	UpstreamRoots *x509.CertPool
+	Clock         func() time.Time
 	Out           io.Writer
 	UserToken     func(ctx context.Context) (string, error)
 }
@@ -68,6 +69,7 @@ type Agent struct {
 	sess    atomic.Pointer[tunnel.Session]
 	dec     *remoteDecider
 	origin  *originator
+	decrypt *decryptor
 }
 
 func New(opts Options) *Agent {
@@ -79,12 +81,22 @@ func New(opts Options) *Agent {
 	if out == nil {
 		out = os.Stdout
 	}
+	clock := opts.Clock
+	if clock == nil {
+		clock = time.Now
+	}
 	if opts.ExitDialer == nil && opts.Egress != nil && opts.Egress.ServeExit {
 		opts.ExitDialer = exitGuard(opts.Egress.ExitAllow, log)
 	}
-	a := &Agent{opts: opts, log: log, out: out, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget), dec: newRemoteDecider(time.Now)}
+	a := &Agent{opts: opts, log: log, out: out, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget), dec: newRemoteDecider(clock)}
 	a.origin = newOriginator(a, opts.UpstreamRoots)
-	a.dec.onFlush = a.origin.closeIdle
+	if opts.Egress != nil && opts.Egress.Listen != "" {
+		a.decrypt = newDecryptor(a.dec, log, clock)
+	}
+	a.dec.onFlush = func() {
+		a.origin.closeIdle()
+		a.decrypt.flush()
+	}
 	return a
 }
 
@@ -183,6 +195,8 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 		return fmt.Errorf("open control: %w", err)
 	}
 	gen := a.dec.attach(ctrl)
+	a.decrypt.attach(gen)
+	defer a.decrypt.detach(gen)
 	defer a.dec.detach(gen)
 
 	refTarget := make(map[string]localTarget, len(a.opts.Endpoints))
@@ -231,9 +245,12 @@ func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, gen uint6
 		switch {
 		case msg.Type == tunnel.MsgRegisterAck && msg.RegisterAck != nil:
 			a.dec.bind(gen, msg.RegisterAck.OrgID, msg.RegisterAck.AgentID)
+			a.decrypt.bind(gen)
 			a.handleAck(msg.RegisterAck, refTarget, refSpec, fail)
 		case msg.Type == tunnel.MsgDecisionResponse && msg.Answer != nil:
 			a.dec.deliver(gen, *msg.Answer)
+		case msg.Type == tunnel.MsgCertResponse && msg.Cert != nil:
+			a.dec.deliverCert(gen, *msg.Cert)
 		case msg.Type == tunnel.MsgFlush:
 			a.dec.flush()
 		}

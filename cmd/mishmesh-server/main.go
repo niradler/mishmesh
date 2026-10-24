@@ -237,6 +237,7 @@ func serve() error {
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
+	apiMux.HandleFunc("GET "+tunnel.AgentEgressCAPath, gw.HandleAgentEgressCA)
 	cp.SetPublicConfig(cfg.BaseDomain, cfg.PublicScheme)
 	cp.SetPathRouting(cfg.PathRouting)
 	cp.SetTLSPublicPort(cfg.TLSPassthroughPublicPort)

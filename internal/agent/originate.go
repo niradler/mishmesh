@@ -159,7 +159,7 @@ func (o *originator) closeIdle() {
 	}
 }
 
-func (o *originator) serve(w http.ResponseWriter, r *http.Request, target originTarget, creds egressCreds, clientIP string) {
+func (o *originator) serve(w http.ResponseWriter, r *http.Request, target originTarget, creds egressCreds, clientIP string, decrypted bool) {
 	path := r.URL.Path
 	if path == "" {
 		path = "/"
@@ -173,7 +173,7 @@ func (o *originator) serve(w http.ResponseWriter, r *http.Request, target origin
 	}
 	inject, err := o.a.dec.checkRequest(r.Context(), egressRequest{
 		host: target.host, port: target.port, method: r.Method, path: path,
-		tls: target.tls(), auth: creds.token, exit: creds.exit,
+		tls: target.tls(), decrypted: decrypted, auth: creds.token, exit: creds.exit,
 	})
 	if err != nil {
 		o.refuse(w, target, err)
@@ -275,7 +275,7 @@ func (o *originator) proxyHandler(clientIP string) http.Handler {
 			http.Error(w, "egress refused: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		o.serve(w, r, target, creds, clientIP)
+		o.serve(w, r, target, creds, clientIP, false)
 	})
 }
 
@@ -285,7 +285,7 @@ func (o *originator) fixedHandler(target originTarget, creds egressCreds) http.H
 			http.Error(w, "originate listeners forward plain requests only", http.StatusMethodNotAllowed)
 			return
 		}
-		o.serve(w, r, target, creds, remoteHost(r.RemoteAddr))
+		o.serve(w, r, target, creds, remoteHost(r.RemoteAddr), false)
 	})
 }
 

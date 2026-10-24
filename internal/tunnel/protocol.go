@@ -33,6 +33,7 @@ const (
 	DecisionActionConnect       = "agent:connect"
 	DecisionActionEgressRequest = "egress:request"
 	MaxDecisionTTLSeconds       = 300
+	CertErrorDecryptDisabled    = "egress decryption is not enabled for this org"
 )
 
 type DecisionQuery struct {
@@ -124,6 +125,11 @@ type CertResponse struct {
 	Bypass   []string  `json:"bypass,omitempty"`
 	NotAfter time.Time `json:"not_after"`
 	Error    string    `json:"error,omitempty"`
+}
+
+type EgressCA struct {
+	PEM    string `json:"pem"`
+	SHA256 string `json:"sha256"`
 }
 
 type RegisterAckPayload struct {
