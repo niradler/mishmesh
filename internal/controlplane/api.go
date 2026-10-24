@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -97,16 +98,24 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 }
 
 func (a *API) authorizerFor(ctx context.Context, orgID string) *authz.Authorizer {
+	az, err := a.orgAuthorizer(ctx, orgID)
+	if err != nil {
+		a.log.Error("org policy lookup failed, denying", "org", orgID, "err", err)
+		return a.denyAuthz.WithOwner(orgID)
+	}
+	return az
+}
+
+func (a *API) orgAuthorizer(ctx context.Context, orgID string) (*authz.Authorizer, error) {
 	a.authzMu.Lock()
 	defer a.authzMu.Unlock()
 	now := a.now()
 	if e, ok := a.authzCache[orgID]; ok && now.Before(e.expires) {
-		return e.az
+		return e.az, nil
 	}
 	pol, err := a.data.GetOrgPolicy(ctx, orgID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		a.log.Error("org policy lookup failed, denying", "org", orgID, "err", err)
-		return a.denyAuthz.WithOwner(orgID)
+		return nil, fmt.Errorf("load org policy: %w", err)
 	}
 	az := a.defaultAuthz
 	if err == nil && pol.CedarSrc != "" {
@@ -118,7 +127,7 @@ func (a *API) authorizerFor(ctx context.Context, orgID string) *authz.Authorizer
 		az = parsed.WithOwner(orgID)
 	}
 	a.authzCache[orgID] = authzEntry{az: az, expires: now.Add(authzCacheTTL)}
-	return az
+	return az, nil
 }
 
 const authzCacheTTL = 5 * time.Second
