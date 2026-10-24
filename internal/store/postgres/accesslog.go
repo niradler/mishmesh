@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS access_log (
 );
 CREATE INDEX IF NOT EXISTS access_log_org_at ON access_log (org_id, at DESC);
 CREATE INDEX IF NOT EXISTS access_log_at ON access_log (at);
+ALTER TABLE access_log ADD COLUMN IF NOT EXISTS exit_agent_id TEXT NOT NULL DEFAULT '';
 `
 
 const accessEventCols = `id, org_id, at, source, decision, reason, principal_type, principal_id, session_id, agent_id, exit_agent_id, endpoint_id, destination, policy_ids, client_ip, method, path, status, protocol, bytes_in, bytes_out, duration_ms, latency_ms`

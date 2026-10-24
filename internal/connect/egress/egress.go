@@ -155,7 +155,7 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		flow, untrack = h.flows.Track(agent.OrgID, p.SessionID, stream)
 		defer untrack()
 	}
-	decision, status := h.decideAll(ctx, agent, p, hasPrincipal, rec.event.ClientIP, dest, targets, exit)
+	decision, status := h.decideAll(ctx, agent, p, hasPrincipal, dest, targets, exit)
 	rec.event.PolicyIDs = policyIDs(decision)
 	if status != tunnel.EgressOK {
 		h.refuse(stream, rec, &refusal{status, string(decision.Reason)})
@@ -306,10 +306,10 @@ func (h *Handler) dialViaExit(ctx context.Context, exit *store.Agent, dest strin
 	return stream, nil
 }
 
-func (h *Handler) decideAll(ctx context.Context, agent *store.Agent, p identity.Principal, hasPrincipal bool, clientIP, dest string, targets []string, exit *store.Agent) (authz.Decision, tunnel.EgressStatus) {
+func (h *Handler) decideAll(ctx context.Context, agent *store.Agent, p identity.Principal, hasPrincipal bool, dest string, targets []string, exit *store.Agent) (authz.Decision, tunnel.EgressStatus) {
 	var first authz.Decision
 	for i, target := range targets {
-		d, status := h.decide(ctx, agent, p, hasPrincipal, clientIP, dest, target, exit)
+		d, status := h.decide(ctx, agent, p, hasPrincipal, dest, target, exit)
 		if status != tunnel.EgressOK {
 			return d, status
 		}
@@ -320,13 +320,13 @@ func (h *Handler) decideAll(ctx context.Context, agent *store.Agent, p identity.
 	return first, tunnel.EgressOK
 }
 
-func (h *Handler) decide(ctx context.Context, agent *store.Agent, p identity.Principal, hasPrincipal bool, clientIP, dest, target string, exit *store.Agent) (authz.Decision, tunnel.EgressStatus) {
+func (h *Handler) decide(ctx context.Context, agent *store.Agent, p identity.Principal, hasPrincipal bool, dest, target string, exit *store.Agent) (authz.Decision, tunnel.EgressStatus) {
 	if h.deciders == nil || h.dialer == nil {
 		return authz.Decision{Reason: authz.ReasonUnavailable}, tunnel.EgressUnavailable
 	}
 	scope := identity.Scope{OrgID: agent.OrgID, AgentID: agent.ID}
 	principal := authz.EntityRef{Type: authz.EntityAgent, ID: agent.ID}
-	reqCtx := authz.RequestContext{ClientIP: clientIP, AuthMethod: authz.AuthMethodAgentToken}
+	reqCtx := authz.RequestContext{ClientIP: agentClientIP, AuthMethod: authz.AuthMethodAgentToken}
 	if exit != nil {
 		reqCtx.Exit = exit.ID
 	} else if host, _, err := net.SplitHostPort(target); err == nil {

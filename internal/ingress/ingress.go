@@ -349,13 +349,14 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 		i.recordCode(http.StatusBadGateway)
 		return
 	}
-	resp, err := http.ReadResponse(br, outReq)
+	resp, err := readUpgradeResponse(br, outReq)
 	if err != nil {
 		http.Error(w, upstreamUnreachableMessage(""), http.StatusBadGateway)
 		i.recordCode(http.StatusBadGateway)
 		return
 	}
 	sanitizeUpstreamResponse(resp.Header)
+	applyResponsePolicy(resp.Header, ep)
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		i.relayRefusedUpgrade(w, resp)
 		return
@@ -389,6 +390,18 @@ func (i *Ingress) relayRefusedUpgrade(w http.ResponseWriter, resp *http.Response
 	w.WriteHeader(resp.StatusCode)
 	i.recordCode(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+func readUpgradeResponse(br *bufio.Reader, req *http.Request) (*http.Response, error) {
+	for {
+		resp, err := http.ReadResponse(br, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusSwitchingProtocols || resp.StatusCode < 100 || resp.StatusCode >= 200 {
+			return resp, nil
+		}
+	}
 }
 
 func writeUpgradeHead(w io.Writer, resp *http.Response) error {

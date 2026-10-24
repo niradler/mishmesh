@@ -142,7 +142,7 @@ func (a cookieUpgradeAgent) OpenStream(context.Context, string, string, map[stri
 		if _, err := http.ReadRequest(br); err != nil {
 			return
 		}
-		head := "HTTP/1.1 " + a.status + "\r\nSet-Cookie: mm_ep_session=forged; Path=/\r\nSet-Cookie: app=1; Path=/\r\n"
+		head := "HTTP/1.1 103 Early Hints\r\nLink: </a.css>; rel=preload\r\n\r\nHTTP/1.1 " + a.status + "\r\nSet-Cookie: mm_ep_session=forged; Path=/\r\nSet-Cookie: app=1; Path=/\r\n"
 		if a.status == "101 Switching Protocols" {
 			head += "Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
 		} else {

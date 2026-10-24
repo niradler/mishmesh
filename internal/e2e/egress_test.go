@@ -341,3 +341,18 @@ forbid (principal, action == Action::"egress:connect", resource) when { context 
 		})
 	}
 }
+
+func TestEgressPolicyIgnoresAgentReportedClientIP(t *testing.T) {
+	h := newEgressHarness(t, true)
+	echo := tcpEchoServer(t)
+	_, port, _ := net.SplitHostPort(echo)
+	policy := fmt.Sprintf(`permit (principal, action == Action::"egress:connect", resource) when { resource.port == %s && context.client_ip == ip("127.0.0.1") };`, port)
+	listen := h.runAgent(h.orgWithPolicy(policy))
+	if _, _, status := proxyConnect(t, listen, echo); status != http.StatusForbidden {
+		t.Fatalf("CONNECT status = %d, want 403: cedar must not trust the agent-reported client ip", status)
+	}
+	ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.Destination == echo })
+	if ev.Decision != store.AccessDeny || ev.ClientIP != "127.0.0.1" {
+		t.Fatalf("access event = %+v", ev)
+	}
+}
