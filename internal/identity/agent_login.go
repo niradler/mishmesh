@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,8 @@ const (
 	AgentClientID       = "mishmesh-agent"
 	AgentAccessTTL      = time.Hour
 	AgentSessionTTL     = 7 * 24 * time.Hour
+	RefreshGrace        = 20 * time.Second
+	refreshGraceKey     = "rgrace:"
 	AuthCodeTTL         = 60 * time.Second
 	DeviceCodeTTL       = 10 * time.Minute
 	DevicePollInterval  = 5 * time.Second
@@ -306,10 +309,7 @@ func (s *Service) IssueAgentUser(ctx context.Context, l AgentLogin) (AgentTokens
 func (s *Service) RefreshAgentUser(ctx context.Context, refresh string) (AgentTokens, error) {
 	ts, _, err := s.verify(ctx, refresh, []token.Type{token.TypeRefresh})
 	if errors.Is(err, errTokenSuperseded) {
-		if err := s.RevokeSession(ctx, ts.ID); err != nil {
-			return AgentTokens{}, err
-		}
-		return AgentTokens{}, ErrRefreshReused
+		return s.refreshWithinGrace(ctx, ts, refresh)
 	}
 	if err != nil {
 		return AgentTokens{}, err
@@ -317,9 +317,41 @@ func (s *Service) RefreshAgentUser(ctx context.Context, refresh string) (AgentTo
 	if ts.SubjectType != store.SubjectUser {
 		return AgentTokens{}, ErrUnauthenticated
 	}
-	ts.TokenID = store.NewID("tid")
-	ts.ExpiresAt = s.now().UTC().Add(AgentSessionTTL)
+	now := s.now().UTC()
+	ts.PrevTokenID, ts.TokenID, ts.RotatedAt = ts.TokenID, nextTokenID(ts.ID, ts.TokenID), now
+	ts.ExpiresAt = now.Add(AgentSessionTTL)
 	return s.storeAgentTokens(ctx, ts)
+}
+
+func (s *Service) refreshWithinGrace(ctx context.Context, ts *store.TokenSession, refresh string) (AgentTokens, error) {
+	claims, err := s.keys.Verify(refresh, s.now())
+	if err != nil {
+		return AgentTokens{}, ErrUnauthenticated
+	}
+	now := s.now()
+	inGrace := ts.SubjectType == store.SubjectUser &&
+		ts.PrevTokenID != "" &&
+		subtle.ConstantTimeCompare([]byte(ts.PrevTokenID), []byte(claims.TokenID)) == 1 &&
+		now.Before(ts.RotatedAt.Add(RefreshGrace)) &&
+		now.Before(ts.ExpiresAt)
+	if inGrace {
+		first, err := s.sessions.ClaimOnce(ctx, refreshGraceKey+ts.ID+":"+claims.TokenID, RefreshGrace)
+		if err != nil {
+			return AgentTokens{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+		if first {
+			return s.signAgentTokens(ts)
+		}
+	}
+	if err := s.RevokeSession(ctx, ts.ID); err != nil {
+		return AgentTokens{}, err
+	}
+	return AgentTokens{}, ErrRefreshReused
+}
+
+func nextTokenID(sessionID, tokenID string) string {
+	sum := sha256.Sum256([]byte(sessionID + "|" + tokenID))
+	return "tid_" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:15]))
 }
 
 func (s *Service) RevokeToken(ctx context.Context, raw string) error {
@@ -334,6 +366,17 @@ func (s *Service) RevokeToken(ctx context.Context, raw string) error {
 }
 
 func (s *Service) storeAgentTokens(ctx context.Context, ts *store.TokenSession) (AgentTokens, error) {
+	tokens, err := s.signAgentTokens(ts)
+	if err != nil {
+		return AgentTokens{}, err
+	}
+	if err := s.sessions.PutTokenSession(ctx, ts); err != nil {
+		return AgentTokens{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return tokens, nil
+}
+
+func (s *Service) signAgentTokens(ts *store.TokenSession) (AgentTokens, error) {
 	now := s.now()
 	accessExp := now.Add(AgentAccessTTL)
 	if accessExp.After(ts.ExpiresAt) {
@@ -346,9 +389,6 @@ func (s *Service) storeAgentTokens(ctx context.Context, ts *store.TokenSession) 
 	refresh, err := s.signUntil(ts, token.TypeRefresh, ts.ExpiresAt)
 	if err != nil {
 		return AgentTokens{}, err
-	}
-	if err := s.sessions.PutTokenSession(ctx, ts); err != nil {
-		return AgentTokens{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return AgentTokens{AccessToken: access, RefreshToken: refresh, ExpiresIn: accessExp.Sub(now).Round(time.Second), Session: ts}, nil
 }

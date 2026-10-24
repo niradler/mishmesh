@@ -41,12 +41,13 @@ func RunSessionStore(t *testing.T, open func(t *testing.T) store.SessionStore) {
 		ctx := context.Background()
 		ts := sampleSession("tsn_r", "org_1", "sa_1")
 		_ = s.PutTokenSession(ctx, ts)
-		ts.TokenID = "tid_new"
+		rotatedAt := time.Now().UTC().Truncate(time.Second)
+		ts.PrevTokenID, ts.TokenID, ts.RotatedAt = ts.TokenID, "tid_new", rotatedAt
 		if err := s.PutTokenSession(ctx, ts); err != nil {
 			t.Fatal(err)
 		}
 		got, err := s.GetTokenSession(ctx, ts.ID)
-		if err != nil || got.TokenID != "tid_new" {
+		if err != nil || got.TokenID != "tid_new" || got.PrevTokenID != ts.PrevTokenID || !got.RotatedAt.Equal(rotatedAt) {
 			t.Fatalf("got %+v err %v", got, err)
 		}
 	})

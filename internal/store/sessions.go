@@ -23,6 +23,8 @@ type TokenSession struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 	EndpointID  string    `json:"endpoint_id,omitempty"`
 	AgentID     string    `json:"agent_id,omitempty"`
+	PrevTokenID string    `json:"prev_tid,omitempty"`
+	RotatedAt   time.Time `json:"rotated_at,omitzero"`
 }
 
 type SessionStore interface {

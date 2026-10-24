@@ -186,7 +186,8 @@ func TestAgentUserRefreshRotatesAndRevokes(t *testing.T) {
 }
 
 func TestAgentUserRefreshReuseRevokesSession(t *testing.T) {
-	s := newClockedService(t, time.Now)
+	now := time.Unix(1_800_000_000, 0)
+	s := newClockedService(t, func() time.Time { return now })
 	ctx := context.Background()
 	var revoked []Revocation
 	s.Subscribe(func(r Revocation) { revoked = append(revoked, r) })
@@ -198,6 +199,7 @@ func TestAgentUserRefreshReuseRevokesSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now = now.Add(RefreshGrace)
 	if _, err := s.RefreshAgentUser(ctx, first.RefreshToken); !errors.Is(err, ErrRefreshReused) || !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("reused refresh = %v, want ErrRefreshReused", err)
 	}
@@ -229,4 +231,88 @@ func TestStaleAccessTokenDoesNotRevokeSession(t *testing.T) {
 	if _, err := s.Authenticate(ctx, second.AccessToken, token.TypeAgentUser); err != nil {
 		t.Fatalf("stale access token must not revoke the session: %v", err)
 	}
+}
+
+func TestAgentUserRefreshGraceWindow(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ctx := context.Background()
+	login := AgentLogin{OrgID: "org_1", UserID: "usr_1", AuthMethod: authz.AuthMethodPassword}
+
+	t.Run("a retried refresh inside the window gets the current tokens once", func(t *testing.T) {
+		s := newClockedService(t, func() time.Time { return now })
+		first, err := s.IssueAgentUser(ctx, login)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := s.RefreshAgentUser(ctx, first.RefreshToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		retried, err := s.RefreshAgentUser(ctx, first.RefreshToken)
+		if err != nil {
+			t.Fatalf("retry inside the grace window = %v", err)
+		}
+		if retried.Session.TokenID != second.Session.TokenID {
+			t.Fatal("grace retry must return the current generation, not rotate again")
+		}
+		for _, tok := range []string{second.AccessToken, retried.AccessToken} {
+			if _, err := s.Authenticate(ctx, tok, token.TypeAgentUser); err != nil {
+				t.Fatalf("access after grace retry = %v", err)
+			}
+		}
+		if _, err := s.RefreshAgentUser(ctx, first.RefreshToken); !errors.Is(err, ErrRefreshReused) {
+			t.Fatalf("second replay inside the window = %v, want ErrRefreshReused", err)
+		}
+		if _, err := s.Authenticate(ctx, second.AccessToken, token.TypeAgentUser); !errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("session survived a second replay: %v", err)
+		}
+	})
+
+	t.Run("a token two generations old is reuse even inside the window", func(t *testing.T) {
+		s := newClockedService(t, func() time.Time { return now })
+		first, err := s.IssueAgentUser(ctx, login)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := s.RefreshAgentUser(ctx, first.RefreshToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RefreshAgentUser(ctx, second.RefreshToken); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RefreshAgentUser(ctx, first.RefreshToken); !errors.Is(err, ErrRefreshReused) {
+			t.Fatalf("grandparent refresh = %v, want ErrRefreshReused", err)
+		}
+	})
+
+	t.Run("concurrent refreshes of the same token derive the same generation", func(t *testing.T) {
+		s := newClockedService(t, func() time.Time { return now })
+		first, err := s.IssueAgentUser(ctx, login)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if nextTokenID(first.Session.ID, first.Session.TokenID) != nextTokenID(first.Session.ID, first.Session.TokenID) {
+			t.Fatal("next token id must be deterministic")
+		}
+		if nextTokenID(first.Session.ID, first.Session.TokenID) == nextTokenID("tsn_other", first.Session.TokenID) {
+			t.Fatal("next token id must be bound to the session")
+		}
+		results := make(chan error, 2)
+		for range cap(results) {
+			go func() {
+				_, err := s.RefreshAgentUser(ctx, first.RefreshToken)
+				results <- err
+			}()
+		}
+		for range cap(results) {
+			if err := <-results; err != nil {
+				t.Fatalf("one of two concurrent refreshes failed: %v", err)
+			}
+		}
+		active, err := s.SessionActive(ctx, first.Session.ID)
+		if err != nil || !active {
+			t.Fatalf("session after two concurrent refreshes active=%v err=%v", active, err)
+		}
+	})
 }
