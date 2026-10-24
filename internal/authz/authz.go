@@ -1,7 +1,9 @@
 package authz
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"sort"
@@ -110,16 +112,17 @@ func dedupeSorted(actions []Action) []Action {
 
 type Authorizer struct {
 	policies *cedar.PolicySet
+	version  string
+	owner    string
+	scopes   map[Action]CacheScope
 }
 
 func DefaultPolicySource() []byte {
-	src := make([]byte, len(defaultPolicy))
-	copy(src, defaultPolicy)
-	return src
+	return appendDataPlane(defaultPolicy)
 }
 
 func Default() *Authorizer {
-	az, err := New(defaultPolicy)
+	az, err := New(DefaultPolicySource())
 	if err != nil {
 		panic("authz: embedded default policy invalid: " + err.Error())
 	}
@@ -131,7 +134,13 @@ func New(policySrc []byte) (*Authorizer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse cedar policy: %w", err)
 	}
-	return &Authorizer{policies: ps}, nil
+	sum := sha256.Sum256(policySrc)
+	return &Authorizer{
+		policies: ps,
+		version:  hex.EncodeToString(sum[:]),
+		owner:    OwnerDefault,
+		scopes:   computeScopes(ps),
+	}, nil
 }
 
 func (a *Authorizer) Authorize(p Principal, action Action) bool {
