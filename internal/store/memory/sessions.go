@@ -31,6 +31,10 @@ func NewSessionStore() *SessionStore {
 	return newSessionStore(time.Now)
 }
 
+func NewSessionStoreWithClock(now func() time.Time) *SessionStore {
+	return newSessionStore(now)
+}
+
 func newSessionStore(now func() time.Time) *SessionStore {
 	return &SessionStore{
 		now:       now,

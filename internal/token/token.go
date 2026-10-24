@@ -27,6 +27,7 @@ const (
 	TypeAccess    Type = "access"
 	TypeSession   Type = "session"
 	TypeAgentUser Type = "agent_user"
+	TypeRefresh   Type = "refresh"
 )
 
 var (

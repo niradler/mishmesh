@@ -189,9 +189,17 @@ func serve() error {
 	if udpIngress != nil {
 		gwOpts.UDPPorts = udpIngress
 	}
-	gwOpts.Connect = bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Meter: mx})
+	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
+	idSvc, err := newIdentityService(cfg, conns)
+	if err != nil {
+		return err
+	}
+	cp.SetIdentity(idSvc)
+	gwOpts.Users = idSvc
+	gwOpts.Connect = bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Meter: mx, Deciders: cp, Revocations: idSvc})
 	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)
 	gw := gateway.New(gwOpts)
+	cp.SetDecisionFlusher(gw.FlushAll)
 	if swept, err := gw.SweepOrphanedEphemeral(context.Background()); err != nil {
 		log.Warn("sweep of orphaned ephemeral endpoints failed", "err", err)
 	} else if swept > 0 {
@@ -200,7 +208,6 @@ func serve() error {
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
-	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
 	cp.SetPublicConfig(cfg.BaseDomain, cfg.PublicScheme)
 	cp.SetPathRouting(cfg.PathRouting)
 	cp.SetTLSPublicPort(cfg.TLSPassthroughPublicPort)
@@ -215,11 +222,6 @@ func serve() error {
 		MaxBandwidthBytes: cfg.QuotaMaxBandwidthBytes,
 	})
 	cp.SetReachInEnabled(cfg.ReachInEnabled)
-	idSvc, err := newIdentityService(cfg, conns)
-	if err != nil {
-		return err
-	}
-	cp.SetIdentity(idSvc)
 	cp.SetAPIPublicURL(cfg.APIPublicURL)
 	cp.SetDomainVerification(cfg.DomainVerification, nil)
 	cp.ConfigureAuth(controlplane.AuthOptions{

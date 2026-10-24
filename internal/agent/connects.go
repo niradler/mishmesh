@@ -102,6 +102,9 @@ func (a *Agent) acceptConnect(ln net.Listener, spec ConnectSpec) {
 }
 
 func (a *Agent) openConnect(spec ConnectSpec) (net.Conn, error) {
+	if err := a.dec.check(context.Background(), spec.Endpoint, spec.Kind); err != nil {
+		return nil, err
+	}
 	sess := a.sess.Load()
 	if sess == nil {
 		return nil, errNotConnected

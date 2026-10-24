@@ -32,6 +32,7 @@ var unknownClientHash = store.HashToken("mishmesh-unknown-client")
 func (a *API) registerOAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /oauth2/token", a.oauthTokenHandler)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", a.oauthMetadataHandler)
+	a.registerAgentOAuthRoutes(mux)
 }
 
 func writeOAuthError(w http.ResponseWriter, status int, code, description string) {
@@ -170,8 +171,13 @@ func (a *API) issueServiceAccountToken(w http.ResponseWriter, r *http.Request, s
 	writeTokenResponse(w, issued, nil)
 }
 
-func (a *API) extendedGrant(w http.ResponseWriter, _ *http.Request) {
-	writeOAuthError(w, http.StatusBadRequest, oauthUnsupportedGrantType, "")
+func (a *API) extendedGrant(w http.ResponseWriter, r *http.Request) {
+	switch r.PostForm.Get("grant_type") {
+	case grantAuthorizationCode, grantDeviceCode, grantRefreshToken:
+		a.agentGrant(w, r)
+	default:
+		writeOAuthError(w, http.StatusBadRequest, oauthUnsupportedGrantType, "")
+	}
 }
 
 func (a *API) oauthMetadataHandler(w http.ResponseWriter, _ *http.Request) {
@@ -183,13 +189,21 @@ func (a *API) oauthMetadataHandler(w http.ResponseWriter, _ *http.Request) {
 		"issuer":                                a.apiPublicURL,
 		"token_endpoint":                        a.apiPublicURL + "/oauth2/token",
 		"grant_types_supported":                 a.supportedGrants(),
-		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post"},
-		"response_types_supported":              []string{},
+		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
+		"authorization_endpoint":                a.apiPublicURL + "/oauth2/authorize",
+		"device_authorization_endpoint":         a.apiPublicURL + "/oauth2/device_authorization",
+		"revocation_endpoint":                   a.apiPublicURL + "/oauth2/revoke",
+		"response_types_supported":              []string{"code"},
+		"code_challenge_methods_supported":      []string{"S256"},
 	})
 }
 
 func (a *API) supportedGrants() []string {
-	return []string{grantClientCredentials}
+	grants := []string{grantClientCredentials}
+	if a.authEnabled() {
+		grants = append(grants, grantAuthorizationCode, grantDeviceCode, grantRefreshToken)
+	}
+	return grants
 }
 
 func (a *API) auditAs(r *http.Request, orgID, actor, action, target, detail string) {

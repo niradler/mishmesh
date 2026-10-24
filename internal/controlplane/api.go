@@ -47,6 +47,7 @@ type API struct {
 	servicesMu         sync.Mutex
 	serviceRegistry    *services.Registry
 	invalidateIngress  func()
+	decisionFlush      func()
 	endpointHealth     HealthSource
 	connections        ConnectionControl
 	connectionRegistry *connections.Registry
@@ -144,6 +145,15 @@ func (a *API) invalidateAuthz(orgID string) {
 	a.authzMu.Lock()
 	delete(a.authzCache, orgID)
 	a.authzMu.Unlock()
+	a.flushDecisions()
+}
+
+func (a *API) SetDecisionFlusher(flush func()) { a.decisionFlush = flush }
+
+func (a *API) flushDecisions() {
+	if a.decisionFlush != nil {
+		a.decisionFlush()
+	}
 }
 
 type ctxKey int
