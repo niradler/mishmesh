@@ -208,7 +208,17 @@ func serve() error {
 	gwOpts.Egress = egress.New(egress.Options{Conns: conns, Log: log, Meter: mx, Deciders: cp, Dialer: proxyGuard, Access: accessLog, Revocations: idSvc, Auth: idSvc, Agents: data})
 	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)
 	gw := gateway.New(gwOpts)
-	cp.SetDecisionFlusher(gw.FlushAll)
+	idSvc.OnFlush(cp.ClearAuthzCache)
+	idSvc.OnFlush(gw.FlushAll)
+	cp.SetDecisionFlusher(idSvc.FlushAll)
+	if bus, ok := conns.(store.EventBus); ok {
+		stopBus, err := idSvc.AttachBus(bus, log)
+		if err != nil {
+			return err
+		}
+		defer stopBus()
+		log.Info("revocations and decision flushes shared across nodes")
+	}
 	if swept, err := gw.SweepOrphanedEphemeral(context.Background()); err != nil {
 		log.Warn("sweep of orphaned ephemeral endpoints failed", "err", err)
 	} else if swept > 0 {

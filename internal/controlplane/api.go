@@ -145,6 +145,12 @@ type authzEntry struct {
 	expires time.Time
 }
 
+func (a *API) ClearAuthzCache() {
+	a.authzMu.Lock()
+	clear(a.authzCache)
+	a.authzMu.Unlock()
+}
+
 func (a *API) invalidateAuthz(orgID string) {
 	a.authzMu.Lock()
 	delete(a.authzCache, orgID)

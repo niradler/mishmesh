@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"time"
@@ -75,13 +76,25 @@ type Service struct {
 	sessions store.SessionStore
 	now      func() time.Time
 
+	origin string
+
 	mu          sync.Mutex
 	subscribers map[int]func(Revocation)
+	flushers    map[int]func()
 	nextSub     int
+	bus         store.EventBus
+	busLog      *slog.Logger
 }
 
 func New(keys *token.Keyring, sessions store.SessionStore) *Service {
-	return &Service{keys: keys, sessions: sessions, now: time.Now, subscribers: make(map[int]func(Revocation))}
+	return &Service{
+		keys:        keys,
+		sessions:    sessions,
+		now:         time.Now,
+		origin:      store.NewID("node"),
+		subscribers: make(map[int]func(Revocation)),
+		flushers:    make(map[int]func()),
+	}
 }
 
 func (s *Service) SetClock(now func() time.Time) { s.now = now }
@@ -302,6 +315,11 @@ func (s *Service) Subscribe(fn func(Revocation)) func() {
 }
 
 func (s *Service) publish(rev Revocation) {
+	s.deliver(rev)
+	s.broadcastRevocation(rev)
+}
+
+func (s *Service) deliver(rev Revocation) {
 	s.mu.Lock()
 	subs := make([]func(Revocation), 0, len(s.subscribers))
 	for _, fn := range s.subscribers {
