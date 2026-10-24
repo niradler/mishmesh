@@ -255,6 +255,10 @@ func TestPolicyPath(t *testing.T) {
 		"relative":       false,
 		"/a\\b":          false,
 		"":               false,
+		"//admin":        false,
+		"/api//admin":    false,
+		"/admin;x=1":     false,
+		"/a/b/":          true,
 	} {
 		if got := policyPath(path); got != want {
 			t.Errorf("policyPath(%q) = %v, want %v", path, got, want)

@@ -174,7 +174,7 @@ permit (principal, action == Action::"egress:request", resource) when { resource
 `, api.port(), untrusted.port(), plain.port()))
 	owner.putSecret("api-secret", "s1")
 	owner.mustJSON(http.MethodPut, "/api/v1/egress/credentials/api-key", map[string]any{
-		"header": "Authorization", "prefix": "Bearer ", "secret": "api-secret", "agent_ids": []string{scopedID},
+		"header": "Authorization", "prefix": "Bearer ", "secret": "api-secret", "agent_ids": []string{scopedID}, "destinations": []string{"127.0.0.1"},
 	}, http.StatusOK, nil)
 
 	runOriginAgent := func(token string) (proxyAddr, apiListen, untrustedListen string) {

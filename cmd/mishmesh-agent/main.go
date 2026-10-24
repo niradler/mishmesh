@@ -39,6 +39,8 @@ func main() {
 		err = oneShotCmd(args[0], args[1:])
 	case "service":
 		err = serviceCmd(args[1:], os.Stdout)
+	case "ca":
+		err = caCmd(args[1:], os.Stdout)
 	case "version", "-version", "--version":
 		fmt.Println("mishmesh-agent", version)
 	case "help", "-h", "-help", "--help":
@@ -117,6 +119,7 @@ func usage(w io.Writer) {
   mishmesh-agent udp  <port|host:port> [--port N] [--reserved]
   mishmesh-agent tls  <port|host:port> --subdomain x | --domain d
   mishmesh-agent service install|uninstall|start|stop|status [--config path] [--user u] [--dry-run]
+  mishmesh-agent ca [--config path] [--gateway url] [--token t]   print the org egress CA to trust for decryption
   mishmesh-agent version
 
 config search order: ./mishmesh.yml, ~/.config/mishmesh/agent.yml, /etc/mishmesh/agent.yml

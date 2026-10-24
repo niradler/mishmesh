@@ -9,13 +9,14 @@ import (
 )
 
 type egressCredentialDTO struct {
-	Name      string    `json:"name"`
-	Header    string    `json:"header"`
-	Prefix    string    `json:"prefix,omitempty"`
-	Secret    string    `json:"secret"`
-	AgentIDs  []string  `json:"agent_ids"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Name         string    `json:"name"`
+	Header       string    `json:"header"`
+	Prefix       string    `json:"prefix,omitempty"`
+	Secret       string    `json:"secret"`
+	AgentIDs     []string  `json:"agent_ids"`
+	Destinations []string  `json:"destinations"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func toEgressCredentialDTO(c *store.EgressCredential) egressCredentialDTO {
@@ -23,7 +24,11 @@ func toEgressCredentialDTO(c *store.EgressCredential) egressCredentialDTO {
 	if agents == nil {
 		agents = []string{}
 	}
-	return egressCredentialDTO{Name: c.Name, Header: c.Header, Prefix: c.Prefix, Secret: c.Secret, AgentIDs: agents, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
+	destinations := c.Destinations
+	if destinations == nil {
+		destinations = []string{}
+	}
+	return egressCredentialDTO{Name: c.Name, Header: c.Header, Prefix: c.Prefix, Secret: c.Secret, AgentIDs: agents, Destinations: destinations, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
 }
 
 func (a *API) listEgressCredentialsHandler(w http.ResponseWriter, r *http.Request) {
@@ -48,23 +53,25 @@ func (a *API) getEgressCredentialHandler(w http.ResponseWriter, r *http.Request)
 
 func (a *API) putEgressCredentialHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Header   string   `json:"header"`
-		Prefix   string   `json:"prefix"`
-		Secret   string   `json:"secret"`
-		AgentIDs []string `json:"agent_ids"`
+		Header       string   `json:"header"`
+		Prefix       string   `json:"prefix"`
+		Secret       string   `json:"secret"`
+		AgentIDs     []string `json:"agent_ids"`
+		Destinations []string `json:"destinations"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	orgID := a.orgScope(r)
 	c := &store.EgressCredential{
-		OrgID:     orgID,
-		Name:      r.PathValue("name"),
-		Header:    req.Header,
-		Prefix:    req.Prefix,
-		Secret:    req.Secret,
-		AgentIDs:  dedupe(req.AgentIDs),
-		UpdatedAt: a.now().UTC(),
+		OrgID:        orgID,
+		Name:         r.PathValue("name"),
+		Header:       req.Header,
+		Prefix:       req.Prefix,
+		Secret:       req.Secret,
+		AgentIDs:     dedupe(req.AgentIDs),
+		Destinations: req.Destinations,
+		UpdatedAt:    a.now().UTC(),
 	}
 	if err := c.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

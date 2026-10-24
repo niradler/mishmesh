@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"strconv"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
@@ -16,6 +17,8 @@ import (
 const (
 	ReasonCredentialUnavailable = "credential_unavailable"
 	ReasonCredentialRequiresTLS = "credential_requires_tls"
+	ReasonCredentialDestination = "credential_destination_refused"
+	ReasonCredentialMethod      = "credential_method_refused"
 )
 
 type Credentials interface {
@@ -66,7 +69,10 @@ func (h *Handler) DecideRequest(ctx context.Context, agent *store.Agent, q tunne
 	if !hq.TLS {
 		return tunnel.DecisionAnswer{Reason: ReasonCredentialRequiresTLS}
 	}
-	cred, reason := h.releaseCredential(ctx, agent, name, q.SealTo)
+	if hq.Method == http.MethodTrace {
+		return tunnel.DecisionAnswer{Reason: ReasonCredentialMethod}
+	}
+	cred, reason := h.releaseCredential(ctx, agent, name, hq.Host, q.SealTo)
 	if cred == nil {
 		return tunnel.DecisionAnswer{Reason: reason}
 	}
@@ -118,7 +124,7 @@ func (h *Handler) decideRequest(ctx context.Context, agent *store.Agent, p ident
 	return d, true
 }
 
-func (h *Handler) releaseCredential(ctx context.Context, agent *store.Agent, name string, sealTo []byte) (*tunnel.SealedCredential, string) {
+func (h *Handler) releaseCredential(ctx context.Context, agent *store.Agent, name, host string, sealTo []byte) (*tunnel.SealedCredential, string) {
 	if h.credentials == nil || h.secrets == nil || len(sealTo) != credseal.PublicKeySize {
 		return nil, ReasonCredentialUnavailable
 	}
@@ -133,6 +139,10 @@ func (h *Handler) releaseCredential(ctx context.Context, agent *store.Agent, nam
 	if cred.OrgID != agent.OrgID || !cred.DeliversTo(agent.ID) {
 		h.log.Warn("egress credential not scoped to agent", "org_id", agent.OrgID, "agent_id", agent.ID, "credential", name)
 		return nil, ReasonCredentialUnavailable
+	}
+	if !cred.ReleasableTo(host) {
+		h.log.Warn("egress credential refused for destination", "org_id", agent.OrgID, "agent_id", agent.ID, "credential", name, "host", host)
+		return nil, ReasonCredentialDestination
 	}
 	secret, err := h.secrets.Open(ctx, agent.OrgID, cred.Secret)
 	if err != nil {

@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	AgentConnectPath = "/_mishmesh/agent/connect"
-	UserTokenHeader  = "X-Mishmesh-User"
+	AgentConnectPath  = "/_mishmesh/agent/connect"
+	AgentEgressCAPath = "/_mishmesh/agent/egress-ca"
+	UserTokenHeader   = "X-Mishmesh-User"
 )
 
 type DialOptions struct {

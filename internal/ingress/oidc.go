@@ -3,7 +3,6 @@ package ingress
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -18,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+
 	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/safehttp"
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -30,6 +31,7 @@ const (
 	oidcStateTTL      = 10 * time.Minute
 	oidcSessionTTL    = 12 * time.Hour
 	jwksTTL           = time.Hour
+	jwksRefreshMin    = time.Minute
 
 	tokenPurposeState = "state"
 )
@@ -43,14 +45,21 @@ type oidcGate struct {
 	log           *slog.Logger
 	httpClient    *http.Client
 	mu            sync.Mutex
-	providers     map[string]*oidcProvider
+	providers     map[string]*oidcIssuer
+}
+
+type oidcIssuer struct {
+	mu          sync.Mutex
+	prov        *oidcProvider
+	lastRefresh time.Time
 }
 
 type oidcProvider struct {
+	Issuer                string `json:"issuer"`
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
 	JWKSURI               string `json:"jwks_uri"`
-	keys                  map[string]*rsa.PublicKey
+	keys                  *jose.JSONWebKeySet
 	keysAt                time.Time
 }
 
@@ -66,7 +75,7 @@ func newOIDCGate(data store.DataStore, signKey []byte, sessions *identity.Servic
 		allowLoopback: allowLoopback,
 		log:           log,
 		httpClient:    safehttp.Client(allowLoopback, allowPrivate),
-		providers:     make(map[string]*oidcProvider),
+		providers:     make(map[string]*oidcIssuer),
 	}
 }
 
@@ -92,7 +101,7 @@ func (g *oidcGate) authenticate(w http.ResponseWriter, r *http.Request, ep *stor
 }
 
 func (g *oidcGate) startAuth(w http.ResponseWriter, r *http.Request, ep *store.Endpoint) {
-	prov, err := g.provider(r.Context(), ep.Policy.OIDC.Issuer)
+	prov, err := g.provider(r.Context(), ep.Policy.OIDC.Issuer, false)
 	if err != nil {
 		g.log.Warn("oidc discovery failed", "issuer", ep.Policy.OIDC.Issuer, "err", err)
 		http.Error(w, "oidc provider unavailable", http.StatusBadGateway)
@@ -117,6 +126,7 @@ func (g *oidcGate) startAuth(w http.ResponseWriter, r *http.Request, ep *store.E
 	q.Set("response_type", "code")
 	q.Set("scope", "openid email profile")
 	q.Set("state", state)
+	q.Set("nonce", idTokenNonce(nonce))
 	http.Redirect(w, r, prov.AuthorizationEndpoint+"?"+q.Encode(), http.StatusFound)
 }
 
@@ -139,7 +149,7 @@ func (g *oidcGate) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := ep.Policy.OIDC
-	prov, err := g.provider(r.Context(), cfg.Issuer)
+	prov, err := g.provider(r.Context(), cfg.Issuer, false)
 	if err != nil {
 		http.Error(w, "oidc provider unavailable", http.StatusBadGateway)
 		return
@@ -150,7 +160,12 @@ func (g *oidcGate) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "oidc exchange failed", http.StatusUnauthorized)
 		return
 	}
-	claims, err := verifyIDToken(rawID, prov.keys, cfg.Issuer, cfg.ClientID, time.Now())
+	claims, err := verifyIDToken(rawID, prov.keys, prov.Issuer, cfg.ClientID, idTokenNonce(state.Nonce), time.Now())
+	if errors.Is(err, errUnknownKeyID) {
+		if prov, err = g.provider(r.Context(), cfg.Issuer, true); err == nil {
+			claims, err = verifyIDToken(rawID, prov.keys, prov.Issuer, cfg.ClientID, idTokenNonce(state.Nonce), time.Now())
+		}
+	}
 	if err != nil {
 		g.log.Warn("oidc id token invalid", "err", err)
 		http.Error(w, "oidc token invalid", http.StatusUnauthorized)
@@ -202,10 +217,13 @@ func (g *oidcGate) exchangeCode(ctx context.Context, prov *oidcProvider, cfg *st
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("token endpoint status %d", resp.StatusCode)
+	}
 	var tok struct {
 		IDToken string `json:"id_token"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+	if err := decodeLimitedJSON(resp, &tok); err != nil {
 		return "", err
 	}
 	if tok.IDToken == "" {
@@ -214,7 +232,7 @@ func (g *oidcGate) exchangeCode(ctx context.Context, prov *oidcProvider, cfg *st
 	return tok.IDToken, nil
 }
 
-func (g *oidcGate) provider(ctx context.Context, issuer string) (*oidcProvider, error) {
+func (g *oidcGate) provider(ctx context.Context, issuer string, unknownKey bool) (*oidcProvider, error) {
 	issuer = strings.TrimRight(issuer, "/")
 	if issuer == "" {
 		return nil, errors.New("empty issuer")
@@ -223,9 +241,21 @@ func (g *oidcGate) provider(ctx context.Context, issuer string) (*oidcProvider, 
 		return nil, errors.New("oidc issuer must use https")
 	}
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if p, ok := g.providers[issuer]; ok && time.Since(p.keysAt) < jwksTTL {
+	entry, ok := g.providers[issuer]
+	if !ok {
+		entry = &oidcIssuer{}
+		g.providers[issuer] = entry
+	}
+	g.mu.Unlock()
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	now := time.Now()
+	if p := entry.prov; p != nil && now.Sub(p.keysAt) < jwksTTL && (!unknownKey || now.Sub(entry.lastRefresh) < jwksRefreshMin) {
 		return p, nil
+	}
+	if unknownKey {
+		entry.lastRefresh = now
 	}
 	disc, err := fetchJSON[oidcProvider](ctx, g.httpClient, issuer+"/.well-known/openid-configuration")
 	if err != nil {
@@ -234,14 +264,22 @@ func (g *oidcGate) provider(ctx context.Context, issuer string) (*oidcProvider, 
 	if disc.AuthorizationEndpoint == "" || disc.TokenEndpoint == "" || disc.JWKSURI == "" {
 		return nil, errors.New("incomplete discovery document")
 	}
+	if strings.TrimRight(disc.Issuer, "/") != issuer {
+		return nil, fmt.Errorf("discovery issuer %q does not match the configured issuer", disc.Issuer)
+	}
 	keys, err := fetchJWKS(ctx, g.httpClient, disc.JWKSURI)
 	if err != nil {
 		return nil, fmt.Errorf("jwks: %w", err)
 	}
 	disc.keys = keys
-	disc.keysAt = time.Now()
-	g.providers[issuer] = disc
+	disc.keysAt = now
+	entry.prov = disc
 	return disc, nil
+}
+
+func idTokenNonce(stateNonce string) string {
+	sum := sha256.Sum256([]byte("mishmesh-oidc-nonce:" + stateNonce))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 type stateClaims struct {

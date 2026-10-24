@@ -92,12 +92,16 @@ type remoteDecider struct {
 	scopeKnown bool
 	nextID     uint64
 	pending    map[uint64]chan tunnel.DecisionAnswer
+	certs      map[uint64]chan tunnel.CertResponse
 	cache      map[decisionKey]cachedDecision
 	onFlush    func()
 }
 
 func newRemoteDecider(now func() time.Time) *remoteDecider {
-	return &remoteDecider{now: now, pending: map[uint64]chan tunnel.DecisionAnswer{}, cache: map[decisionKey]cachedDecision{}}
+	return &remoteDecider{
+		now: now, pending: map[uint64]chan tunnel.DecisionAnswer{},
+		certs: map[uint64]chan tunnel.CertResponse{}, cache: map[decisionKey]cachedDecision{},
+	}
 }
 
 func (d *remoteDecider) attach(ctrl *tunnel.Control) uint64 {
@@ -156,6 +160,10 @@ func (d *remoteDecider) resetLocked() {
 		close(ch)
 		delete(d.pending, id)
 	}
+	for id, ch := range d.certs {
+		close(ch)
+		delete(d.certs, id)
+	}
 }
 
 func (d *remoteDecider) deliver(gen uint64, answer tunnel.DecisionAnswer) {
@@ -170,6 +178,61 @@ func (d *remoteDecider) deliver(gen uint64, answer tunnel.DecisionAnswer) {
 	}
 	delete(d.pending, answer.ID)
 	ch <- answer
+}
+
+func (d *remoteDecider) deliverCert(gen uint64, resp tunnel.CertResponse) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.gen != gen {
+		return
+	}
+	ch, ok := d.certs[resp.ID]
+	if !ok {
+		return
+	}
+	delete(d.certs, resp.ID)
+	ch <- resp
+}
+
+func (d *remoteDecider) requestCert(ctx context.Context, gen uint64, csr []byte) (tunnel.CertResponse, error) {
+	d.mu.Lock()
+	if d.ctrl == nil || d.gen != gen {
+		d.mu.Unlock()
+		return tunnel.CertResponse{}, errDecisionLost
+	}
+	if d.binding == (sessionBinding{}) {
+		d.mu.Unlock()
+		return tunnel.CertResponse{}, errSessionUnbound
+	}
+	d.nextID++
+	id, ctrl := d.nextID, d.ctrl
+	ch := make(chan tunnel.CertResponse, 1)
+	d.certs[id] = ch
+	d.mu.Unlock()
+
+	forget := func() {
+		d.mu.Lock()
+		if d.gen == gen {
+			delete(d.certs, id)
+		}
+		d.mu.Unlock()
+	}
+	if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgCertRequest, CertRequest: &tunnel.CertRequest{ID: id, CSR: csr}}); err != nil {
+		forget()
+		return tunnel.CertResponse{}, fmt.Errorf("send cert request: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, decisionTimeout)
+	defer cancel()
+	select {
+	case resp, ok := <-ch:
+		if !ok {
+			return tunnel.CertResponse{}, errDecisionLost
+		}
+		return resp, nil
+	case <-ctx.Done():
+		forget()
+		return tunnel.CertResponse{}, fmt.Errorf("cert request: %w", ctx.Err())
+	}
 }
 
 func (d *remoteDecider) check(ctx context.Context, connect, kind string) error {

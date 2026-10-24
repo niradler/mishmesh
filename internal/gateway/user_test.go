@@ -305,6 +305,10 @@ func (f *fakeCertIssuer) IssueDecryptCert(_ context.Context, _ *store.Agent, csr
 	return f.resp, f.err
 }
 
+func (f *fakeCertIssuer) EgressCA(context.Context, *store.Agent) (tunnel.EgressCA, error) {
+	return tunnel.EgressCA{}, f.err
+}
+
 func TestCertRequestAnswered(t *testing.T) {
 	ok := &fakeCertIssuer{resp: tunnel.CertResponse{ID: 999, Chain: [][]byte{{1}}, Allow: []string{"api.example.com"}}, got: make(chan []byte, 1)}
 	failing := &fakeCertIssuer{err: errors.New("store down: secret detail"), got: make(chan []byte, 1)}
@@ -314,7 +318,7 @@ func TestCertRequestAnswered(t *testing.T) {
 		wantError string
 		wantChain bool
 	}{
-		{"no issuer", nil, "egress decryption is not available on this server", false},
+		{"no issuer means decryption is off", nil, tunnel.CertErrorDecryptDisabled, false},
 		{"issuer error is generic", failing, "certificate issuance unavailable", false},
 		{"issued", ok, "", true},
 	}

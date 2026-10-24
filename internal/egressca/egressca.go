@@ -23,16 +23,17 @@ import (
 )
 
 const (
-	RootValidity         = 10 * 365 * 24 * time.Hour
-	IntermediateValidity = 24 * time.Hour
-	Backdate             = 5 * time.Minute
-	maxCSRBytes          = 4 << 10
-	serialBits           = 128
+	RootValidity              = 10 * 365 * 24 * time.Hour
+	IntermediateValidity      = 4 * time.Hour
+	unreachableNameConstraint = "invalid"
+	Backdate                  = 5 * time.Minute
+	maxCSRBytes               = 4 << 10
+	serialBits                = 128
 )
 
 var (
 	ErrNoBox           = errors.New("egress ca: secret key unavailable")
-	ErrDecryptDisabled = errors.New("egress decryption is not enabled for this org")
+	ErrDecryptDisabled = errors.New(tunnel.CertErrorDecryptDisabled)
 	ErrInvalidCSR      = errors.New("certificate request must be a signed ECDSA P-256 CSR")
 )
 
@@ -44,6 +45,10 @@ type Authority struct {
 
 func New(data store.DataStore, box *secrets.Box) *Authority {
 	return &Authority{data: data, box: box, now: time.Now}
+}
+
+func (a *Authority) SetClock(now func() time.Time) {
+	a.now = now
 }
 
 type Root struct {
@@ -198,6 +203,8 @@ func (a *Authority) Issue(ctx context.Context, orgID, agentID string, csrDER []b
 		PermittedDNSDomains:         permitted,
 		ExcludedDNSDomains:          excluded,
 		ExcludedIPRanges:            allAddresses(),
+		PermittedEmailAddresses:     []string{unreachableNameConstraint},
+		PermittedURIDomains:         []string{unreachableNameConstraint},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, root, pub, rootKey)
 	if err != nil {
@@ -219,6 +226,14 @@ func (a *Authority) IssueDecryptCert(ctx context.Context, agent *store.Agent, cs
 		return tunnel.CertResponse{}, err
 	}
 	return tunnel.CertResponse{Chain: issued.Chain, Allow: issued.Allow, Bypass: issued.Bypass, NotAfter: issued.NotAfter}, nil
+}
+
+func (a *Authority) EgressCA(ctx context.Context, agent *store.Agent) (tunnel.EgressCA, error) {
+	root, err := a.Root(ctx, agent.OrgID)
+	if err != nil {
+		return tunnel.EgressCA{}, err
+	}
+	return tunnel.EgressCA{PEM: string(root.PEM), SHA256: root.SHA256}, nil
 }
 
 func checkCSR(der []byte) (*ecdsa.PublicKey, error) {

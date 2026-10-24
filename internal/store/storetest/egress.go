@@ -28,7 +28,7 @@ func RunEgressCredentials(t *testing.T, open func(t *testing.T) store.DataStore)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	org, other := twoOrgs(t, ds, now)
 
-	first := &store.EgressCredential{OrgID: org, Name: "billing", Header: "Authorization", Prefix: "Bearer ", Secret: "billing-key", AgentIDs: []string{"agt_a"}, UpdatedAt: now}
+	first := &store.EgressCredential{OrgID: org, Name: "billing", Header: "Authorization", Prefix: "Bearer ", Secret: "billing-key", AgentIDs: []string{"agt_a"}, Destinations: []string{"api.billing.test"}, UpdatedAt: now}
 	if err := ds.PutEgressCredential(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func RunEgressCredentials(t *testing.T, open func(t *testing.T) store.DataStore)
 		t.Fatalf("first put = %+v", first)
 	}
 	later := now.Add(time.Minute)
-	second := &store.EgressCredential{OrgID: org, Name: "billing", Header: "X-Api-Key", Secret: "billing-key-2", AgentIDs: []string{"agt_a", "agt_b"}, UpdatedAt: later}
+	second := &store.EgressCredential{OrgID: org, Name: "billing", Header: "X-Api-Key", Secret: "billing-key-2", AgentIDs: []string{"agt_a", "agt_b"}, Destinations: []string{"*.billing.test", "billing.test"}, UpdatedAt: later}
 	if err := ds.PutEgressCredential(ctx, second); err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +48,7 @@ func RunEgressCredentials(t *testing.T, open func(t *testing.T) store.DataStore)
 		t.Fatal(err)
 	}
 	if got.Header != "X-Api-Key" || got.Prefix != "" || got.Secret != "billing-key-2" || !slices.Equal(got.AgentIDs, []string{"agt_a", "agt_b"}) ||
+		!slices.Equal(got.Destinations, []string{"*.billing.test", "billing.test"}) ||
 		!got.CreatedAt.Equal(now) || !got.UpdatedAt.Equal(later) {
 		t.Fatalf("get = %+v", got)
 	}
@@ -56,7 +57,7 @@ func RunEgressCredentials(t *testing.T, open func(t *testing.T) store.DataStore)
 	if err := ds.PutEgressCredential(ctx, empty); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := ds.GetEgressCredential(ctx, org, "audit"); err != nil || got.AgentIDs == nil || len(got.AgentIDs) != 0 {
+	if got, err := ds.GetEgressCredential(ctx, org, "audit"); err != nil || got.AgentIDs == nil || len(got.AgentIDs) != 0 || got.Destinations == nil || len(got.Destinations) != 0 {
 		t.Fatalf("empty agents = %+v, %v", got, err)
 	}
 

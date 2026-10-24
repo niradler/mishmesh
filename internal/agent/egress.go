@@ -214,6 +214,9 @@ func (a *Agent) serveConnect(client net.Conn, br *bufio.Reader, req *http.Reques
 		writeProxyError(client, http.StatusBadRequest, "CONNECT target must be host:port")
 		return
 	}
+	if a.serveDecrypted(client, br, dest, creds) {
+		return
+	}
 	stream, err := a.openEgress(remoteHost(client.RemoteAddr().String()), dest, creds)
 	if err != nil {
 		writeEgressFailure(client, err)

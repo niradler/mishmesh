@@ -42,6 +42,7 @@ type RequestDecider interface {
 
 type CertIssuer interface {
 	IssueDecryptCert(ctx context.Context, agent *store.Agent, csr []byte) (tunnel.CertResponse, error)
+	EgressCA(ctx context.Context, agent *store.Agent) (tunnel.EgressCA, error)
 }
 
 type UserAuthenticator interface {
@@ -51,6 +52,7 @@ type UserAuthenticator interface {
 
 const (
 	maxPendingDecisions = 16
+	maxPendingCerts     = 2
 	maxPendingInits     = 64
 	firstControlTimeout = 30 * time.Second
 )
@@ -147,29 +149,57 @@ func (g *Gateway) revoke(rev identity.Revocation) {
 	}
 }
 
-func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
+func (g *Gateway) authenticateAgent(w http.ResponseWriter, r *http.Request) (*store.Agent, bool) {
 	ctx := r.Context()
 	raw := bearerToken(r)
 	if raw == "" {
 		http.Error(w, "missing bearer token", http.StatusUnauthorized)
-		return
+		return nil, false
 	}
 	tok, err := g.data.GetTokenByHash(ctx, store.HashToken(raw))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
-			return
+			return nil, false
 		}
 		g.unavailable503(w, "token lookup failed", err)
-		return
+		return nil, false
 	}
 	agent, err := g.data.GetAgent(ctx, tok.AgentID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		g.unavailable503(w, "agent lookup failed", err)
-		return
+		return nil, false
 	}
 	if err != nil || agent.Status != store.AgentActive {
 		http.Error(w, "agent not active", http.StatusForbidden)
+		return nil, false
+	}
+	return agent, true
+}
+
+func (g *Gateway) HandleAgentEgressCA(w http.ResponseWriter, r *http.Request) {
+	agent, ok := g.authenticateAgent(w, r)
+	if !ok {
+		return
+	}
+	if g.certs == nil {
+		http.Error(w, "egress decryption is not available on this server", http.StatusServiceUnavailable)
+		return
+	}
+	ca, err := g.certs.EgressCA(r.Context(), agent)
+	if err != nil {
+		g.unavailable503(w, "egress ca lookup failed", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(ca)
+}
+
+func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	agent, ok := g.authenticateAgent(w, r)
+	if !ok {
 		return
 	}
 	user, ok := g.bindUser(w, r, agent)
@@ -309,6 +339,7 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 	ac.setControl(ctrl)
 	go g.acceptConnects(ctx, agent, ac)
 	decisions := make(chan struct{}, maxPendingDecisions)
+	certs := make(chan struct{}, maxPendingCerts)
 	for {
 		msg, err := ctrl.Recv()
 		if err != nil {
@@ -321,7 +352,7 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 			}
 		case tunnel.MsgCertRequest:
 			if msg.CertRequest != nil {
-				g.answerCert(ctx, agent, ctrl, *msg.CertRequest, decisions)
+				g.answerCert(ctx, agent, ctrl, *msg.CertRequest, certs)
 			}
 		case tunnel.MsgRegister:
 			ack := g.handleRegister(ctx, agent, msg.Register)
@@ -399,7 +430,7 @@ func (g *Gateway) answerDecision(ctx context.Context, agent *store.Agent, ctrl *
 
 func (g *Gateway) answerCert(ctx context.Context, agent *store.Agent, ctrl *tunnel.Control, req tunnel.CertRequest, slots chan struct{}) {
 	if g.certs == nil {
-		_ = ctrl.Send(certError(req.ID, "egress decryption is not available on this server"))
+		_ = ctrl.Send(certError(req.ID, tunnel.CertErrorDecryptDisabled))
 		return
 	}
 	select {

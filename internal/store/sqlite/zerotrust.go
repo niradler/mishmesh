@@ -103,6 +103,7 @@ var zeroTrustColumns = []struct{ table, column, decl string }{
 	{"memberships", "disabled_at", "INTEGER"},
 	{"sessions", "auth_method", "TEXT NOT NULL DEFAULT ''"},
 	{"access_log", "exit_agent_id", "TEXT NOT NULL DEFAULT ''"},
+	{"egress_credentials", "destinations", "TEXT NOT NULL DEFAULT '[]'"},
 }
 
 func migrateZeroTrustColumns(ctx context.Context, tx *sql.Tx) error {

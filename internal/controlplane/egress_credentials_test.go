@@ -23,14 +23,16 @@ func TestEgressCredentialsAPI(t *testing.T) {
 	invalid := []struct {
 		name, path, body string
 	}{
-		{"bad name", "/api/v1/egress/credentials/Bad.Name", `{"header":"Authorization","secret":"k","agent_ids":[]}`},
-		{"bad header", "/api/v1/egress/credentials/billing", `{"header":"Bad Header","secret":"k","agent_ids":[]}`},
-		{"reserved header", "/api/v1/egress/credentials/billing", `{"header":"Host","secret":"k","agent_ids":[]}`},
-		{"mishmesh header", "/api/v1/egress/credentials/billing", `{"header":"X-Mishmesh-Agent","secret":"k","agent_ids":[]}`},
-		{"bad secret name", "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"Bad.Secret","agent_ids":[]}`},
-		{"newline prefix", "/api/v1/egress/credentials/billing", `{"header":"Authorization","prefix":"a\nb","secret":"k","agent_ids":[]}`},
-		{"unknown agent", "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","agent_ids":["ag_missing"]}`},
-		{"foreign agent", "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","agent_ids":["` + bobAgent.Agent.ID + `"]}`},
+		{"bad name", "/api/v1/egress/credentials/Bad.Name", `{"header":"Authorization","secret":"k","agent_ids":[],"destinations":["api.billing.test"]}`},
+		{"bad header", "/api/v1/egress/credentials/billing", `{"header":"Bad Header","secret":"k","agent_ids":[],"destinations":["api.billing.test"]}`},
+		{"reserved header", "/api/v1/egress/credentials/billing", `{"header":"Host","secret":"k","agent_ids":[],"destinations":["api.billing.test"]}`},
+		{"mishmesh header", "/api/v1/egress/credentials/billing", `{"header":"X-Mishmesh-Agent","secret":"k","agent_ids":[],"destinations":["api.billing.test"]}`},
+		{"bad secret name", "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"Bad.Secret","agent_ids":[],"destinations":["api.billing.test"]}`},
+		{"newline prefix", "/api/v1/egress/credentials/billing", `{"header":"Authorization","prefix":"a\nb","secret":"k","agent_ids":[],"destinations":["api.billing.test"]}`},
+		{"unknown agent", "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","agent_ids":["ag_missing"],"destinations":["api.billing.test"]}`},
+		{"no destinations", "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","agent_ids":[]}`},
+		{"cidr destination", "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","agent_ids":[],"destinations":["10.0.0.0/8"]}`},
+		{"foreign agent", "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","agent_ids":["` + bobAgent.Agent.ID + `"],"destinations":["api.billing.test"]}`},
 		{"unknown field", "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","value":"leak"}`},
 	}
 	for _, tc := range invalid {
@@ -46,8 +48,8 @@ func TestEgressCredentialsAPI(t *testing.T) {
 
 	var cred egressCredentialDTO
 	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/egress/credentials/billing",
-		`{"header":"Authorization","prefix":"Bearer ","secret":"billing-key","agent_ids":["`+f.agentA+`","`+f.agentA+`"]}`, http.StatusOK, &cred)
-	if cred.Name != "billing" || cred.Header != "Authorization" || !slices.Equal(cred.AgentIDs, []string{f.agentA}) || cred.CreatedAt.IsZero() {
+		`{"header":"Authorization","prefix":"Bearer ","secret":"billing-key","agent_ids":["`+f.agentA+`","`+f.agentA+`"],"destinations":["API.billing.test","*.billing.test"]}`, http.StatusOK, &cred)
+	if cred.Name != "billing" || cred.Header != "Authorization" || !slices.Equal(cred.AgentIDs, []string{f.agentA}) || !slices.Equal(cred.Destinations, []string{"*.billing.test", "api.billing.test"}) || cred.CreatedAt.IsZero() {
 		t.Fatalf("put = %+v", cred)
 	}
 	if !slices.Equal(flushed, []string{f.orgA}) {
@@ -91,7 +93,7 @@ func TestEgressCredentialsRequirePolicyWrite(t *testing.T) {
 	srv := newAuthAPI(t)
 	owner := registerClient(t, srv, "owner@example.com", "owner")
 	member := inviteAndRegister(t, srv, owner, "member@example.com", "member")
-	doc(t, member, srv, http.MethodPut, "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","agent_ids":[]}`, http.StatusForbidden, nil)
+	doc(t, member, srv, http.MethodPut, "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","agent_ids":[],"destinations":["api.billing.test"]}`, http.StatusForbidden, nil)
 	doc(t, member, srv, http.MethodDelete, "/api/v1/egress/credentials/billing", "", http.StatusForbidden, nil)
-	doc(t, owner, srv, http.MethodPut, "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","agent_ids":[]}`, http.StatusOK, nil)
+	doc(t, owner, srv, http.MethodPut, "/api/v1/egress/credentials/billing", `{"header":"Authorization","secret":"k","agent_ids":[],"destinations":["api.billing.test"]}`, http.StatusOK, nil)
 }

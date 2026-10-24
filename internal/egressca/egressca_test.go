@@ -11,7 +11,9 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"net/url"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -73,6 +75,24 @@ func leafUnder(t *testing.T, inter *x509.Certificate, key *ecdsa.PrivateKey, dns
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, inter, &leafKey.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return leaf
+}
+
+func resign(t *testing.T, inter *x509.Certificate, key *ecdsa.PrivateKey, from *x509.Certificate, edit func(*x509.Certificate)) *x509.Certificate {
+	t.Helper()
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(3), Subject: from.Subject, DNSNames: from.DNSNames, EmailAddresses: from.EmailAddresses, URIs: from.URIs,
+		NotBefore: from.NotBefore, NotAfter: from.NotAfter, KeyUsage: from.KeyUsage, ExtKeyUsage: from.ExtKeyUsage,
+	}
+	edit(tmpl)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, inter, from.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +224,9 @@ func TestIssuedIntermediateIsConstrainedByTheServer(t *testing.T) {
 	if len(inter.ExcludedIPRanges) != 2 || len(inter.DNSNames) != 0 || inter.Subject.CommonName == "evil" {
 		t.Fatalf("intermediate took input from the CSR or misses IP exclusions: %+v", inter)
 	}
+	if !slices.Equal(inter.PermittedEmailAddresses, []string{"invalid"}) || !slices.Equal(inter.PermittedURIDomains, []string{"invalid"}) {
+		t.Fatalf("intermediate leaves email/uri names unconstrained: %v %v", inter.PermittedEmailAddresses, inter.PermittedURIDomains)
+	}
 	if life := inter.NotAfter.Sub(inter.NotBefore); life > IntermediateValidity+Backdate {
 		t.Fatalf("intermediate lifetime %v", life)
 	}
@@ -235,6 +258,18 @@ func TestIssuedIntermediateIsConstrainedByTheServer(t *testing.T) {
 	}
 	if err := verify(leafUnder(t, inter, key, []string{"a.corp.example"}, []net.IP{net.ParseIP("10.0.0.1")}), "a.corp.example"); err == nil {
 		t.Error("leaf carrying an IP SAN verified")
+	}
+	withEmail := leafUnder(t, inter, key, []string{"a.corp.example"}, nil)
+	withEmail = resign(t, inter, key, withEmail, func(c *x509.Certificate) { c.EmailAddresses = []string{"ceo@corp.example"} })
+	if err := verify(withEmail, "a.corp.example"); err == nil {
+		t.Error("leaf carrying an email SAN verified")
+	}
+	withURI := resign(t, inter, key, withEmail, func(c *x509.Certificate) {
+		c.EmailAddresses = nil
+		c.URIs = []*url.URL{{Scheme: "spiffe", Host: "corp.example", Path: "/svc"}}
+	})
+	if err := verify(withURI, "a.corp.example"); err == nil {
+		t.Error("leaf carrying a URI SAN verified")
 	}
 
 	otherRoot, err := a.Root(ctx, "org-b")

@@ -26,6 +26,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/connect/egress"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
+	"github.com/mishmesh/mishmesh/internal/egressca"
 	"github.com/mishmesh/mishmesh/internal/gateway"
 	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/ingress"
@@ -90,8 +91,20 @@ type ztStack struct {
 	wsURL    string
 }
 
+type ztOptions struct {
+	verifier *http.Client
+	resolver *net.Resolver
+	clock    func() time.Time
+}
+
 func newZTStack(t *testing.T, verifierClient *http.Client) *ztStack {
 	t.Helper()
+	return newZTStackWith(t, ztOptions{verifier: verifierClient})
+}
+
+func newZTStackWith(t *testing.T, opts ztOptions) *ztStack {
+	t.Helper()
+	verifierClient := opts.verifier
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx := context.Background()
 	data, err := sqlite.Open(filepath.Join(t.TempDir(), "zt.db"))
@@ -127,9 +140,17 @@ func newZTStack(t *testing.T, verifierClient *http.Client) *ztStack {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if opts.resolver != nil {
+		guard = guard.WithResolver(opts.resolver)
+	}
+	ca := egressca.New(data, box)
+	if opts.clock != nil {
+		ca.SetClock(opts.clock)
+	}
+	cp.SetEgressCA(ca)
 	gw := gateway.New(gateway.Options{
 		Data: data, Conns: conns, Log: log, BaseDomain: "localhost", PublicScheme: "http",
-		Users: idSvc, Connect: connect,
+		Users: idSvc, Connect: connect, Certs: ca,
 		Egress: egress.New(egress.Options{Conns: conns, Log: log, Deciders: deciders, Dialer: guard, Auth: idSvc, Agents: data, Revocations: idSvc, Credentials: data, Secrets: vault}),
 	})
 	idSvc.OnFlush(gw.FlushOrg)
@@ -139,6 +160,7 @@ func newZTStack(t *testing.T, verifierClient *http.Client) *ztStack {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
+	mux.HandleFunc("GET "+tunnel.AgentEgressCAPath, gw.HandleAgentEgressCA)
 	cp.Register(mux)
 	api := httptest.NewServer(mux)
 	t.Cleanup(api.Close)

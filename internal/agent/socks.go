@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -33,8 +34,9 @@ const (
 )
 
 var (
-	errSocksProtocol = errors.New("socks5: protocol error")
-	errUDPEgress     = errors.New("udp egress (QUIC, HTTP/3, DNS over UDP) is not supported; only TCP egress is proxied")
+	errSocksProtocol      = errors.New("socks5: protocol error")
+	errSocksDecryptScoped = errors.New("destination is in the decrypt scope or the scope is unknown; use the http proxy")
+	errUDPEgress          = errors.New("udp egress (QUIC, HTTP/3, DNS over UDP) is not supported; only TCP egress is proxied")
 )
 
 func (a *Agent) serveSocksClient(client net.Conn) {
@@ -53,6 +55,11 @@ func (a *Agent) serveSocksClient(client net.Conn) {
 		if code != 0 {
 			writeSocksReply(client, code)
 		}
+		return
+	}
+	if !a.socksMayPassThrough(dest) {
+		writeSocksReply(client, socksNotAllowed)
+		a.log.Info("egress refused", "proto", "socks5", "destination", truncateLog(dest), "err", errSocksDecryptScoped)
 		return
 	}
 	stream, err := a.openEgress(remoteHost(client.RemoteAddr().String()), dest, creds)
@@ -194,4 +201,14 @@ func socksRefusalCode(err error) byte {
 func writeSocksReply(w io.Writer, code byte) bool {
 	_, err := w.Write([]byte{socksVersion, code, 0x00, socksAddrIPv4, 0, 0, 0, 0, 0, 0})
 	return err == nil
+}
+
+func (a *Agent) socksMayPassThrough(dest string) bool {
+	host, _, err := net.SplitHostPort(dest)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), egressHandshakeTimeout)
+	defer cancel()
+	return a.decrypt.classify(ctx, host).verdict == decryptPassthrough
 }
