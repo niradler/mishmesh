@@ -29,6 +29,7 @@ type TokenSession struct {
 
 type SessionStore interface {
 	PutTokenSession(ctx context.Context, s *TokenSession) error
+	RotateTokenSession(ctx context.Context, s *TokenSession, prevTokenID string) error
 	GetTokenSession(ctx context.Context, id string) (*TokenSession, error)
 	DeleteTokenSession(ctx context.Context, id string) error
 	DeleteSubjectSessions(ctx context.Context, orgID, subjectType, subjectID string) ([]string, error)

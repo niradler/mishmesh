@@ -58,6 +58,56 @@ func (s *SessionStore) PutTokenSession(ctx context.Context, ts *store.TokenSessi
 	return nil
 }
 
+func (s *SessionStore) RotateTokenSession(ctx context.Context, ts *store.TokenSession, prevTokenID string) error {
+	ttl := time.Until(ts.ExpiresAt)
+	if ttl <= 0 {
+		return errors.New("redis: token session already expired")
+	}
+	raw, err := json.Marshal(ts)
+	if err != nil {
+		return fmt.Errorf("redis: encode token session: %w", err)
+	}
+	ctx, cancel := opCtx(ctx)
+	defer cancel()
+	key := sessionKeyPrefix + ts.ID
+	subject := subjectKeyPrefix + store.SubjectKey(ts.OrgID, ts.SubjectType, ts.SubjectID)
+	err = s.rdb.Watch(ctx, func(tx *goredis.Tx) error {
+		cur, err := tx.Get(ctx, key).Bytes()
+		if errors.Is(err, goredis.Nil) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var current store.TokenSession
+		if err := json.Unmarshal(cur, &current); err != nil {
+			return err
+		}
+		if current.TokenID != prevTokenID || !time.Now().Before(current.ExpiresAt) {
+			return store.ErrNotFound
+		}
+		subjectTTL, err := tx.PTTL(ctx, subject).Result()
+		if err != nil {
+			return err
+		}
+		_, err = tx.TxPipelined(ctx, func(pipe goredis.Pipeliner) error {
+			pipe.Set(ctx, key, raw, ttl)
+			if subjectTTL < ttl {
+				pipe.PExpire(ctx, subject, ttl)
+			}
+			return nil
+		})
+		return err
+	}, key)
+	switch {
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, goredis.TxFailedErr):
+		return store.ErrNotFound
+	case err != nil:
+		return fmt.Errorf("redis: rotate token session: %w", err)
+	}
+	return nil
+}
+
 func (s *SessionStore) GetTokenSession(ctx context.Context, id string) (*store.TokenSession, error) {
 	ctx, cancel := opCtx(ctx)
 	defer cancel()

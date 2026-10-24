@@ -52,6 +52,37 @@ func RunSessionStore(t *testing.T, open func(t *testing.T) store.SessionStore) {
 		}
 	})
 
+	t.Run("rotate is a compare and swap on the token id", func(t *testing.T) {
+		s := open(t)
+		ctx := context.Background()
+		ts := sampleSession("tsn_cas", "org_1", "sa_1")
+		_ = s.PutTokenSession(ctx, ts)
+		first := *ts
+		first.PrevTokenID, first.TokenID = ts.TokenID, "tid_first"
+		if err := s.RotateTokenSession(ctx, &first, ts.TokenID); err != nil {
+			t.Fatal(err)
+		}
+		loser := *ts
+		loser.PrevTokenID, loser.TokenID = ts.TokenID, "tid_loser"
+		if err := s.RotateTokenSession(ctx, &loser, ts.TokenID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("stale rotate err = %v", err)
+		}
+		if got, err := s.GetTokenSession(ctx, ts.ID); err != nil || got.TokenID != "tid_first" {
+			t.Fatalf("got %+v err %v", got, err)
+		}
+		if err := s.DeleteTokenSession(ctx, ts.ID); err != nil {
+			t.Fatal(err)
+		}
+		revived := first
+		revived.PrevTokenID, revived.TokenID = first.TokenID, "tid_revived"
+		if err := s.RotateTokenSession(ctx, &revived, first.TokenID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("rotate after delete err = %v", err)
+		}
+		if _, err := s.GetTokenSession(ctx, ts.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("a rotate resurrected a deleted session: %v", err)
+		}
+	})
+
 	t.Run("delete subject sessions is scoped", func(t *testing.T) {
 		s := open(t)
 		ctx := context.Background()

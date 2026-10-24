@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
+	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/token"
 )
@@ -315,4 +316,39 @@ func TestAgentUserRefreshGraceWindow(t *testing.T) {
 			t.Fatalf("session after two concurrent refreshes active=%v err=%v", active, err)
 		}
 	})
+}
+
+type revokeDuringRotate struct {
+	store.SessionStore
+	revoke func()
+}
+
+func (r revokeDuringRotate) RotateTokenSession(ctx context.Context, ts *store.TokenSession, prev string) error {
+	r.revoke()
+	return r.SessionStore.RotateTokenSession(ctx, ts, prev)
+}
+
+func TestRefreshRacingRevocationDoesNotResurrectSession(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	clock := func() time.Time { return now }
+	keys, err := token.NewKeyring(bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := memory.NewSessionStoreWithClock(clock)
+	ctx := context.Background()
+	var sessionID string
+	s := New(keys, revokeDuringRotate{SessionStore: sessions, revoke: func() { _ = sessions.DeleteTokenSession(ctx, sessionID) }})
+	s.SetClock(clock)
+	first, err := s.IssueAgentUser(ctx, AgentLogin{OrgID: "org_1", UserID: "usr_1", AuthMethod: authz.AuthMethodPassword})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID = first.Session.ID
+	if _, err := s.RefreshAgentUser(ctx, first.RefreshToken); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("refresh racing a revocation = %v, want unauthenticated", err)
+	}
+	if _, err := sessions.GetTokenSession(ctx, sessionID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("revoked session came back: %v", err)
+	}
 }

@@ -272,7 +272,7 @@ func (s *Service) PollDevice(ctx context.Context, deviceCode string) (AgentLogin
 }
 
 func (s *Service) pendingOrDenied(ctx context.Context, hash string) error {
-	_, err := s.sessions.TakeOnce(ctx, deviceDeniedKey+hash)
+	_, err := s.sessions.PeekOnce(ctx, deviceDeniedKey+hash)
 	switch {
 	case err == nil:
 		return ErrAccessDenied
@@ -318,9 +318,21 @@ func (s *Service) RefreshAgentUser(ctx context.Context, refresh string) (AgentTo
 		return AgentTokens{}, ErrUnauthenticated
 	}
 	now := s.now().UTC()
-	ts.PrevTokenID, ts.TokenID, ts.RotatedAt = ts.TokenID, nextTokenID(ts.ID, ts.TokenID), now
+	prev := ts.TokenID
+	ts.PrevTokenID, ts.TokenID, ts.RotatedAt = prev, nextTokenID(ts.ID, prev), now
 	ts.ExpiresAt = now.Add(AgentSessionTTL)
-	return s.storeAgentTokens(ctx, ts)
+	tokens, err := s.signAgentTokens(ts)
+	if err != nil {
+		return AgentTokens{}, err
+	}
+	err = s.sessions.RotateTokenSession(ctx, ts, prev)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return s.RefreshAgentUser(ctx, refresh)
+	case err != nil:
+		return AgentTokens{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return tokens, nil
 }
 
 func (s *Service) refreshWithinGrace(ctx context.Context, ts *store.TokenSession, refresh string) (AgentTokens, error) {

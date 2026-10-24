@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -228,5 +230,33 @@ func TestAgentRefreshFailsForDisabledMember(t *testing.T) {
 	}
 	if _, err := f.id.Authenticate(ctx, tokens.AccessToken, token.TypeAgentUser); err == nil {
 		t.Fatal("non-member session must be revoked")
+	}
+}
+
+func TestDeviceLookupLimitedPerUserAcrossClientIPs(t *testing.T) {
+	f := newBrowserFixture(t)
+	_, loopback, _ := net.ParseCIDR("127.0.0.0/8")
+	f.api.SetTrustedProxies([]*net.IPNet{loopback})
+	owner, _ := register(t, f.srv, "owner@example.com", http.StatusCreated)
+	lookupFrom := func(ip string) int {
+		req, err := http.NewRequest(http.MethodGet, f.srv.URL+"/api/v1/auth/device?user_code=ZZZZ-ZZZZ", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Forwarded-For", ip)
+		resp, err := owner.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for i := 0; i < pairLimit.Capacity(); i++ {
+		if got := lookupFrom(fmt.Sprintf("198.51.100.%d", i+1)); got != http.StatusNotFound {
+			t.Fatalf("guess %d = %d, want 404", i, got)
+		}
+	}
+	if got := lookupFrom("203.0.113.9"); got != http.StatusTooManyRequests {
+		t.Fatalf("guess from a fresh ip = %d, want 429 once the user's budget is spent", got)
 	}
 }

@@ -85,6 +85,11 @@ func (a *API) oauthAuthorizeHandler(w http.ResponseWriter, r *http.Request) {
 		writeStoreUnavailable(w)
 		return
 	}
+	if !a.authRateAllowed(r, "authorize:"+su.user.ID) {
+		w.Header().Set("Retry-After", "12")
+		writeError(w, http.StatusTooManyRequests, "too many attempts")
+		return
+	}
 	orgID, err := a.agentLoginOrg(r.Context(), su, q.Get("org_id"))
 	if errors.Is(err, store.ErrNotFound) {
 		fail(oauthAccessDenied)
@@ -130,7 +135,7 @@ func (a *API) agentLoginSession(w http.ResponseWriter, r *http.Request, guessabl
 	if guessable {
 		rateKey = "device:" + su.user.ID
 	}
-	if !a.authRateAllowed(r, rateKey) {
+	if !a.authRateAllowed(r, rateKey) || (guessable && !a.subjectRateAllowed(r, rateKey)) {
 		w.Header().Set("Retry-After", "12")
 		writeError(w, http.StatusTooManyRequests, "too many attempts")
 		return nil, false

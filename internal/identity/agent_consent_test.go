@@ -148,8 +148,8 @@ func TestDeviceLookupAndDeny(t *testing.T) {
 		t.Fatalf("poll after deny = %v", err)
 	}
 	now = now.Add(DevicePollInterval)
-	if _, err := s.PollDevice(ctx, start.DeviceCode); !errors.Is(err, ErrAuthorizationPending) {
-		t.Fatalf("denial must be reported once = %v", err)
+	if _, err := s.PollDevice(ctx, start.DeviceCode); !errors.Is(err, ErrAccessDenied) {
+		t.Fatalf("a retried poll must still see the denial = %v", err)
 	}
 
 	expiring, _ := s.StartDevice(ctx)

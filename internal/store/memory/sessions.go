@@ -59,6 +59,17 @@ func (s *SessionStore) PutTokenSession(_ context.Context, ts *store.TokenSession
 	return nil
 }
 
+func (s *SessionStore) RotateTokenSession(_ context.Context, ts *store.TokenSession, prevTokenID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.sessions[ts.ID]
+	if !ok || current.TokenID != prevTokenID || !s.now().Before(current.ExpiresAt) {
+		return store.ErrNotFound
+	}
+	s.sessions[ts.ID] = *ts
+	return nil
+}
+
 func (s *SessionStore) GetTokenSession(_ context.Context, id string) (*store.TokenSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
