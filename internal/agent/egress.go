@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,7 +40,13 @@ type EgressSpec struct {
 
 type ExitDialer interface {
 	Dial(ctx context.Context, target string, otls *store.OriginTLS, timeout time.Duration) (net.Conn, error)
+	ResolveAll(ctx context.Context, target string) ([]string, error)
 }
+
+var (
+	errExitAborted     = errors.New("egress exit: server aborted the approval")
+	errExitNotApproved = errors.New("egress exit: server approved targets this exit did not resolve")
+)
 
 type egressCreds struct {
 	token string
@@ -268,7 +275,7 @@ func exitGuard(allow []string, log *slog.Logger) ExitDialer {
 	return g
 }
 
-func (a *Agent) serveExit(stream net.Conn, dest string) {
+func (a *Agent) serveExit(stream net.Conn, dest string, reportResolved bool) {
 	refuse := func(status tunnel.EgressStatus, reason string) {
 		_ = stream.SetWriteDeadline(time.Now().Add(egressHandshakeTimeout))
 		_ = tunnel.WriteEgressReply(stream, tunnel.EgressReply{Status: status, Reason: reason})
@@ -282,9 +289,22 @@ func (a *Agent) serveExit(stream net.Conn, dest string) {
 	if dialer == nil {
 		dialer = proxy.DefaultGuard()
 	}
-	upstream, err := dialer.Dial(context.Background(), dest, nil, exitDialTimeout)
+	var upstream net.Conn
+	var err error
+	if reportResolved {
+		upstream, err = dialApprovedExit(stream, dialer, dest)
+	} else {
+		upstream, err = dialer.Dial(context.Background(), dest, nil, exitDialTimeout)
+	}
+	if errors.Is(err, errExitAborted) {
+		return
+	}
 	if err != nil {
 		a.log.Info("egress exit dial refused", "destination", truncateLog(dest), "err", err)
+		if errors.Is(err, errExitNotApproved) {
+			refuse(tunnel.EgressInvalid, "unapproved_target")
+			return
+		}
 		if errors.Is(err, proxy.ErrBlocked) {
 			refuse(tunnel.EgressDenied, "blocked_destination")
 			return
@@ -299,6 +319,45 @@ func (a *Agent) serveExit(stream net.Conn, dest string) {
 	}
 	_ = stream.SetWriteDeadline(time.Time{})
 	tunnel.Splice(stream, upstream)
+}
+
+func dialApprovedExit(stream net.Conn, dialer ExitDialer, dest string) (net.Conn, error) {
+	resolveCtx, cancel := context.WithTimeout(context.Background(), exitDialTimeout)
+	resolved, err := dialer.ResolveAll(resolveCtx, dest)
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	if len(resolved) > tunnel.MaxExitTargets {
+		resolved = resolved[:tunnel.MaxExitTargets]
+	}
+	_ = stream.SetWriteDeadline(time.Now().Add(egressHandshakeTimeout))
+	err = tunnel.WriteExitTargets(stream, resolved)
+	_ = stream.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return nil, errExitAborted
+	}
+	_ = stream.SetReadDeadline(time.Now().Add(tunnel.EgressReplyTimeout))
+	approved, err := tunnel.ReadExitTargets(stream)
+	_ = stream.SetReadDeadline(time.Time{})
+	if err != nil {
+		return nil, errExitAborted
+	}
+	if len(approved) == 0 {
+		return nil, errExitNotApproved
+	}
+	for _, target := range approved {
+		if !slices.Contains(resolved, target) {
+			return nil, errExitNotApproved
+		}
+	}
+	var upstream net.Conn
+	for _, target := range approved {
+		if upstream, err = dialer.Dial(context.Background(), target, nil, exitDialTimeout); err == nil {
+			return upstream, nil
+		}
+	}
+	return nil, err
 }
 
 func writeEgressFailure(w io.Writer, err error) {

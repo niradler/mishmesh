@@ -3,6 +3,7 @@ package e2e
 import (
 	"bufio"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -290,5 +291,58 @@ func TestEgressPolicyChangeClosesLiveTunnel(t *testing.T) {
 	}
 	if _, _, status := proxyConnect(t, listen, echo); status == http.StatusOK {
 		t.Fatal("new CONNECT allowed after the policy change")
+	}
+}
+
+func TestEgressViaExitPolicySeesExitResolvedIP(t *testing.T) {
+	echo := tcpEchoServer(t)
+	_, port, _ := net.SplitHostPort(echo)
+	byName := net.JoinHostPort("localhost", port)
+	cases := []struct {
+		name   string
+		policy string
+		want   int
+		reason authz.Reason
+	}{
+		{"permit on exit resolved loopback", fmt.Sprintf(`permit (principal, action == Action::"egress:connect", resource) when { resource.port == %s && context has exit && context has resolved_ip && context.resolved_ip.isLoopback() };`, port), http.StatusOK, authz.ReasonAllow},
+		{"permit only on another range", fmt.Sprintf(`permit (principal, action == Action::"egress:connect", resource) when { resource.port == %s && context has resolved_ip && context.resolved_ip.isInRange(ip("10.0.0.0/8")) };`, port), http.StatusForbidden, authz.ReasonNoPolicyMatch},
+		{"forbid on exit resolved loopback", fmt.Sprintf(`permit (principal, action == Action::"egress:connect", resource) when { resource.port == %s };
+forbid (principal, action == Action::"egress:connect", resource) when { context has resolved_ip && context.resolved_ip.isLoopback() };`, port), http.StatusForbidden, authz.ReasonPolicyDeny},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newEgressHarness(t, false)
+			orgID := h.orgWithPolicy(tc.policy)
+			h.runNamedAgent(orgID, "exit-a", agent.EgressSpec{ServeExit: true}, loopbackExitDialer(t))
+			listen := h.runNamedAgent(orgID, "src", agent.EgressSpec{Listen: freeAddr(t, "tcp"), Exit: "exit-a"}, nil)
+			c, br, status := proxyConnect(t, listen, byName)
+			if status != tc.want {
+				t.Fatalf("CONNECT %s via exit status = %d, want %d", byName, status, tc.want)
+			}
+			if status == http.StatusOK {
+				assertEcho(t, c, br)
+				_ = c.Close()
+			}
+			ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.Destination == byName })
+			if ev.ExitAgentID == "" || ev.Reason != string(tc.reason) {
+				t.Fatalf("access event = %+v, want exit agent and reason %s", ev, tc.reason)
+			}
+		})
+	}
+}
+
+func TestEgressViaExitRefusesExitBlockedAnswer(t *testing.T) {
+	h := newEgressHarness(t, false)
+	echo := tcpEchoServer(t)
+	orgID := h.orgWithPolicy(`permit (principal, action == Action::"egress:connect", resource);`)
+	h.runNamedAgent(orgID, "exit-a", agent.EgressSpec{ServeExit: true}, proxy.DefaultGuard())
+	listen := h.runNamedAgent(orgID, "src", agent.EgressSpec{Listen: freeAddr(t, "tcp"), Exit: "exit-a"}, nil)
+
+	if _, _, status := proxyConnect(t, listen, echo); status != http.StatusForbidden {
+		t.Fatalf("CONNECT to an address the exit blocks = %d, want 403", status)
+	}
+	ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.Destination == echo })
+	if ev.Decision != store.AccessDeny || ev.Reason != "exit_blocked_destination" {
+		t.Fatalf("access event = %+v", ev)
 	}
 }

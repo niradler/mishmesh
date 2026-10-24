@@ -286,7 +286,7 @@ func (a *Agent) pingLoop(ctx context.Context, ctrl *tunnel.Control, reconnect co
 func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 	defer stream.Close()
 	if dest, ok := init.Meta[tunnel.MetaEgressExit]; ok && init.EndpointID == "" {
-		a.serveExit(stream, dest)
+		a.serveExit(stream, dest, init.Meta[tunnel.MetaExitResolve] == "1")
 		return
 	}
 	tgt, ok := a.resolveStreamTarget(init)
