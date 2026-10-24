@@ -70,6 +70,16 @@ mishmesh changes only what it can prove is its own.
 
 Errors are per hostname: one failure does not stop the others.
 
+## Adding and deleting hostnames (managed level)
+
+The connection page's Hostnames card can add and delete hostnames, so the tunnel can be managed without the Cloudflare dashboard.
+
+- **Through a mishmesh endpoint.** The hostname is added as Public access on the chosen HTTP endpoint and published by the normal sync.
+- **Directly to a service.** `POST /connections/{id}/hostnames` with `{hostname, service}` adds an ingress rule to `service` (`http`, `https`, `tcp`, `ssh` or `rdp` URL without a path, resolved on the tunnel host) before the catch-all and a proxied CNAME to the tunnel. The hostname must have no rules on the tunnel (path rules included), must not be published through another connection, its zone must be visible to the token, and any existing DNS record must already point at this tunnel. If the DNS record cannot be created, the route is rolled back. The origin is refused; use an endpoint for that.
+- **Delete.** `DELETE /connections/{id}/hostnames/{hostname}` removes every rule for the hostname and the DNS records that point at this tunnel; other records stay. The Access app loses the domain only when mishmesh added it and it is unchanged. A hostname still published by an endpoint returns 409 `in_use` with `endpoint_ids`; the UI removes that endpoint's Access row for the hostname first. A hostname published through another connection returns 409 `conflict`.
+
+Direct routes appear as `unclaimed` with `detail` "routed to …, not through mishmesh", and prune never removes them.
+
 ## Hostname status
 
 | `state` | Meaning |

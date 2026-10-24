@@ -223,6 +223,18 @@ export const HELP = {
     title: "Driver",
     body: "How a service starts and stops its workload. Driver fields come from the server’s registered service types.",
   },
+  hostnameEndpoint: {
+    title: "Through a mishmesh endpoint",
+    body: "The hostname is added as Public access on the endpoint. mishmesh routes it to its origin and applies the endpoint's auth, health checks and wake-up.",
+  },
+  hostnameService: {
+    title: "Directly to a service",
+    body: "cloudflared on the tunnel host sends traffic straight to this URL, bypassing mishmesh. Use it for services mishmesh does not manage. The URL is resolved on the tunnel host.",
+  },
+  hostnameDelete: {
+    title: "What delete removes",
+    body: "The tunnel route and DNS records pointing at this tunnel. Other DNS records stay. The Access app keeps the domain unless mishmesh added it.",
+  },
   requires: {
     title: "Requires",
     body: "Services that start before this service and stay running while it needs them. Stop dependents before stopping a required service.",

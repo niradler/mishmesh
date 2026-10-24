@@ -28,10 +28,26 @@ type fakeConnectionControl struct {
 	syncs       map[string]int
 	reloadError error
 	syncError   error
+	hostnames   []string
+	hostError   error
 }
 
 func newFakeConnectionControl() *fakeConnectionControl {
 	return &fakeConnectionControl{statuses: map[string]connections.Status{}, triggers: map[string]int{}, reloads: map[string]int{}, syncs: map[string]int{}}
+}
+
+func (f *fakeConnectionControl) AddHostnameIfCurrent(_ context.Context, _ store.Connection, host, service string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hostnames = append(f.hostnames, "add "+host+" "+service)
+	return f.hostError
+}
+
+func (f *fakeConnectionControl) RemoveHostnameIfCurrent(_ context.Context, _ store.Connection, host string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hostnames = append(f.hostnames, "remove "+host)
+	return f.hostError
 }
 
 func (f *fakeConnectionControl) Status(id string) connections.Status {
@@ -602,6 +618,70 @@ func TestShouldRejectStaleSyncSnapshotWithoutUnauthorizedRecovery(t *testing.T) 
 	code, response := f.do(t, admin, http.MethodPost, "/api/v1/connections/"+created.ID+"/sync", "")
 	if code != http.StatusConflict || hub.reloads[created.ID] != before || strings.Contains(response, created.ID) {
 		t.Fatalf("stale sync: %d %s", code, response)
+	}
+}
+
+func TestShouldMapConnectionHostnameChangesToStatusCodes(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		suffix string
+		body   string
+		err    error
+		code   int
+		want   string
+	}{
+		{"add", http.MethodPost, "/hostnames", `{"hostname":"vault.example.com","service":"http://localhost:8000"}`, nil, http.StatusCreated, "add vault.example.com http://localhost:8000"},
+		{"remove", http.MethodDelete, "/hostnames/vault.example.com", "", nil, http.StatusOK, "remove vault.example.com"},
+		{"invalid", http.MethodPost, "/hostnames", `{"hostname":"x","service":"ftp://x"}`, &connections.HostnameError{Kind: connections.HostnameInvalid, Message: "bad service"}, http.StatusBadRequest, "bad service"},
+		{"conflict", http.MethodPost, "/hostnames", `{"hostname":"x","service":"http://x"}`, &connections.HostnameError{Kind: connections.HostnameConflict, Message: "already routed"}, http.StatusConflict, "already routed"},
+		{"in use", http.MethodDelete, "/hostnames/x", "", &connections.HostnameError{Kind: connections.HostnameInUse, Message: "published", EndpointIDs: []string{"ep1"}}, http.StatusConflict, `"endpoint_ids":["ep1"]`},
+		{"not found", http.MethodDelete, "/hostnames/x", "", &connections.HostnameError{Kind: connections.HostnameNotFound, Message: "not on tunnel"}, http.StatusNotFound, "not on tunnel"},
+		{"unsupported", http.MethodPost, "/hostnames", `{"hostname":"x","service":"http://x"}`, &connections.HostnameError{Kind: connections.HostnameUnsupported, Message: "add an API token"}, http.StatusConflict, "add an API token"},
+		{"stale", http.MethodDelete, "/hostnames/x", "", store.ErrConflict, http.StatusConflict, "connection changed"},
+		{"not running", http.MethodDelete, "/hostnames/x", "", connections.ErrNotConnected, http.StatusServiceUnavailable, "not running"},
+		{"provider", http.MethodDelete, "/hostnames/x", "", errors.New("credential-value"), http.StatusBadGateway, "API token permissions"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			api, server := newNetworkTestAPI(t)
+			hub := newFakeConnectionControl()
+			api.SetConnections(hub, testConnectionRegistry(t), testSecretBox(t))
+			send := func(method, path, body string) (int, string) { return statusAndBody(t, server, method, path, body) }
+			id := createTestConnection(t, send, connectionCases()[0], "tunnel")
+			hub.hostError = tc.err
+			before := hub.syncs[id]
+			code, response := send(tc.method, "/api/v1/connections/"+id+tc.suffix, tc.body)
+			wantBody := tc.want
+			if tc.err == nil {
+				wantBody = `"id":"` + id + `"`
+			}
+			if code != tc.code || !strings.Contains(response, wantBody) || strings.Contains(response, "credential-value") {
+				t.Fatalf("%d %s", code, response)
+			}
+			if tc.err == nil && (len(hub.hostnames) != 1 || hub.hostnames[0] != tc.want || hub.syncs[id] != before+1) {
+				t.Fatalf("hostnames=%v syncs=%d", hub.hostnames, hub.syncs[id]-before)
+			}
+			if tc.err != nil && hub.syncs[id] != before {
+				t.Fatalf("failed change synced: %d", hub.syncs[id]-before)
+			}
+		})
+	}
+}
+
+func TestShouldForbidHostnameChangesWithoutConnectionManage(t *testing.T) {
+	f := newTenantFixture(t)
+	hub := newFakeConnectionControl()
+	f.api.SetConnections(hub, testConnectionRegistry(t), testSecretBox(t))
+	var created struct {
+		ID string `json:"id"`
+	}
+	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/connections", `{"type":"third","name":"tunnel","config":{}}`, http.StatusCreated, &created)
+	member := inviteAndRegister(t, f.srv, f.alice, "member@example.com", store.RoleMember)
+	doc(t, member, f.srv, http.MethodPost, "/api/v1/connections/"+created.ID+"/hostnames", `{"hostname":"vault.example.com","service":"http://localhost:8000"}`, http.StatusForbidden, nil)
+	doc(t, member, f.srv, http.MethodDelete, "/api/v1/connections/"+created.ID+"/hostnames/vault.example.com", "", http.StatusForbidden, nil)
+	if len(hub.hostnames) != 0 {
+		t.Fatalf("forbidden change reached the runtime: %v", hub.hostnames)
 	}
 }
 

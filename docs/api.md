@@ -185,6 +185,10 @@ Normal runtime-config changes on a running service return409. Explicit restart r
 | DELETE | `/connections/{id}` | `connection:manage` |204;409 `{error,references:[{kind,id,name}]}` while referenced |
 | POST | `/connections/detect` | `connection:manage` | `{type,input}`; provider-owned allowed detection fields; host capability where declared |
 | POST | `/connections/{id}/sync` | `connection:manage` | bounded provider synchronization; failure includes safe status |
+| POST | `/connections/{id}/hostnames` | `connection:manage` | `{hostname,service}` adds a direct tunnel route; 201 with the synced connection |
+| DELETE | `/connections/{id}/hostnames/{hostname}` | `connection:manage` | removes a tunnel route and its tunnel DNS records; 200 with the synced connection |
+
+Hostname changes need a provider that manages hostnames (Cloudflare with an API token). Errors are `{error,reason}`: 400 `invalid`, 404 `not_found`, 409 `conflict`, `unsupported` or `in_use` (with `endpoint_ids`, when an endpoint's Public access still publishes the hostname), 409 when the connection changed since it was read, 503 when it is not running, 502 when the provider rejects the change.
 
 Save input: `{type,name,config,secrets?}`. Type is immutable on update. Names are unique per organization. Omitted secrets are retained; empty secret strings clear them. Secrets are sealed under organization/connection identity. DTO: `{id,type,name,config,status,has_<secret>?,action?}`; secret values and provider ownership state are never returned. Status includes level, health, last_error, last_sync, hostnames and sanitized details. A save commits before bounded reload/sync, so unavailable providers can return a saved row with down/degraded status and a retry action.
 

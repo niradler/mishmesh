@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -94,6 +95,26 @@ func (o *routeOwnership) protect(ctx context.Context, rules []IngressRule, obser
 			protected[host] = endpointID
 		}
 	}
+	claims, err := o.foreignClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(protected, claims)
+	for _, rule := range rules {
+		host := normalizeHost(rule.Hostname())
+		if host == "" {
+			continue
+		}
+		owned, exists := o.state.Routes[host]
+		if !exists || owned.Ingress == "" || owned.Ingress != resourceFingerprint(rule) || rule.Path() != "" {
+			protected[host] = observed[host]
+		}
+	}
+	return protected, nil
+}
+
+func (o *routeOwnership) foreignClaims(ctx context.Context) (map[string]string, error) {
+	claims := map[string]string{}
 	orgs, err := o.data.ListOrgs(ctx)
 	if err != nil {
 		return nil, errors.New("route ownership claims unavailable")
@@ -119,22 +140,12 @@ func (o *routeOwnership) protect(ctx context.Context, rules []IngressRule, obser
 					host = endpoint.Domain
 				}
 				if host = normalizeHost(host); host != "" {
-					protected[host] = endpoint.ID
+					claims[host] = endpoint.ID
 				}
 			}
 		}
 	}
-	for _, rule := range rules {
-		host := normalizeHost(rule.Hostname())
-		if host == "" {
-			continue
-		}
-		owned, exists := o.state.Routes[host]
-		if !exists || owned.Ingress == "" || owned.Ingress != resourceFingerprint(rule) || rule.Path() != "" {
-			protected[host] = observed[host]
-		}
-	}
-	return protected, nil
+	return claims, nil
 }
 
 func (o *routeOwnership) recordIngress(host string, rules []IngressRule, applied bool) {
