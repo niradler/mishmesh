@@ -110,6 +110,8 @@ type RegisterPayload struct {
 }
 
 type RegisterAckPayload struct {
+	OrgID     string            `json:"org_id,omitempty"`
+	AgentID   string            `json:"agent_id,omitempty"`
 	Endpoints []EndpointBinding `json:"endpoints"`
 }
 

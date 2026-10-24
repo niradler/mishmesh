@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,16 +44,17 @@ type localTarget struct {
 }
 
 type Options struct {
-	GatewayURL string
-	Token      string
-	Log        *slog.Logger
-	Endpoints  []EndpointSpec
-	Allowlist  []string
-	Connects   []ConnectSpec
-	Egress     *EgressSpec
-	ExitDialer ExitDialer
-	Out        io.Writer
-	UserToken  func(ctx context.Context) (string, error)
+	GatewayURL    string
+	Token         string
+	Log           *slog.Logger
+	Endpoints     []EndpointSpec
+	Allowlist     []string
+	Connects      []ConnectSpec
+	Egress        *EgressSpec
+	ExitDialer    ExitDialer
+	UpstreamRoots *x509.CertPool
+	Out           io.Writer
+	UserToken     func(ctx context.Context) (string, error)
 }
 
 type Agent struct {
@@ -65,6 +67,7 @@ type Agent struct {
 	acked   atomic.Bool
 	sess    atomic.Pointer[tunnel.Session]
 	dec     *remoteDecider
+	origin  *originator
 }
 
 func New(opts Options) *Agent {
@@ -79,7 +82,10 @@ func New(opts Options) *Agent {
 	if opts.ExitDialer == nil && opts.Egress != nil && opts.Egress.ServeExit {
 		opts.ExitDialer = exitGuard(opts.Egress.ExitAllow, log)
 	}
-	return &Agent{opts: opts, log: log, out: out, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget), dec: newRemoteDecider(time.Now)}
+	a := &Agent{opts: opts, log: log, out: out, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget), dec: newRemoteDecider(time.Now)}
+	a.origin = newOriginator(a, opts.UpstreamRoots)
+	a.dec.onFlush = a.origin.closeIdle
+	return a
 }
 
 func (a *Agent) Run(parent context.Context) error {
@@ -224,6 +230,7 @@ func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, gen uint6
 		}
 		switch {
 		case msg.Type == tunnel.MsgRegisterAck && msg.RegisterAck != nil:
+			a.dec.bind(gen, msg.RegisterAck.OrgID, msg.RegisterAck.AgentID)
 			a.handleAck(msg.RegisterAck, refTarget, refSpec, fail)
 		case msg.Type == tunnel.MsgDecisionResponse && msg.Answer != nil:
 			a.dec.deliver(gen, *msg.Answer)

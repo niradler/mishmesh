@@ -420,6 +420,8 @@ func TestParseConfigEgress(t *testing.T) {
 		{name: "via exit", yaml: "egress: {exit: \" office-exit \"}", want: &EgressSpec{Listen: DefaultEgressListen, Exit: "office-exit"}},
 		{name: "exit only", yaml: "egress: {serve_exit: true}", want: &EgressSpec{ServeExit: true}},
 		{name: "exit with lan allowance", yaml: "egress: {serve_exit: true, exit_allow: [\" 10.20.0.0/16 \", \"fd00::/8\"]}", want: &EgressSpec{ServeExit: true, ExitAllow: []string{"10.20.0.0/16", "fd00::/8"}}},
+		{name: "originate only", yaml: "egress: {originate: {api: {listen: 9001, upstream: \" https://API.example.com \"}}}", want: &EgressSpec{Originate: []OriginateSpec{{Name: "api", Listen: "127.0.0.1:9001", Upstream: "https://API.example.com"}}}},
+		{name: "originate beside proxy", yaml: "egress: {listen: 3128, require_auth: true, originate: {api: {listen: 9001, upstream: \"http://10.0.0.5:8080/\", token: t1}}}", want: &EgressSpec{Listen: "127.0.0.1:3128", RequireAuth: true, Originate: []OriginateSpec{{Name: "api", Listen: "127.0.0.1:9001", Upstream: "http://10.0.0.5:8080/", Token: "t1"}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -450,6 +452,17 @@ func TestParseConfigEgressValidation(t *testing.T) {
 		{name: "require auth with socks", yaml: "egress: {listen: 3128, socks_listen: 1080, require_auth: true}", want: "require_auth cannot cover socks_listen"},
 		{name: "exit allow without serve exit", yaml: "egress: {exit_allow: [10.0.0.0/8]}", want: "exit_allow needs serve_exit"},
 		{name: "exit allow not a cidr", yaml: "egress: {serve_exit: true, exit_allow: [10.0.0.1]}", want: `exit_allow "10.0.0.1" is not a CIDR`},
+		{name: "originate list", yaml: "egress: {originate: [a]}", want: "originate must be a mapping"},
+		{name: "originate bad name", yaml: "egress: {originate: {\"a b\": {listen: 1, upstream: \"https://x\"}}}", want: `originate name "a b" is invalid`},
+		{name: "originate unknown key", yaml: "egress: {originate: {api: {listen: 1, upstream: \"https://x\", path: /v1}}}", want: `unknown field "path"`},
+		{name: "originate no listen", yaml: "egress: {originate: {api: {upstream: \"https://x\"}}}", want: `originate "api" needs listen`},
+		{name: "originate clashes with proxy", yaml: "egress: {listen: 3128, originate: {api: {listen: 3128, upstream: \"https://x\"}}}", want: `originate "api" listen 127.0.0.1:3128 is already used by egress listen`},
+		{name: "originate clashes with originate", yaml: "egress: {originate: {a: {listen: 9001, upstream: \"https://x\"}, b: {listen: 9001, upstream: \"https://y\"}}}", want: `already used by egress originate "a"`},
+		{name: "originate bad scheme", yaml: "egress: {originate: {api: {listen: 1, upstream: \"ftp://x\"}}}", want: "scheme must be http or https"},
+		{name: "originate upstream path", yaml: "egress: {originate: {api: {listen: 1, upstream: \"https://x/v1\"}}}", want: "no path, query or credentials"},
+		{name: "originate upstream userinfo", yaml: "egress: {originate: {api: {listen: 1, upstream: \"https://u:p@x\"}}}", want: "no path, query or credentials"},
+		{name: "originate bad port", yaml: "egress: {originate: {api: {listen: 1, upstream: \"https://x:0\"}}}", want: "port must be 1-65535"},
+		{name: "originate needs token under require_auth", yaml: "egress: {listen: 3128, require_auth: true, originate: {api: {listen: 9001, upstream: \"https://x\"}}}", want: `originate "api" needs token because require_auth is set`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

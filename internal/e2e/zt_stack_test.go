@@ -23,6 +23,8 @@ import (
 	"github.com/mishmesh/mishmesh/internal/agent"
 	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/connect/bridge"
+	"github.com/mishmesh/mishmesh/internal/connect/egress"
+	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
 	"github.com/mishmesh/mishmesh/internal/gateway"
 	"github.com/mishmesh/mishmesh/internal/identity"
@@ -121,9 +123,14 @@ func newZTStack(t *testing.T, verifierClient *http.Client) *ztStack {
 
 	deciders := &ztDeciders{inner: cp}
 	connect := &ztConnect{bridge: bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Deciders: deciders, Revocations: idSvc})}
+	guard, err := proxy.NewGuard(true, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	gw := gateway.New(gateway.Options{
 		Data: data, Conns: conns, Log: log, BaseDomain: "localhost", PublicScheme: "http",
 		Users: idSvc, Connect: connect,
+		Egress: egress.New(egress.Options{Conns: conns, Log: log, Deciders: deciders, Dialer: guard, Auth: idSvc, Agents: data, Revocations: idSvc, Credentials: data, Secrets: vault}),
 	})
 	idSvc.OnFlush(gw.FlushOrg)
 	cp.SetDecisionFlusher(idSvc.FlushOrg)

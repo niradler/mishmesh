@@ -70,7 +70,8 @@ var (
 	rootKeys      = []string{"gateway", "token", "allow", "log_level", "tunnels", "connects", "egress"}
 	tunnelKeys    = []string{"proto", "addr", "subdomain", "domain", "port", "reserved", "private", "target_https", "insecure", "policy"}
 	connectKeys   = []string{"endpoint", "proto", "listen", "idle_timeout"}
-	egressKeys    = []string{"listen", "socks_listen", "require_auth", "exit", "serve_exit", "exit_allow"}
+	egressKeys    = []string{"listen", "socks_listen", "require_auth", "exit", "serve_exit", "exit_allow", "originate"}
+	originateKeys = []string{"listen", "upstream", "token"}
 	validProtos   = []string{store.KindHTTP, store.KindTCP, store.KindTLS, store.KindUDP}
 	validProtoMsg = strings.Join(validProtos, ", ")
 )
@@ -224,12 +225,19 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 }
 
 type egressConfig struct {
-	Listen      string   `yaml:"listen"`
-	SocksListen string   `yaml:"socks_listen"`
-	RequireAuth bool     `yaml:"require_auth"`
-	Exit        string   `yaml:"exit"`
-	ServeExit   bool     `yaml:"serve_exit"`
-	ExitAllow   []string `yaml:"exit_allow"`
+	Listen      string    `yaml:"listen"`
+	SocksListen string    `yaml:"socks_listen"`
+	RequireAuth bool      `yaml:"require_auth"`
+	Exit        string    `yaml:"exit"`
+	ServeExit   bool      `yaml:"serve_exit"`
+	ExitAllow   []string  `yaml:"exit_allow"`
+	Originate   yaml.Node `yaml:"originate"`
+}
+
+type originateConfig struct {
+	Listen   string `yaml:"listen"`
+	Upstream string `yaml:"upstream"`
+	Token    string `yaml:"token"`
 }
 
 func (p *configParser) parseEgress(n *yaml.Node, connects []ConnectSpec) *EgressSpec {
@@ -243,7 +251,7 @@ func (p *configParser) parseEgress(n *yaml.Node, connects []ConnectSpec) *Egress
 	switch {
 	case strings.TrimSpace(ec.Listen) != "":
 		spec.Listen = normalizeListen(ec.Listen)
-	case strings.TrimSpace(ec.SocksListen) == "" && !ec.ServeExit:
+	case strings.TrimSpace(ec.SocksListen) == "" && !ec.ServeExit && ec.Originate.Kind == 0:
 		spec.Listen = DefaultEgressListen
 	}
 	if strings.TrimSpace(ec.SocksListen) != "" {
@@ -268,6 +276,7 @@ func (p *configParser) parseEgress(n *yaml.Node, connects []ConnectSpec) *Egress
 		}
 		used[l.addr] = "egress " + l.key
 	}
+	spec.Originate = p.parseOriginate(&ec.Originate, spec.RequireAuth, used)
 	for _, c := range ec.ExitAllow {
 		cidr := strings.TrimSpace(c)
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -285,6 +294,59 @@ func (p *configParser) parseEgress(n *yaml.Node, connects []ConnectSpec) *Egress
 		p.addf(n.Line, "egress: require_auth needs listen")
 	}
 	return spec
+}
+
+func (p *configParser) parseOriginate(n *yaml.Node, requireAuth bool, used map[string]string) []OriginateSpec {
+	if n.Kind == 0 || n.Tag == "!!null" {
+		return nil
+	}
+	if n.Kind != yaml.MappingNode {
+		p.addf(n.Line, "egress: originate must be a mapping of name to originate definition")
+		return nil
+	}
+	var out []OriginateSpec
+	for i := 0; i < len(n.Content); i += 2 {
+		key, val := n.Content[i], n.Content[i+1]
+		name := key.Value
+		if !tunnelName.MatchString(name) {
+			p.addf(key.Line, "egress: originate name %q is invalid (use letters, digits, '-' and '_')", name)
+			continue
+		}
+		if val.Kind != yaml.MappingNode {
+			p.addf(val.Line, "egress: originate %q must be a mapping", name)
+			continue
+		}
+		p.checkKeys(val, originateKeys, "egress originate "+strconv.Quote(name))
+		var oc originateConfig
+		if err := val.Decode(&oc); err != nil {
+			p.addf(val.Line, "egress: originate %q: %v", name, err)
+			continue
+		}
+		spec := OriginateSpec{Name: name, Listen: normalizeListen(oc.Listen), Upstream: strings.TrimSpace(oc.Upstream), Token: strings.TrimSpace(oc.Token)}
+		if spec.Listen == "" {
+			p.addf(val.Line, "egress: originate %q needs listen", name)
+			continue
+		}
+		if _, _, err := net.SplitHostPort(spec.Listen); err != nil {
+			p.addf(val.Line, "egress: originate %q listen %q must be a port or host:port", name, oc.Listen)
+			continue
+		}
+		if owner, taken := used[spec.Listen]; taken {
+			p.addf(val.Line, "egress: originate %q listen %s is already used by %s", name, spec.Listen, owner)
+			continue
+		}
+		used[spec.Listen] = "egress originate " + strconv.Quote(name)
+		if _, err := parseOriginTarget(spec.Upstream); err != nil {
+			p.addf(val.Line, "egress: originate %q upstream %q %v", name, oc.Upstream, err)
+			continue
+		}
+		if requireAuth && spec.Token == "" {
+			p.addf(val.Line, "egress: originate %q needs token because require_auth is set", name)
+			continue
+		}
+		out = append(out, spec)
+	}
+	return out
 }
 
 type connectConfig struct {

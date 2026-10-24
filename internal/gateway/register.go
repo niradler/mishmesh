@@ -14,7 +14,7 @@ import (
 )
 
 func (g *Gateway) handleRegister(ctx context.Context, agent *store.Agent, p *tunnel.RegisterPayload) *tunnel.RegisterAckPayload {
-	ack := &tunnel.RegisterAckPayload{}
+	ack := &tunnel.RegisterAckPayload{OrgID: agent.OrgID, AgentID: agent.ID}
 	if p == nil {
 		return ack
 	}
