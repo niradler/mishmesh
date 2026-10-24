@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -83,10 +85,31 @@ func TestAgentAuthorizationCodeFlow(t *testing.T) {
 		t.Fatalf("anonymous = %q", resp.Header.Get("Location"))
 	}
 
+	resp = f.get(t, owner, authorizePath(redirect, url.Values{"state": {strings.Repeat("s", 600)}}))
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "error=invalid_request") {
+		t.Fatalf("oversized state = %q", loc)
+	}
+
 	resp = f.get(t, owner, authorizePath(redirect, nil))
-	loc, err := url.Parse(resp.Header.Get("Location"))
-	if err != nil || resp.StatusCode != http.StatusFound || loc.Host != "127.0.0.1:43123" || loc.Query().Get("state") != "st4te" {
-		t.Fatalf("authorize = %d %v", resp.StatusCode, loc)
+	consent, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil || resp.StatusCode != http.StatusFound || consent.Path != consentPath || consent.Query().Get("code") != "" {
+		t.Fatalf("authorize must stop at consent: %d %v", resp.StatusCode, consent)
+	}
+	consentURL := "/api/v1/auth/consent/" + consent.Query().Get("request")
+	doc(t, &http.Client{}, f.srv, http.MethodGet, consentURL, "", http.StatusUnauthorized, nil)
+	doc(t, owner, f.srv, http.MethodGet, "/api/v1/auth/consent/unknown", "", http.StatusNotFound, nil)
+	var view map[string]any
+	doc(t, owner, f.srv, http.MethodGet, consentURL, "", http.StatusOK, &view)
+	if view["org_id"] != defaultOrgID || view["redirect_uri"] != redirect || view["client_id"] != identity.AgentClientID {
+		t.Fatalf("consent view = %v", view)
+	}
+	doc(t, owner, f.srv, http.MethodPost, consentURL, `{}`, http.StatusBadRequest, nil)
+	var decided map[string]string
+	doc(t, owner, f.srv, http.MethodPost, consentURL, `{"approve":true}`, http.StatusOK, &decided)
+	doc(t, owner, f.srv, http.MethodPost, consentURL, `{"approve":true}`, http.StatusNotFound, nil)
+	loc, err := url.Parse(decided["redirect_to"])
+	if err != nil || loc.Host != "127.0.0.1:43123" || loc.Query().Get("state") != "st4te" {
+		t.Fatalf("consent redirect = %v", loc)
 	}
 	code := loc.Query().Get("code")
 	exchange := url.Values{"grant_type": {grantAuthorizationCode}, "client_id": {identity.AgentClientID}, "code": {code}, "redirect_uri": {redirect}, "code_verifier": {agentVerifier}}
@@ -164,6 +187,32 @@ func TestAgentDeviceFlow(t *testing.T) {
 	}
 }
 
+func TestAgentDeviceLookupAndDeny(t *testing.T) {
+	f := newBrowserFixture(t)
+	owner, _ := register(t, f.srv, "owner@example.com", http.StatusCreated)
+	_, start := postForm(t, f, "/oauth2/device_authorization", url.Values{"client_id": {identity.AgentClientID}})
+	userCode := start["user_code"].(string)
+	poll := url.Values{"grant_type": {grantDeviceCode}, "client_id": {identity.AgentClientID}, "device_code": {start["device_code"].(string)}}
+	lookup := "/api/v1/auth/device?" + url.Values{"user_code": {userCode}}.Encode()
+
+	doc(t, &http.Client{}, f.srv, http.MethodGet, lookup, "", http.StatusUnauthorized, nil)
+	doc(t, owner, f.srv, http.MethodGet, "/api/v1/auth/device?user_code=ZZZZ-ZZZZ", "", http.StatusNotFound, nil)
+	var view map[string]any
+	doc(t, owner, f.srv, http.MethodGet, lookup, "", http.StatusOK, &view)
+	if view["user_code"] != userCode || view["client_id"] != identity.AgentClientID || view["expires_at"] == nil {
+		t.Fatalf("device view = %v", view)
+	}
+
+	doc(t, &http.Client{}, f.srv, http.MethodPost, "/api/v1/auth/device/deny", `{"user_code":"`+userCode+`"}`, http.StatusUnauthorized, nil)
+	doc(t, owner, f.srv, http.MethodPost, "/api/v1/auth/device/deny", `{"user_code":"`+userCode+`"}`, http.StatusNoContent, nil)
+	doc(t, owner, f.srv, http.MethodPost, "/api/v1/auth/device/deny", `{"user_code":"`+userCode+`"}`, http.StatusNotFound, nil)
+	doc(t, owner, f.srv, http.MethodPost, "/api/v1/auth/device/approve", `{"user_code":"`+userCode+`"}`, http.StatusNotFound, nil)
+
+	if status, body := postForm(t, f, "/oauth2/token", poll); status != http.StatusBadRequest || body["error"] != oauthAccessDenied {
+		t.Fatalf("denied poll = %d %v", status, body)
+	}
+}
+
 func TestAgentRefreshFailsForDisabledMember(t *testing.T) {
 	f := newBrowserFixture(t)
 	_, _ = register(t, f.srv, "owner@example.com", http.StatusCreated)
@@ -181,5 +230,33 @@ func TestAgentRefreshFailsForDisabledMember(t *testing.T) {
 	}
 	if _, err := f.id.Authenticate(ctx, tokens.AccessToken, token.TypeAgentUser); err == nil {
 		t.Fatal("non-member session must be revoked")
+	}
+}
+
+func TestDeviceLookupLimitedPerUserAcrossClientIPs(t *testing.T) {
+	f := newBrowserFixture(t)
+	_, loopback, _ := net.ParseCIDR("127.0.0.0/8")
+	f.api.SetTrustedProxies([]*net.IPNet{loopback})
+	owner, _ := register(t, f.srv, "owner@example.com", http.StatusCreated)
+	lookupFrom := func(ip string) int {
+		req, err := http.NewRequest(http.MethodGet, f.srv.URL+"/api/v1/auth/device?user_code=ZZZZ-ZZZZ", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Forwarded-For", ip)
+		resp, err := owner.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for i := 0; i < pairLimit.Capacity(); i++ {
+		if got := lookupFrom(fmt.Sprintf("198.51.100.%d", i+1)); got != http.StatusNotFound {
+			t.Fatalf("guess %d = %d, want 404", i, got)
+		}
+	}
+	if got := lookupFrom("203.0.113.9"); got != http.StatusTooManyRequests {
+		t.Fatalf("guess from a fresh ip = %d, want 429 once the user's budget is spent", got)
 	}
 }

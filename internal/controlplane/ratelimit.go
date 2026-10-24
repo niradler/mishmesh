@@ -40,6 +40,10 @@ func (a *API) authRateAllowed(r *http.Request, email string) bool {
 	return a.limiter.Allow(ctx, "cp:pair:"+hashKey(ipKey+"|"+email), pairLimit).Allowed
 }
 
+func (a *API) subjectRateAllowed(r *http.Request, subject string) bool {
+	return a.limiter.Allow(r.Context(), "cp:subject:"+hashKey(subject), pairLimit).Allowed
+}
+
 func hashKey(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:16])

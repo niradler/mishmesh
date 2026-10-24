@@ -59,6 +59,17 @@ func (s *SessionStore) PutTokenSession(_ context.Context, ts *store.TokenSession
 	return nil
 }
 
+func (s *SessionStore) RotateTokenSession(_ context.Context, ts *store.TokenSession, prevTokenID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.sessions[ts.ID]
+	if !ok || current.TokenID != prevTokenID || !s.now().Before(current.ExpiresAt) {
+		return store.ErrNotFound
+	}
+	s.sessions[ts.ID] = *ts
+	return nil
+}
+
 func (s *SessionStore) GetTokenSession(_ context.Context, id string) (*store.TokenSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -122,6 +133,16 @@ func (s *SessionStore) TakeOnce(_ context.Context, key string) ([]byte, error) {
 		return nil, store.ErrNotFound
 	}
 	return v.value, nil
+}
+
+func (s *SessionStore) PeekOnce(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.once[key]
+	if !ok || !s.now().Before(v.expiresAt) || v.value == nil {
+		return nil, store.ErrNotFound
+	}
+	return append([]byte(nil), v.value...), nil
 }
 
 func (s *SessionStore) deleteLocked(id string) {

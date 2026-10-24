@@ -201,6 +201,7 @@ func serve() error {
 		return err
 	}
 	cp.SetIdentity(idSvc)
+	idSvc.OnFlush(cp.ClearAuthzCache)
 	cp.SetWorkloadVerifier(workload.NewVerifier(workload.Options{Client: safehttp.Client(false, cfg.OIDCAllowPrivate)}))
 	gwOpts.Users = idSvc
 	accessLog := accesslog.New(data, accesslog.Options{Retention: cfg.AccessLogRetention, Log: log})
@@ -209,16 +210,20 @@ func serve() error {
 	gwOpts.Egress = egress.New(egress.Options{Conns: conns, Log: log, Meter: mx, Deciders: cp, Dialer: proxyGuard, Access: accessLog, Revocations: idSvc, Auth: idSvc, Agents: data})
 	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)
 	gw := gateway.New(gwOpts)
-	idSvc.OnFlush(cp.ClearAuthzCache)
-	idSvc.OnFlush(gw.FlushAll)
-	cp.SetDecisionFlusher(idSvc.FlushAll)
+	idSvc.OnFlush(gw.FlushOrg)
+	cp.SetDecisionFlusher(idSvc.FlushOrg)
 	if bus, ok := conns.(store.EventBus); ok {
 		stopBus, err := idSvc.AttachBus(bus, log)
 		if err != nil {
 			return err
 		}
 		defer stopBus()
-		log.Info("revocations and decision flushes shared across nodes")
+		stopSecretBus, err := vault.AttachBus(bus, log)
+		if err != nil {
+			return err
+		}
+		defer stopSecretBus()
+		log.Info("revocations, decision flushes and secret invalidations shared across nodes")
 	}
 	if swept, err := gw.SweepOrphanedEphemeral(context.Background()); err != nil {
 		log.Warn("sweep of orphaned ephemeral endpoints failed", "err", err)

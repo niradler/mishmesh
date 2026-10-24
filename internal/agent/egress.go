@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,8 @@ const (
 	exitDialTimeout        = 10 * time.Second
 	maxProxyHeaderBytes    = 32 << 10
 	proxyExitUserPrefix    = "exit="
+	connectUDPProtocol     = "connect-udp"
+	masqueUDPPathPrefix    = "/.well-known/masque/udp/"
 )
 
 type EgressSpec struct {
@@ -39,7 +42,13 @@ type EgressSpec struct {
 
 type ExitDialer interface {
 	Dial(ctx context.Context, target string, otls *store.OriginTLS, timeout time.Duration) (net.Conn, error)
+	ResolveAll(ctx context.Context, target string) ([]string, error)
 }
+
+var (
+	errExitAborted     = errors.New("egress exit: server aborted the approval")
+	errExitNotApproved = errors.New("egress exit: server approved targets this exit did not resolve")
+)
 
 type egressCreds struct {
 	token string
@@ -120,11 +129,27 @@ func (a *Agent) serveEgressClient(client net.Conn) {
 		writeEgressFailure(client, errProxyAuthRequired)
 		return
 	}
+	if isConnectUDP(req) {
+		writeProxyError(client, http.StatusForbidden, "egress refused: "+errUDPEgress.Error())
+		a.log.Info("egress refused", "proto", "connect-udp", "err", errUDPEgress)
+		return
+	}
 	if req.Method == http.MethodConnect {
 		a.serveConnect(client, br, req, creds)
 		return
 	}
 	a.serveAbsoluteForm(client, req, creds)
+}
+
+func isConnectUDP(req *http.Request) bool {
+	for _, upgrade := range req.Header.Values("Upgrade") {
+		for proto := range strings.SplitSeq(upgrade, ",") {
+			if strings.EqualFold(strings.TrimSpace(proto), connectUDPProtocol) {
+				return true
+			}
+		}
+	}
+	return req.URL != nil && strings.HasPrefix(req.URL.Path, masqueUDPPathPrefix)
 }
 
 func proxyCredentials(header string) (egressCreds, bool) {
@@ -268,7 +293,7 @@ func exitGuard(allow []string, log *slog.Logger) ExitDialer {
 	return g
 }
 
-func (a *Agent) serveExit(stream net.Conn, dest string) {
+func (a *Agent) serveExit(stream net.Conn, dest string, reportResolved bool) {
 	refuse := func(status tunnel.EgressStatus, reason string) {
 		_ = stream.SetWriteDeadline(time.Now().Add(egressHandshakeTimeout))
 		_ = tunnel.WriteEgressReply(stream, tunnel.EgressReply{Status: status, Reason: reason})
@@ -282,9 +307,22 @@ func (a *Agent) serveExit(stream net.Conn, dest string) {
 	if dialer == nil {
 		dialer = proxy.DefaultGuard()
 	}
-	upstream, err := dialer.Dial(context.Background(), dest, nil, exitDialTimeout)
+	var upstream net.Conn
+	var err error
+	if reportResolved {
+		upstream, err = dialApprovedExit(stream, dialer, dest)
+	} else {
+		upstream, err = dialer.Dial(context.Background(), dest, nil, exitDialTimeout)
+	}
+	if errors.Is(err, errExitAborted) {
+		return
+	}
 	if err != nil {
 		a.log.Info("egress exit dial refused", "destination", truncateLog(dest), "err", err)
+		if errors.Is(err, errExitNotApproved) {
+			refuse(tunnel.EgressInvalid, "unapproved_target")
+			return
+		}
 		if errors.Is(err, proxy.ErrBlocked) {
 			refuse(tunnel.EgressDenied, "blocked_destination")
 			return
@@ -299,6 +337,45 @@ func (a *Agent) serveExit(stream net.Conn, dest string) {
 	}
 	_ = stream.SetWriteDeadline(time.Time{})
 	tunnel.Splice(stream, upstream)
+}
+
+func dialApprovedExit(stream net.Conn, dialer ExitDialer, dest string) (net.Conn, error) {
+	resolveCtx, cancel := context.WithTimeout(context.Background(), exitDialTimeout)
+	resolved, err := dialer.ResolveAll(resolveCtx, dest)
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	if len(resolved) > tunnel.MaxExitTargets {
+		resolved = resolved[:tunnel.MaxExitTargets]
+	}
+	_ = stream.SetWriteDeadline(time.Now().Add(egressHandshakeTimeout))
+	err = tunnel.WriteExitTargets(stream, resolved)
+	_ = stream.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return nil, errExitAborted
+	}
+	_ = stream.SetReadDeadline(time.Now().Add(tunnel.EgressReplyTimeout))
+	approved, err := tunnel.ReadExitTargets(stream)
+	_ = stream.SetReadDeadline(time.Time{})
+	if err != nil {
+		return nil, errExitAborted
+	}
+	if len(approved) == 0 {
+		return nil, errExitNotApproved
+	}
+	for _, target := range approved {
+		if !slices.Contains(resolved, target) {
+			return nil, errExitNotApproved
+		}
+	}
+	var upstream net.Conn
+	for _, target := range approved {
+		if upstream, err = dialer.Dial(context.Background(), target, nil, exitDialTimeout); err == nil {
+			return upstream, nil
+		}
+	}
+	return nil, err
 }
 
 func writeEgressFailure(w io.Writer, err error) {

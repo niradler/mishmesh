@@ -59,11 +59,11 @@ func (a *API) SetServiceRegistry(registry *services.Registry) {
 
 func (a *API) SetIngressInvalidator(invalidate func()) { a.invalidateIngress = invalidate }
 
-func (a *API) invalidateIngressCaches() {
+func (a *API) invalidateIngressCaches(orgID string) {
 	if a.invalidateIngress != nil {
 		a.invalidateIngress()
 	}
-	a.flushDecisions()
+	a.flushDecisions(orgID)
 }
 
 func (a *API) SetHealth(h HealthSource) {
@@ -99,7 +99,7 @@ func (a *API) capabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 const healthProbeTimeout = 10 * time.Second
 
 func (a *API) endpointChanged(ep *store.Endpoint) {
-	a.invalidateIngressCaches()
+	a.invalidateIngressCaches(ep.OrgID)
 	a.triggerConnections(ep.OrgID)
 	if a.endpointHealth == nil {
 		return
@@ -114,7 +114,7 @@ func (a *API) endpointChanged(ep *store.Endpoint) {
 }
 
 func (a *API) endpointRemoved(ep *store.Endpoint) {
-	a.invalidateIngressCaches()
+	a.invalidateIngressCaches(ep.OrgID)
 	if a.endpointHealth != nil {
 		a.endpointHealth.Forget(ep.ID)
 	}

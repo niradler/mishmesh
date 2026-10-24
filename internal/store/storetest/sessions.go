@@ -41,13 +41,45 @@ func RunSessionStore(t *testing.T, open func(t *testing.T) store.SessionStore) {
 		ctx := context.Background()
 		ts := sampleSession("tsn_r", "org_1", "sa_1")
 		_ = s.PutTokenSession(ctx, ts)
-		ts.TokenID = "tid_new"
+		rotatedAt := time.Now().UTC().Truncate(time.Second)
+		ts.PrevTokenID, ts.TokenID, ts.RotatedAt = ts.TokenID, "tid_new", rotatedAt
 		if err := s.PutTokenSession(ctx, ts); err != nil {
 			t.Fatal(err)
 		}
 		got, err := s.GetTokenSession(ctx, ts.ID)
-		if err != nil || got.TokenID != "tid_new" {
+		if err != nil || got.TokenID != "tid_new" || got.PrevTokenID != ts.PrevTokenID || !got.RotatedAt.Equal(rotatedAt) {
 			t.Fatalf("got %+v err %v", got, err)
+		}
+	})
+
+	t.Run("rotate is a compare and swap on the token id", func(t *testing.T) {
+		s := open(t)
+		ctx := context.Background()
+		ts := sampleSession("tsn_cas", "org_1", "sa_1")
+		_ = s.PutTokenSession(ctx, ts)
+		first := *ts
+		first.PrevTokenID, first.TokenID = ts.TokenID, "tid_first"
+		if err := s.RotateTokenSession(ctx, &first, ts.TokenID); err != nil {
+			t.Fatal(err)
+		}
+		loser := *ts
+		loser.PrevTokenID, loser.TokenID = ts.TokenID, "tid_loser"
+		if err := s.RotateTokenSession(ctx, &loser, ts.TokenID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("stale rotate err = %v", err)
+		}
+		if got, err := s.GetTokenSession(ctx, ts.ID); err != nil || got.TokenID != "tid_first" {
+			t.Fatalf("got %+v err %v", got, err)
+		}
+		if err := s.DeleteTokenSession(ctx, ts.ID); err != nil {
+			t.Fatal(err)
+		}
+		revived := first
+		revived.PrevTokenID, revived.TokenID = first.TokenID, "tid_revived"
+		if err := s.RotateTokenSession(ctx, &revived, first.TokenID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("rotate after delete err = %v", err)
+		}
+		if _, err := s.GetTokenSession(ctx, ts.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("a rotate resurrected a deleted session: %v", err)
 		}
 	})
 
@@ -108,6 +140,30 @@ func RunSessionStore(t *testing.T, open func(t *testing.T) store.SessionStore) {
 		}
 		if _, err := s.TakeOnce(ctx, "code:1"); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("second take err = %v", err)
+		}
+	})
+
+	t.Run("peek once leaves the value", func(t *testing.T) {
+		s := open(t)
+		ctx := context.Background()
+		if _, err := s.PeekOnce(ctx, "consent:1"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("peek missing err = %v", err)
+		}
+		if err := s.PutOnce(ctx, "consent:1", []byte("pending"), time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			got, err := s.PeekOnce(ctx, "consent:1")
+			if err != nil || string(got) != "pending" {
+				t.Fatalf("peek = %q %v", got, err)
+			}
+		}
+		got, err := s.TakeOnce(ctx, "consent:1")
+		if err != nil || string(got) != "pending" {
+			t.Fatalf("take after peek = %q %v", got, err)
+		}
+		if _, err := s.PeekOnce(ctx, "consent:1"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("peek after take err = %v", err)
 		}
 	})
 }

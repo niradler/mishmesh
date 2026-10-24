@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,8 @@ const (
 	AgentClientID       = "mishmesh-agent"
 	AgentAccessTTL      = time.Hour
 	AgentSessionTTL     = 7 * 24 * time.Hour
+	RefreshGrace        = 20 * time.Second
+	refreshGraceKey     = "rgrace:"
 	AuthCodeTTL         = 60 * time.Second
 	DeviceCodeTTL       = 10 * time.Minute
 	DevicePollInterval  = 5 * time.Second
@@ -219,24 +222,12 @@ func (s *Service) StartDevice(ctx context.Context) (DeviceStart, error) {
 }
 
 func (s *Service) ApproveDevice(ctx context.Context, userCode string, l AgentLogin) error {
-	code := NormalizeUserCode(userCode)
-	if code == "" || l.OrgID == "" || l.UserID == "" {
+	if l.OrgID == "" || l.UserID == "" {
 		return ErrUnauthenticated
 	}
-	raw, err := s.sessions.TakeOnce(ctx, deviceUserKey+code)
-	if errors.Is(err, store.ErrNotFound) {
-		return ErrUnauthenticated
-	}
+	pending, remaining, err := s.takePendingDevice(ctx, userCode)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	var pending pendingDevice
-	if err := json.Unmarshal(raw, &pending); err != nil {
-		return ErrUnauthenticated
-	}
-	remaining := time.Unix(pending.ExpiresAt, 0).Sub(s.now())
-	if remaining <= 0 {
-		return ErrUnauthenticated
+		return err
 	}
 	l.Challenge, l.RedirectURI = "", ""
 	login, err := json.Marshal(l)
@@ -268,7 +259,7 @@ func (s *Service) PollDevice(ctx context.Context, deviceCode string) (AgentLogin
 	}
 	raw, err := s.sessions.TakeOnce(ctx, deviceApprovedKey+hash)
 	if errors.Is(err, store.ErrNotFound) {
-		return AgentLogin{}, ErrAuthorizationPending
+		return AgentLogin{}, s.pendingOrDenied(ctx, hash)
 	}
 	if err != nil {
 		return AgentLogin{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
@@ -278,6 +269,18 @@ func (s *Service) PollDevice(ctx context.Context, deviceCode string) (AgentLogin
 		return AgentLogin{}, ErrUnauthenticated
 	}
 	return l, nil
+}
+
+func (s *Service) pendingOrDenied(ctx context.Context, hash string) error {
+	_, err := s.sessions.PeekOnce(ctx, deviceDeniedKey+hash)
+	switch {
+	case err == nil:
+		return ErrAccessDenied
+	case errors.Is(err, store.ErrNotFound):
+		return ErrAuthorizationPending
+	default:
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
 }
 
 func (s *Service) IssueAgentUser(ctx context.Context, l AgentLogin) (AgentTokens, error) {
@@ -306,10 +309,7 @@ func (s *Service) IssueAgentUser(ctx context.Context, l AgentLogin) (AgentTokens
 func (s *Service) RefreshAgentUser(ctx context.Context, refresh string) (AgentTokens, error) {
 	ts, _, err := s.verify(ctx, refresh, []token.Type{token.TypeRefresh})
 	if errors.Is(err, errTokenSuperseded) {
-		if err := s.RevokeSession(ctx, ts.ID); err != nil {
-			return AgentTokens{}, err
-		}
-		return AgentTokens{}, ErrRefreshReused
+		return s.refreshWithinGrace(ctx, ts, refresh)
 	}
 	if err != nil {
 		return AgentTokens{}, err
@@ -317,9 +317,53 @@ func (s *Service) RefreshAgentUser(ctx context.Context, refresh string) (AgentTo
 	if ts.SubjectType != store.SubjectUser {
 		return AgentTokens{}, ErrUnauthenticated
 	}
-	ts.TokenID = store.NewID("tid")
-	ts.ExpiresAt = s.now().UTC().Add(AgentSessionTTL)
-	return s.storeAgentTokens(ctx, ts)
+	now := s.now().UTC()
+	prev := ts.TokenID
+	ts.PrevTokenID, ts.TokenID, ts.RotatedAt = prev, nextTokenID(ts.ID, prev), now
+	ts.ExpiresAt = now.Add(AgentSessionTTL)
+	tokens, err := s.signAgentTokens(ts)
+	if err != nil {
+		return AgentTokens{}, err
+	}
+	err = s.sessions.RotateTokenSession(ctx, ts, prev)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return s.RefreshAgentUser(ctx, refresh)
+	case err != nil:
+		return AgentTokens{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return tokens, nil
+}
+
+func (s *Service) refreshWithinGrace(ctx context.Context, ts *store.TokenSession, refresh string) (AgentTokens, error) {
+	claims, err := s.keys.Verify(refresh, s.now())
+	if err != nil {
+		return AgentTokens{}, ErrUnauthenticated
+	}
+	now := s.now()
+	inGrace := ts.SubjectType == store.SubjectUser &&
+		ts.PrevTokenID != "" &&
+		subtle.ConstantTimeCompare([]byte(ts.PrevTokenID), []byte(claims.TokenID)) == 1 &&
+		now.Before(ts.RotatedAt.Add(RefreshGrace)) &&
+		now.Before(ts.ExpiresAt)
+	if inGrace {
+		first, err := s.sessions.ClaimOnce(ctx, refreshGraceKey+ts.ID+":"+claims.TokenID, RefreshGrace)
+		if err != nil {
+			return AgentTokens{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+		if first {
+			return s.signAgentTokens(ts)
+		}
+	}
+	if err := s.RevokeSession(ctx, ts.ID); err != nil {
+		return AgentTokens{}, err
+	}
+	return AgentTokens{}, ErrRefreshReused
+}
+
+func nextTokenID(sessionID, tokenID string) string {
+	sum := sha256.Sum256([]byte(sessionID + "|" + tokenID))
+	return "tid_" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:15]))
 }
 
 func (s *Service) RevokeToken(ctx context.Context, raw string) error {
@@ -334,6 +378,17 @@ func (s *Service) RevokeToken(ctx context.Context, raw string) error {
 }
 
 func (s *Service) storeAgentTokens(ctx context.Context, ts *store.TokenSession) (AgentTokens, error) {
+	tokens, err := s.signAgentTokens(ts)
+	if err != nil {
+		return AgentTokens{}, err
+	}
+	if err := s.sessions.PutTokenSession(ctx, ts); err != nil {
+		return AgentTokens{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return tokens, nil
+}
+
+func (s *Service) signAgentTokens(ts *store.TokenSession) (AgentTokens, error) {
 	now := s.now()
 	accessExp := now.Add(AgentAccessTTL)
 	if accessExp.After(ts.ExpiresAt) {
@@ -346,9 +401,6 @@ func (s *Service) storeAgentTokens(ctx context.Context, ts *store.TokenSession) 
 	refresh, err := s.signUntil(ts, token.TypeRefresh, ts.ExpiresAt)
 	if err != nil {
 		return AgentTokens{}, err
-	}
-	if err := s.sessions.PutTokenSession(ctx, ts); err != nil {
-		return AgentTokens{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return AgentTokens{AccessToken: access, RefreshToken: refresh, ExpiresIn: accessExp.Sub(now).Round(time.Second), Session: ts}, nil
 }

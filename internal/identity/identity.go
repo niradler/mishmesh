@@ -82,7 +82,7 @@ type Service struct {
 
 	mu          sync.Mutex
 	subscribers map[int]func(Revocation)
-	flushers    map[int]func()
+	flushers    map[int]func(orgID string)
 	nextSub     int
 	bus         store.EventBus
 	busLog      *slog.Logger
@@ -95,7 +95,7 @@ func New(keys *token.Keyring, sessions store.SessionStore) *Service {
 		now:         time.Now,
 		origin:      store.NewID("node"),
 		subscribers: make(map[int]func(Revocation)),
-		flushers:    make(map[int]func()),
+		flushers:    make(map[int]func(orgID string)),
 	}
 }
 

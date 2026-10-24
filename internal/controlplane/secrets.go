@@ -70,7 +70,16 @@ func (a *API) putSecretHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) deleteSecretHandler(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if a.handleErr(w, a.data.DeleteOrgSecret(r.Context(), a.orgScope(r), name)) {
+	remove := a.data.DeleteOrgSecret
+	if a.vault != nil {
+		remove = a.vault.Delete
+	}
+	err := remove(r.Context(), a.orgScope(r), name)
+	if errors.Is(err, orgsecret.ErrInvalidName) {
+		writeError(w, http.StatusBadRequest, "secret name must be 1-63 lowercase letters, digits, '_' or '-'")
+		return
+	}
+	if a.handleErr(w, err) {
 		return
 	}
 	a.audit(r, "secret.delete", name, "")

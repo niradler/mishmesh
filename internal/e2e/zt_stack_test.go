@@ -116,6 +116,7 @@ func newZTStack(t *testing.T, verifierClient *http.Client) *ztStack {
 	cp := controlplane.New(data, conns, "", log)
 	cp.SetSecretVault(vault)
 	cp.SetIdentity(idSvc)
+	idSvc.OnFlush(cp.ClearAuthzCache)
 	cp.SetWorkloadVerifier(workload.NewVerifier(workload.Options{Client: verifierClient, AllowHTTP: true}))
 
 	deciders := &ztDeciders{inner: cp}
@@ -124,7 +125,8 @@ func newZTStack(t *testing.T, verifierClient *http.Client) *ztStack {
 		Data: data, Conns: conns, Log: log, BaseDomain: "localhost", PublicScheme: "http",
 		Users: idSvc, Connect: connect,
 	})
-	cp.SetDecisionFlusher(gw.FlushAll)
+	idSvc.OnFlush(gw.FlushOrg)
+	cp.SetDecisionFlusher(idSvc.FlushOrg)
 	cp.SetPublicConfig("localhost", "http")
 	cp.ConfigureAuth(controlplane.AuthOptions{Enabled: true, PasswordEnabled: true})
 

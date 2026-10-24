@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -18,21 +19,25 @@ import (
 )
 
 const (
-	MeterKind         = "egress"
-	decisionTimeout   = 5 * time.Second
-	dialTimeout       = 10 * time.Second
-	replyTimeout      = 5 * time.Second
-	agentClientIP     = "0.0.0.0"
-	reasonBlocked     = "blocked_destination"
-	reasonDial        = "dial_failed"
-	reasonResolve     = "resolve_failed"
-	reasonSNI         = "sni_mismatch"
-	reasonBadCreds    = "invalid_proxy_credentials"
-	reasonNoAuth      = "proxy_auth_unavailable"
-	reasonUnknownExit = "unknown_exit"
-	reasonExitOffline = "exit_offline"
-	reasonExitSelf    = "exit_is_self"
-	reasonNoExits     = "exits_unavailable"
+	MeterKind          = "egress"
+	decisionTimeout    = 5 * time.Second
+	dialTimeout        = 10 * time.Second
+	replyTimeout       = 5 * time.Second
+	agentClientIP      = "0.0.0.0"
+	reasonBlocked      = "blocked_destination"
+	reasonDial         = "dial_failed"
+	reasonResolve      = "resolve_failed"
+	reasonSNI          = "sni_mismatch"
+	reasonECH          = "ech_outer_sni_mismatch"
+	reasonNotTCP       = "udp_egress_unsupported"
+	reasonBadCreds     = "invalid_proxy_credentials"
+	reasonNoAuth       = "proxy_auth_unavailable"
+	reasonUnknownExit  = "unknown_exit"
+	reasonExitOffline  = "exit_offline"
+	reasonExitSelf     = "exit_is_self"
+	reasonNoExits      = "exits_unavailable"
+	reasonExitOutdated = "exit_outdated"
+	reasonExitProtocol = "exit_protocol"
 )
 
 type Dialer interface {
@@ -119,6 +124,11 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		ClientIP:      egressClientIP(init.Meta[tunnel.MetaEgressClient]),
 		Protocol:      "tcp",
 	}}
+	if init.Kind != store.KindTCP {
+		rec.event.Protocol = truncate(init.Kind)
+		h.refuse(stream, rec, &refusal{tunnel.EgressInvalid, reasonNotTCP})
+		return
+	}
 	dest, err := authz.NormalizeDestination(init.Meta[tunnel.MetaEgress])
 	if err != nil {
 		h.refuse(stream, rec, &refusal{tunnel.EgressInvalid, string(authz.ReasonInvalidRequest)})
@@ -141,33 +151,44 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		return
 	}
 	targets := []string{dest}
+	var exitStream net.Conn
 	if exit != nil {
 		rec.event.ExitAgentID = exit.ID
+		if exitStream, targets, refused = h.openExit(ctx, exit, dest); refused != nil {
+			h.refuse(stream, rec, refused)
+			return
+		}
+		defer exitStream.Close()
 	} else {
 		if targets, refused = h.resolve(ctx, agent, dest); refused != nil {
 			h.refuse(stream, rec, refused)
 			return
 		}
 	}
-	var flow *flows.Flow
-	if hasPrincipal {
-		var untrack func()
-		flow, untrack = h.flows.Track(agent.OrgID, p.SessionID, stream)
-		defer untrack()
-	}
+	flow, untrack := h.flows.Track(agent.OrgID, p.SessionID, stream, func(ctx context.Context) error {
+		d, status := h.decideAll(ctx, agent, p, hasPrincipal, dest, targets, exit)
+		switch status {
+		case tunnel.EgressOK:
+			return nil
+		case tunnel.EgressUnavailable:
+			return fmt.Errorf("egress %s re-evaluation: %w", dest, flows.ErrTransient)
+		}
+		return fmt.Errorf("egress %s re-evaluated to %s", dest, d.Reason)
+	})
+	defer untrack()
 	decision, status := h.decideAll(ctx, agent, p, hasPrincipal, dest, targets, exit)
 	rec.event.PolicyIDs = policyIDs(decision)
 	if status != tunnel.EgressOK {
 		h.refuse(stream, rec, &refusal{status, string(decision.Reason)})
 		return
 	}
-	upstream, refused := h.dial(ctx, agent, exit, dest, targets)
+	upstream, refused := h.dial(ctx, agent, exitStream, dest, targets)
 	if refused != nil {
 		h.refuse(stream, rec, refused)
 		return
 	}
 	defer upstream.Close()
-	if flow != nil && !h.flows.Attach(flow, upstream) {
+	if !h.flows.Attach(flow, upstream) {
 		h.refuse(stream, rec, &refusal{tunnel.EgressDenied, string(authz.ReasonSessionRevoked)})
 		return
 	}
@@ -183,10 +204,10 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 	}
 	rec.event.Decision = store.AccessAllow
 	rec.event.Reason = string(authz.ReasonAllow)
-	if client.mismatch() {
+	if reason := client.mismatch(); reason != "" {
 		rec.event.Decision = store.AccessDeny
-		rec.event.Reason = reasonSNI
-		h.log.Warn("egress tls sni does not match destination", "agent_id", agent.ID, "destination", dest)
+		rec.event.Reason = reason
+		h.log.Warn("egress tls server name refused", "agent_id", agent.ID, "destination", dest, "reason", reason)
 	}
 	rec.event.BytesIn = up
 	rec.event.BytesOut = down
@@ -259,9 +280,9 @@ func (h *Handler) resolve(ctx context.Context, agent *store.Agent, dest string) 
 	return targets, nil
 }
 
-func (h *Handler) dial(ctx context.Context, agent, exit *store.Agent, dest string, targets []string) (net.Conn, *refusal) {
-	if exit != nil {
-		return h.dialViaExit(ctx, exit, dest)
+func (h *Handler) dial(ctx context.Context, agent *store.Agent, exitStream net.Conn, dest string, targets []string) (net.Conn, *refusal) {
+	if exitStream != nil {
+		return confirmExit(exitStream, targets)
 	}
 	var upstream net.Conn
 	var err error
@@ -280,27 +301,66 @@ func (h *Handler) dial(ctx context.Context, agent, exit *store.Agent, dest strin
 	return upstream, nil
 }
 
-func (h *Handler) dialViaExit(ctx context.Context, exit *store.Agent, dest string) (net.Conn, *refusal) {
+func (h *Handler) openExit(ctx context.Context, exit *store.Agent, dest string) (net.Conn, []string, *refusal) {
 	conn, ok := h.conns.GetAgent(exit.ID)
 	if !ok {
-		return nil, &refusal{tunnel.EgressUnavailable, reasonExitOffline}
+		return nil, nil, &refusal{tunnel.EgressUnavailable, reasonExitOffline}
 	}
 	openCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
-	stream, err := conn.OpenStream(openCtx, "", store.KindTCP, map[string]string{tunnel.MetaEgressExit: dest})
+	stream, err := conn.OpenStream(openCtx, "", store.KindTCP, map[string]string{tunnel.MetaEgressExit: dest, tunnel.MetaExitResolve: "1"})
 	if err != nil {
 		h.log.Info("egress exit stream failed", "exit_id", exit.ID, "err", err)
+		return nil, nil, &refusal{tunnel.EgressUnavailable, reasonExitOffline}
+	}
+	_ = stream.SetReadDeadline(time.Now().Add(tunnel.EgressReplyTimeout))
+	targets, reply, err := tunnel.ReadExitResolution(stream)
+	_ = stream.SetReadDeadline(time.Time{})
+	var refused *refusal
+	switch {
+	case err != nil:
+		refused = &refusal{tunnel.EgressDialFailed, reasonExitProtocol}
+	case reply != nil && reply.Status == tunnel.EgressOK:
+		refused = &refusal{tunnel.EgressUnavailable, reasonExitOutdated}
+	case reply != nil:
+		refused = &refusal{reply.Status, "exit_" + reply.Reason}
+	case !validExitTargets(targets):
+		refused = &refusal{tunnel.EgressDialFailed, reasonExitProtocol}
+	}
+	if refused != nil {
+		_ = stream.Close()
+		return nil, nil, refused
+	}
+	return stream, targets, nil
+}
+
+func validExitTargets(targets []string) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	for _, target := range targets {
+		host, port, err := net.SplitHostPort(target)
+		if err != nil || net.ParseIP(host) == nil || port == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func confirmExit(stream net.Conn, targets []string) (net.Conn, *refusal) {
+	_ = stream.SetWriteDeadline(time.Now().Add(replyTimeout))
+	err := tunnel.WriteExitTargets(stream, targets)
+	_ = stream.SetWriteDeadline(time.Time{})
+	if err != nil {
 		return nil, &refusal{tunnel.EgressUnavailable, reasonExitOffline}
 	}
 	_ = stream.SetReadDeadline(time.Now().Add(tunnel.EgressReplyTimeout))
 	reply, err := tunnel.ReadEgressReply(stream)
 	_ = stream.SetReadDeadline(time.Time{})
 	if err != nil {
-		_ = stream.Close()
 		return nil, &refusal{tunnel.EgressDialFailed, reasonDial}
 	}
 	if reply.Status != tunnel.EgressOK {
-		_ = stream.Close()
 		return nil, &refusal{reply.Status, "exit_" + reply.Reason}
 	}
 	return stream, nil
@@ -329,7 +389,8 @@ func (h *Handler) decide(ctx context.Context, agent *store.Agent, p identity.Pri
 	reqCtx := authz.RequestContext{ClientIP: agentClientIP, AuthMethod: authz.AuthMethodAgentToken}
 	if exit != nil {
 		reqCtx.Exit = exit.ID
-	} else if host, _, err := net.SplitHostPort(target); err == nil {
+	}
+	if host, _, err := net.SplitHostPort(target); err == nil && net.ParseIP(host) != nil {
 		reqCtx.ResolvedIP = host
 	}
 	if hasPrincipal {

@@ -341,7 +341,7 @@ func (a *API) saveConnection(w http.ResponseWriter, r *http.Request, existing *s
 		return
 	}
 	a.audit(r, action, record.ID, record.Type)
-	a.invalidateIngressCaches()
+	a.invalidateIngressCaches(record.OrgID)
 	ctx, cancel := context.WithTimeout(r.Context(), connectionOperationTimeout)
 	defer cancel()
 	status := a.connectionRecordStatus(&record)
@@ -413,7 +413,7 @@ func (a *API) deleteConnectionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "connection.delete", record.ID, record.Type)
-	a.invalidateIngressCaches()
+	a.invalidateIngressCaches(record.OrgID)
 	if a.connections != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), connectionOperationTimeout)
 		defer cancel()

@@ -120,4 +120,28 @@ permit (principal in Group::"` + group + `", action in [Action::"endpoint:access
 			t.Fatalf("access event %+v, want deny credential_unavailable 502", ev)
 		}
 	})
+	t.Run("rotated secret is injected on the very next request", func(t *testing.T) {
+		const rotated = "ops-rotated-value"
+		owner.putSecret("ops-key", rotated)
+		got := s.ingressGet("billing", "/ops-rotated", ztBearer(s.mustToken(opsSA)))
+		if got.status != http.StatusOK {
+			t.Fatalf("status %d body %q", got.status, got.body)
+		}
+		if keys, _ := upstream.keys("/ops-rotated"); strings.Join(keys, "|") != "Key "+rotated {
+			t.Fatalf("upstream got %q after rotation, want the rotated value", keys)
+		}
+	})
+
+	t.Run("deleted secret fails closed on the very next request", func(t *testing.T) {
+		if status, raw := owner.do(http.MethodDelete, "/api/v1/secrets/dev-key", nil); status != http.StatusNoContent {
+			t.Fatalf("delete secret: status %d: %s", status, raw)
+		}
+		got := s.ingressGet("billing", "/dev-deleted", ztBearer(s.mustToken(devSA)))
+		if got.status != http.StatusBadGateway {
+			t.Fatalf("status %d body %q, want 502 after the secret was deleted", got.status, got.body)
+		}
+		if _, hit := upstream.keys("/dev-deleted"); hit {
+			t.Fatal("request reached upstream after its secret was deleted")
+		}
+	})
 }

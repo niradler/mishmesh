@@ -54,7 +54,7 @@ func (s *Service) AttachBus(bus store.EventBus, log *slog.Logger) (func(), error
 	}, nil
 }
 
-func (s *Service) OnFlush(fn func()) func() {
+func (s *Service) OnFlush(fn func(orgID string)) func() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := s.nextSub
@@ -68,8 +68,12 @@ func (s *Service) OnFlush(fn func()) func() {
 }
 
 func (s *Service) FlushAll() {
-	s.flushLocal()
-	s.broadcast(flushTopic, busMessage{Origin: s.origin})
+	s.FlushOrg("")
+}
+
+func (s *Service) FlushOrg(orgID string) {
+	s.flushLocal(orgID)
+	s.broadcast(flushTopic, busMessage{Origin: s.origin, OrgID: orgID})
 }
 
 func (s *Service) SessionActive(ctx context.Context, id string) (bool, error) {
@@ -83,15 +87,15 @@ func (s *Service) SessionActive(ctx context.Context, id string) (bool, error) {
 	return s.now().Before(ts.ExpiresAt), nil
 }
 
-func (s *Service) flushLocal() {
+func (s *Service) flushLocal(orgID string) {
 	s.mu.Lock()
-	fns := make([]func(), 0, len(s.flushers))
+	fns := make([]func(string), 0, len(s.flushers))
 	for _, id := range slices.Sorted(maps.Keys(s.flushers)) {
 		fns = append(fns, s.flushers[id])
 	}
 	s.mu.Unlock()
 	for _, fn := range fns {
-		fn()
+		fn(orgID)
 	}
 }
 
@@ -137,7 +141,7 @@ func (s *Service) handleRemoteRevoke(payload []byte) {
 }
 
 func (s *Service) handleRemoteFlush(payload []byte) {
-	if _, ok := s.decodeRemote(payload); ok {
-		s.flushLocal()
+	if msg, ok := s.decodeRemote(payload); ok {
+		s.flushLocal(msg.OrgID)
 	}
 }

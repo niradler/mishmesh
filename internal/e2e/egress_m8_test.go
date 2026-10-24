@@ -3,10 +3,12 @@ package e2e
 import (
 	"bufio"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,6 +192,10 @@ func socksConnect(t *testing.T, addr, target, user, pass string) (net.Conn, *buf
 }
 
 func socksDial(addr, target, user, pass string) (net.Conn, *bufio.Reader, byte, error) {
+	return socksDialCommand(addr, target, user, pass, 0x01)
+}
+
+func socksDialCommand(addr, target, user, pass string, command byte) (net.Conn, *bufio.Reader, byte, error) {
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		return nil, nil, 0, err
@@ -226,7 +232,7 @@ func socksDial(addr, target, user, pass string) (net.Conn, *bufio.Reader, byte, 
 	}
 	host, portStr, _ := net.SplitHostPort(target)
 	port, _ := strconv.Atoi(portStr)
-	req := append([]byte{0x05, 0x01, 0x00, 0x03, byte(len(host))}, host...)
+	req := append([]byte{0x05, command, 0x00, 0x03, byte(len(host))}, host...)
 	req = append(req, byte(port>>8), byte(port))
 	if _, err := c.Write(req); err != nil {
 		return c, nil, 0, err
@@ -263,5 +269,131 @@ func TestEgressSocks5(t *testing.T) {
 	}
 	if _, _, code := socksConnect(t, locked, echo, "", ""); code != 0xff {
 		t.Fatalf("unauthenticated socks method = %#x, want 0xff", code)
+	}
+}
+
+func TestEgressPolicyChangeClosesLiveTunnel(t *testing.T) {
+	h := newEgressHarness(t, true)
+	echo := tcpEchoServer(t)
+	orgID := h.orgWithPolicy(egressPolicyFor(echo))
+	listen := h.runAgent(orgID)
+	c, br, status := proxyConnect(t, listen, echo)
+	if status != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", status)
+	}
+	assertEcho(t, c, br)
+
+	if err := h.data.SetOrgPolicy(h.ctx, &store.OrgPolicy{OrgID: orgID, CedarSrc: egressPolicyFor("127.0.0.1:1"), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h.ids.FlushAll()
+
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := br.ReadByte(); err == nil {
+		t.Fatal("tunnel still delivering after the policy stopped allowing it")
+	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("live egress tunnel not closed after the policy change")
+	}
+	if _, _, status := proxyConnect(t, listen, echo); status == http.StatusOK {
+		t.Fatal("new CONNECT allowed after the policy change")
+	}
+}
+
+func TestEgressViaExitPolicySeesExitResolvedIP(t *testing.T) {
+	echo := tcpEchoServer(t)
+	_, port, _ := net.SplitHostPort(echo)
+	byName := net.JoinHostPort("localhost", port)
+	cases := []struct {
+		name   string
+		policy string
+		want   int
+		reason authz.Reason
+	}{
+		{"permit on exit resolved loopback", fmt.Sprintf(`permit (principal, action == Action::"egress:connect", resource) when { resource.port == %s && context has exit && context has resolved_ip && context.resolved_ip.isLoopback() };`, port), http.StatusOK, authz.ReasonAllow},
+		{"permit only on another range", fmt.Sprintf(`permit (principal, action == Action::"egress:connect", resource) when { resource.port == %s && context has resolved_ip && context.resolved_ip.isInRange(ip("10.0.0.0/8")) };`, port), http.StatusForbidden, authz.ReasonNoPolicyMatch},
+		{"forbid on exit resolved loopback", fmt.Sprintf(`permit (principal, action == Action::"egress:connect", resource) when { resource.port == %s };
+forbid (principal, action == Action::"egress:connect", resource) when { context has resolved_ip && context.resolved_ip.isLoopback() };`, port), http.StatusForbidden, authz.ReasonPolicyDeny},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newEgressHarness(t, false)
+			orgID := h.orgWithPolicy(tc.policy)
+			h.runNamedAgent(orgID, "exit-a", agent.EgressSpec{ServeExit: true}, loopbackExitDialer(t))
+			listen := h.runNamedAgent(orgID, "src", agent.EgressSpec{Listen: freeAddr(t, "tcp"), Exit: "exit-a"}, nil)
+			c, br, status := proxyConnect(t, listen, byName)
+			if status != tc.want {
+				t.Fatalf("CONNECT %s via exit status = %d, want %d", byName, status, tc.want)
+			}
+			if status == http.StatusOK {
+				assertEcho(t, c, br)
+				_ = c.Close()
+			}
+			ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.Destination == byName })
+			if ev.ExitAgentID == "" || ev.Reason != string(tc.reason) {
+				t.Fatalf("access event = %+v, want exit agent and reason %s", ev, tc.reason)
+			}
+		})
+	}
+}
+
+func TestEgressViaExitRefusesExitBlockedAnswer(t *testing.T) {
+	h := newEgressHarness(t, false)
+	echo := tcpEchoServer(t)
+	orgID := h.orgWithPolicy(`permit (principal, action == Action::"egress:connect", resource);`)
+	h.runNamedAgent(orgID, "exit-a", agent.EgressSpec{ServeExit: true}, proxy.DefaultGuard())
+	listen := h.runNamedAgent(orgID, "src", agent.EgressSpec{Listen: freeAddr(t, "tcp"), Exit: "exit-a"}, nil)
+
+	if _, _, status := proxyConnect(t, listen, echo); status != http.StatusForbidden {
+		t.Fatalf("CONNECT to an address the exit blocks = %d, want 403", status)
+	}
+	ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.Destination == echo })
+	if ev.Decision != store.AccessDeny || ev.Reason != "exit_blocked_destination" {
+		t.Fatalf("access event = %+v", ev)
+	}
+}
+
+func TestEgressRefusesUDPWithAClearError(t *testing.T) {
+	h := newEgressHarness(t, true)
+	echo := tcpEchoServer(t)
+	orgID := h.orgWithPolicy(`permit (principal, action == Action::"egress:connect", resource);`)
+	socks := h.runNamedAgent(orgID, "socks", agent.EgressSpec{SocksListen: freeAddr(t, "tcp")}, nil)
+	listen := h.runNamedAgent(orgID, "http", agent.EgressSpec{Listen: freeAddr(t, "tcp")}, nil)
+	if _, _, code := socksConnect(t, socks, echo, "", ""); code != 0x00 {
+		t.Fatalf("socks connect reply = %#x, want success", code)
+	}
+
+	t.Run("socks udp associate", func(t *testing.T) {
+		c, _, code, err := socksDialCommand(socks, "0.0.0.0:0", "", "", 0x03)
+		if c != nil {
+			defer c.Close()
+		}
+		if err != nil || code != 0x02 {
+			t.Fatalf("udp associate reply = %#x, err %v, want 0x02 not allowed", code, err)
+		}
+	})
+
+	for _, tc := range []struct{ name, request string }{
+		{"connect-udp upgrade", "GET /.well-known/masque/udp/1.1.1.1/443/ HTTP/1.1\r\nHost: proxy\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\n\r\n"},
+		{"masque path in absolute form", "GET http://proxy/.well-known/masque/udp/1.1.1.1/443/ HTTP/1.1\r\nHost: proxy\r\n\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := net.Dial("tcp", listen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+			if _, err := io.WriteString(c, tc.request); err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "udp egress") {
+				t.Fatalf("status %d body %q, want 403 naming udp egress", resp.StatusCode, body)
+			}
+		})
 	}
 }
