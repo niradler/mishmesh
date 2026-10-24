@@ -305,6 +305,12 @@ func (s *Service) IssueAgentUser(ctx context.Context, l AgentLogin) (AgentTokens
 
 func (s *Service) RefreshAgentUser(ctx context.Context, refresh string) (AgentTokens, error) {
 	ts, _, err := s.verify(ctx, refresh, []token.Type{token.TypeRefresh})
+	if errors.Is(err, errTokenSuperseded) {
+		if err := s.RevokeSession(ctx, ts.ID); err != nil {
+			return AgentTokens{}, err
+		}
+		return AgentTokens{}, ErrRefreshReused
+	}
 	if err != nil {
 		return AgentTokens{}, err
 	}

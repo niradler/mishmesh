@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 )
 
@@ -157,19 +158,29 @@ func (g *Guard) ValidateTarget(target string) error {
 	return nil
 }
 
+const maxResolvedAddrs = 8
+
 func (g *Guard) Resolve(ctx context.Context, target string) (string, error) {
-	host, port, err := splitTarget(target)
+	addrs, err := g.ResolveAll(ctx, target)
 	if err != nil {
 		return "", err
 	}
+	return addrs[0], nil
+}
+
+func (g *Guard) ResolveAll(ctx context.Context, target string) ([]string, error) {
+	host, port, err := splitTarget(target)
+	if err != nil {
+		return nil, err
+	}
 	if ip := net.ParseIP(host); ip != nil {
 		if !g.IPAllowed(ip) {
-			return "", fmt.Errorf("%w: target %q resolves to a blocked address", ErrBlocked, target)
+			return nil, fmt.Errorf("%w: target %q resolves to a blocked address", ErrBlocked, target)
 		}
-		return net.JoinHostPort(normalizeIP(ip).String(), port), nil
+		return []string{net.JoinHostPort(normalizeIP(ip).String(), port)}, nil
 	}
 	if !g.nameAllowed(host) {
-		return "", fmt.Errorf("%w: target %q is an internal name", ErrBlocked, target)
+		return nil, fmt.Errorf("%w: target %q is an internal name", ErrBlocked, target)
 	}
 	lookup := g.lookup
 	if lookup == nil {
@@ -177,15 +188,20 @@ func (g *Guard) Resolve(ctx context.Context, target string) (string, error) {
 	}
 	addrs, err := lookup(ctx, host)
 	if err != nil {
-		return "", fmt.Errorf("proxy: resolve %q: %w", host, err)
+		return nil, fmt.Errorf("proxy: resolve %q: %w", host, err)
 	}
 	if len(addrs) == 0 {
-		return "", fmt.Errorf("proxy: target %q did not resolve", target)
+		return nil, fmt.Errorf("proxy: target %q did not resolve", target)
 	}
+	out := make([]string, 0, min(len(addrs), maxResolvedAddrs))
 	for _, a := range addrs {
 		if !g.IPAllowed(a.IP) {
-			return "", fmt.Errorf("%w: target %q resolves to a blocked address", ErrBlocked, target)
+			return nil, fmt.Errorf("%w: target %q resolves to a blocked address", ErrBlocked, target)
+		}
+		addr := net.JoinHostPort(normalizeIP(a.IP).String(), port)
+		if len(out) < maxResolvedAddrs && !slices.Contains(out, addr) {
+			out = append(out, addr)
 		}
 	}
-	return net.JoinHostPort(normalizeIP(addrs[0].IP).String(), port), nil
+	return out, nil
 }

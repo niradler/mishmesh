@@ -301,6 +301,9 @@ func buildContext(req DecisionRequest, facts Facts, clientIP types.IPAddr, authT
 			if c.Exit != "" {
 				m["exit"] = types.NewEntityUID(types.EntityType(EntityAgent), types.String(c.Exit))
 			}
+			if ip, err := parseClientIP(c.ResolvedIP); err == nil {
+				m["resolved_ip"] = ip
+			}
 		}
 	}
 	return types.NewRecord(m)

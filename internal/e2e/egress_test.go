@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/agent"
+	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/connect/egress"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
@@ -210,7 +211,7 @@ func TestEgressConnectAllowedEchoes(t *testing.T) {
 	}
 	_ = c.Close()
 	ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.Source == store.AccessSourceEgress })
-	if ev.Decision != store.AccessAllow || ev.Destination != echo || len(ev.PolicyIDs) == 0 {
+	if ev.Decision != store.AccessAllow || ev.Destination != echo || len(ev.PolicyIDs) == 0 || ev.ClientIP != "127.0.0.1" {
 		t.Fatalf("access event = %+v", ev)
 	}
 }
@@ -305,5 +306,38 @@ func TestEgressRejectsSNIMismatch(t *testing.T) {
 	ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.Destination == echo })
 	if ev.Decision != store.AccessDeny || ev.Reason != "sni_mismatch" {
 		t.Fatalf("access event = %+v", ev)
+	}
+}
+
+func TestEgressPolicySeesResolvedIP(t *testing.T) {
+	echo := tcpEchoServer(t)
+	_, port, _ := net.SplitHostPort(echo)
+	byName := net.JoinHostPort("localhost", port)
+	cases := []struct {
+		name   string
+		policy string
+		want   int
+	}{
+		{"permit on resolved ip", fmt.Sprintf(`permit (principal, action == Action::"egress:connect", resource) when { resource.port == %s && context has resolved_ip && context.resolved_ip.isLoopback() };`, port), http.StatusOK},
+		{"forbid on resolved ip", fmt.Sprintf(`permit (principal, action == Action::"egress:connect", resource) when { resource.port == %s };
+forbid (principal, action == Action::"egress:connect", resource) when { context has resolved_ip && context.resolved_ip.isLoopback() };`, port), http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newEgressHarness(t, true)
+			listen := h.runAgent(h.orgWithPolicy(tc.policy))
+			c, br, status := proxyConnect(t, listen, byName)
+			if status != tc.want {
+				t.Fatalf("CONNECT %s status = %d, want %d", byName, status, tc.want)
+			}
+			if status == http.StatusOK {
+				assertEcho(t, c, br)
+				return
+			}
+			ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.Destination == byName })
+			if ev.Decision != store.AccessDeny || ev.Reason != string(authz.ReasonPolicyDeny) {
+				t.Fatalf("access event = %+v, want policy deny", ev)
+			}
+		})
 	}
 }

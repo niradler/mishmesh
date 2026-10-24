@@ -78,6 +78,7 @@ action "egress:connect" appliesTo {
     auth_method: String,
     auth_time?: datetime,
     sni?: String,
-    exit?: Agent
+    exit?: Agent,
+    resolved_ip?: ipaddr
   }
 };

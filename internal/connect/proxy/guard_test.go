@@ -126,16 +126,17 @@ func TestNewGuardRejectsBadCIDR(t *testing.T) {
 	}
 }
 
-func TestGuardResolveRejectsAnyBlockedAnswer(t *testing.T) {
-	answers := func(ips ...string) func(context.Context, string) ([]net.IPAddr, error) {
-		return func(context.Context, string) ([]net.IPAddr, error) {
-			out := make([]net.IPAddr, len(ips))
-			for i, ip := range ips {
-				out[i] = net.IPAddr{IP: net.ParseIP(ip)}
-			}
-			return out, nil
+func answers(ips ...string) func(context.Context, string) ([]net.IPAddr, error) {
+	return func(context.Context, string) ([]net.IPAddr, error) {
+		out := make([]net.IPAddr, len(ips))
+		for i, ip := range ips {
+			out[i] = net.IPAddr{IP: net.ParseIP(ip)}
 		}
+		return out, nil
 	}
+}
+
+func TestGuardResolveRejectsAnyBlockedAnswer(t *testing.T) {
 	tests := []struct {
 		name    string
 		answers []string
@@ -167,4 +168,40 @@ func TestGuardResolveRejectsAnyBlockedAnswer(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveAllReturnsEveryCheckedAnswer(t *testing.T) {
+	g := DefaultGuard()
+	g.lookup = answers("2606:2800:220:1::1", "93.184.216.34", "93.184.216.34", "1.1.1.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "1.0.0.1", "208.67.222.222", "208.67.220.220")
+	addrs, err := g.ResolveAll(context.Background(), "api.example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(addrs) != maxResolvedAddrs || addrs[0] != "[2606:2800:220:1::1]:443" || addrs[1] != "93.184.216.34:443" || addrs[2] != "1.1.1.1:443" {
+		t.Fatalf("addrs = %v", addrs)
+	}
+}
+
+func TestDialFallsBackToNextAnswer(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			_ = c.Close()
+		}
+	}()
+	dead, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := dead.Addr().String()
+	_ = dead.Close()
+	c, err := dialFirst(context.Background(), "tcp", []string{deadAddr, ln.Addr().String()})
+	if err != nil {
+		t.Fatalf("dial did not fall back: %v", err)
+	}
+	_ = c.Close()
 }

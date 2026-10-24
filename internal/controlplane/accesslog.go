@@ -18,6 +18,7 @@ type accessEventDTO struct {
 	PrincipalID   string    `json:"principal_id,omitempty"`
 	SessionID     string    `json:"session_id,omitempty"`
 	AgentID       string    `json:"agent_id,omitempty"`
+	ExitAgentID   string    `json:"exit_agent_id,omitempty"`
 	EndpointID    string    `json:"endpoint_id,omitempty"`
 	Destination   string    `json:"destination,omitempty"`
 	PolicyIDs     []string  `json:"policy_ids,omitempty"`
@@ -86,7 +87,7 @@ func (a *API) listAccessLogHandler(w http.ResponseWriter, r *http.Request) {
 		out = append(out, accessEventDTO{
 			ID: e.ID, At: e.At, Source: e.Source, Decision: e.Decision, Reason: e.Reason,
 			PrincipalType: e.PrincipalType, PrincipalID: e.PrincipalID, SessionID: e.SessionID,
-			AgentID: e.AgentID, EndpointID: e.EndpointID, Destination: e.Destination, PolicyIDs: e.PolicyIDs,
+			AgentID: e.AgentID, ExitAgentID: e.ExitAgentID, EndpointID: e.EndpointID, Destination: e.Destination, PolicyIDs: e.PolicyIDs,
 			ClientIP: e.ClientIP, Method: e.Method, Path: e.Path, Status: e.Status, Protocol: e.Protocol,
 			BytesIn: e.BytesIn, BytesOut: e.BytesOut, DurationMs: e.DurationMs, LatencyMs: e.LatencyMs,
 		})

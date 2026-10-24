@@ -512,6 +512,7 @@ type AccessEvent struct {
 	PrincipalID   string
 	SessionID     string
 	AgentID       string
+	ExitAgentID   string
 	EndpointID    string
 	Destination   string
 	PolicyIDs     []string

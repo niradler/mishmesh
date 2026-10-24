@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"time"
 )
 
@@ -95,6 +96,7 @@ type RequestContext struct {
 	Protocol   string     `json:"protocol,omitempty"`
 	SNI        string     `json:"sni,omitempty"`
 	Exit       string     `json:"exit,omitempty"`
+	ResolvedIP string     `json:"resolved_ip,omitempty"`
 	AuthMethod AuthMethod `json:"auth_method"`
 	AuthTime   *time.Time `json:"auth_time,omitempty"`
 }
@@ -186,6 +188,7 @@ func (r DecisionRequest) Validate() error {
 		{"protocol", r.Context.Protocol, maxFieldLength},
 		{"sni", r.Context.SNI, maxHostLength},
 		{"exit", r.Context.Exit, maxFieldLength},
+		{"resolved_ip", r.Context.ResolvedIP, maxFieldLength},
 	} {
 		if len(f.value) > f.max {
 			return invalid("%s exceeds %d bytes", f.name, f.max)
@@ -199,6 +202,14 @@ func (r DecisionRequest) Validate() error {
 	}
 	if r.Context.Exit != "" && r.Action != ActionEgressConnect {
 		return invalid("exit only applies to %s", ActionEgressConnect)
+	}
+	if r.Context.ResolvedIP != "" {
+		if r.Action != ActionEgressConnect {
+			return invalid("resolved_ip only applies to %s", ActionEgressConnect)
+		}
+		if _, err := netip.ParseAddr(r.Context.ResolvedIP); err != nil {
+			return invalid("resolved_ip is not an ip address")
+		}
 	}
 	if !knownAuthMethods[r.Context.AuthMethod] {
 		return invalid("unknown auth_method %q", truncate(string(r.Context.AuthMethod)))

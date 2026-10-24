@@ -171,9 +171,6 @@ func TestAgentUserRefreshRotatesAndRevokes(t *testing.T) {
 	if second.Session.ID != first.Session.ID {
 		t.Fatal("refresh must keep the session")
 	}
-	if _, err := s.RefreshAgentUser(ctx, first.RefreshToken); !errors.Is(err, ErrUnauthenticated) {
-		t.Fatalf("old refresh reused = %v", err)
-	}
 	if _, err := s.Authenticate(ctx, second.AccessToken, token.TypeAgentUser); err != nil {
 		t.Fatal(err)
 	}
@@ -185,5 +182,51 @@ func TestAgentUserRefreshRotatesAndRevokes(t *testing.T) {
 	}
 	if err := s.RevokeToken(ctx, "garbage"); err != nil {
 		t.Fatalf("revoking garbage must succeed silently: %v", err)
+	}
+}
+
+func TestAgentUserRefreshReuseRevokesSession(t *testing.T) {
+	s := newClockedService(t, time.Now)
+	ctx := context.Background()
+	var revoked []Revocation
+	s.Subscribe(func(r Revocation) { revoked = append(revoked, r) })
+	first, err := s.IssueAgentUser(ctx, AgentLogin{OrgID: "org_1", UserID: "usr_1", AuthMethod: authz.AuthMethodPassword})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.RefreshAgentUser(ctx, first.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RefreshAgentUser(ctx, first.RefreshToken); !errors.Is(err, ErrRefreshReused) || !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("reused refresh = %v, want ErrRefreshReused", err)
+	}
+	if _, err := s.Authenticate(ctx, second.AccessToken, token.TypeAgentUser); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("access from reused family still valid: %v", err)
+	}
+	if _, err := s.RefreshAgentUser(ctx, second.RefreshToken); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("latest refresh after reuse = %v, want unauthenticated", err)
+	}
+	if len(revoked) != 1 || len(revoked[0].SessionIDs) != 1 || revoked[0].SessionIDs[0] != first.Session.ID {
+		t.Fatalf("revocations = %+v", revoked)
+	}
+}
+
+func TestStaleAccessTokenDoesNotRevokeSession(t *testing.T) {
+	s := newClockedService(t, time.Now)
+	ctx := context.Background()
+	first, err := s.IssueAgentUser(ctx, AgentLogin{OrgID: "org_1", UserID: "usr_1", AuthMethod: authz.AuthMethodPassword})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.RefreshAgentUser(ctx, first.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Authenticate(ctx, first.AccessToken, token.TypeAgentUser); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("stale access = %v", err)
+	}
+	if _, err := s.Authenticate(ctx, second.AccessToken, token.TypeAgentUser); err != nil {
+		t.Fatalf("stale access token must not revoke the session: %v", err)
 	}
 }

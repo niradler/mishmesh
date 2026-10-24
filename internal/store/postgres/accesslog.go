@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS access_log (
   principal_id   TEXT NOT NULL DEFAULT '',
   session_id     TEXT NOT NULL DEFAULT '',
   agent_id       TEXT NOT NULL DEFAULT '',
+  exit_agent_id  TEXT NOT NULL DEFAULT '',
   endpoint_id    TEXT NOT NULL DEFAULT '',
   destination    TEXT NOT NULL DEFAULT '',
   policy_ids     TEXT NOT NULL DEFAULT '',
@@ -38,7 +39,7 @@ CREATE INDEX IF NOT EXISTS access_log_org_at ON access_log (org_id, at DESC);
 CREATE INDEX IF NOT EXISTS access_log_at ON access_log (at);
 `
 
-const accessEventCols = `id, org_id, at, source, decision, reason, principal_type, principal_id, session_id, agent_id, endpoint_id, destination, policy_ids, client_ip, method, path, status, protocol, bytes_in, bytes_out, duration_ms, latency_ms`
+const accessEventCols = `id, org_id, at, source, decision, reason, principal_type, principal_id, session_id, agent_id, exit_agent_id, endpoint_id, destination, policy_ids, client_ip, method, path, status, protocol, bytes_in, bytes_out, duration_ms, latency_ms`
 
 func (s *Store) AppendAccessEvents(ctx context.Context, events []*store.AccessEvent) error {
 	if len(events) == 0 {
@@ -51,14 +52,14 @@ func (s *Store) AppendAccessEvents(ctx context.Context, events []*store.AccessEv
 		return wrap("append access events", err)
 	}
 	defer tx.Rollback()
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO access_log (`+accessEventCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO access_log (`+accessEventCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`)
 	if err != nil {
 		return wrap("append access events", err)
 	}
 	defer stmt.Close()
 	for _, e := range events {
 		if _, err := stmt.ExecContext(ctx, e.ID, e.OrgID, ns(e.At), e.Source, e.Decision, e.Reason, e.PrincipalType, e.PrincipalID, e.SessionID,
-			e.AgentID, e.EndpointID, e.Destination, strings.Join(e.PolicyIDs, ","), e.ClientIP, e.Method, e.Path, e.Status, e.Protocol,
+			e.AgentID, e.ExitAgentID, e.EndpointID, e.Destination, strings.Join(e.PolicyIDs, ","), e.ClientIP, e.Method, e.Path, e.Status, e.Protocol,
 			e.BytesIn, e.BytesOut, e.DurationMs, e.LatencyMs); err != nil {
 			return wrap("append access events", err)
 		}
@@ -98,7 +99,7 @@ func (s *Store) ListAccessEvents(ctx context.Context, orgID string, q store.Acce
 		var at int64
 		var policies string
 		if err := rows.Scan(&e.ID, &e.OrgID, &at, &e.Source, &e.Decision, &e.Reason, &e.PrincipalType, &e.PrincipalID, &e.SessionID,
-			&e.AgentID, &e.EndpointID, &e.Destination, &policies, &e.ClientIP, &e.Method, &e.Path, &e.Status, &e.Protocol,
+			&e.AgentID, &e.ExitAgentID, &e.EndpointID, &e.Destination, &policies, &e.ClientIP, &e.Method, &e.Path, &e.Status, &e.Protocol,
 			&e.BytesIn, &e.BytesOut, &e.DurationMs, &e.LatencyMs); err != nil {
 			return nil, scanErr("scan access event", err)
 		}

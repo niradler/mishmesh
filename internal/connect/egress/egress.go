@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/netip"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
@@ -24,6 +25,7 @@ const (
 	agentClientIP     = "0.0.0.0"
 	reasonBlocked     = "blocked_destination"
 	reasonDial        = "dial_failed"
+	reasonResolve     = "resolve_failed"
 	reasonSNI         = "sni_mismatch"
 	reasonBadCreds    = "invalid_proxy_credentials"
 	reasonNoAuth      = "proxy_auth_unavailable"
@@ -34,6 +36,7 @@ const (
 )
 
 type Dialer interface {
+	ResolveAll(ctx context.Context, target string) ([]string, error)
 	Dial(ctx context.Context, target string, otls *store.OriginTLS, timeout time.Duration) (net.Conn, error)
 }
 
@@ -113,7 +116,7 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		AgentID:       agent.ID,
 		PrincipalType: string(authz.EntityAgent),
 		PrincipalID:   agent.ID,
-		ClientIP:      agentClientIP,
+		ClientIP:      egressClientIP(init.Meta[tunnel.MetaEgressClient]),
 		Protocol:      "tcp",
 	}}
 	dest, err := authz.NormalizeDestination(init.Meta[tunnel.MetaEgress])
@@ -137,19 +140,28 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		h.refuse(stream, rec, refused)
 		return
 	}
+	targets := []string{dest}
+	if exit != nil {
+		rec.event.ExitAgentID = exit.ID
+	} else {
+		if targets, refused = h.resolve(ctx, agent, dest); refused != nil {
+			h.refuse(stream, rec, refused)
+			return
+		}
+	}
 	var flow *flows.Flow
 	if hasPrincipal {
 		var untrack func()
 		flow, untrack = h.flows.Track(agent.OrgID, p.SessionID, stream)
 		defer untrack()
 	}
-	decision, status := h.decide(ctx, agent, p, hasPrincipal, dest, exit)
+	decision, status := h.decideAll(ctx, agent, p, hasPrincipal, rec.event.ClientIP, dest, targets, exit)
 	rec.event.PolicyIDs = policyIDs(decision)
 	if status != tunnel.EgressOK {
 		h.refuse(stream, rec, &refusal{status, string(decision.Reason)})
 		return
 	}
-	upstream, refused := h.dial(ctx, agent, exit, dest)
+	upstream, refused := h.dial(ctx, agent, exit, dest, targets)
 	if refused != nil {
 		h.refuse(stream, rec, refused)
 		return
@@ -230,11 +242,34 @@ func (h *Handler) resolveExit(ctx context.Context, agent *store.Agent, ref strin
 	return match, nil
 }
 
-func (h *Handler) dial(ctx context.Context, agent, exit *store.Agent, dest string) (net.Conn, *refusal) {
+func (h *Handler) resolve(ctx context.Context, agent *store.Agent, dest string) ([]string, *refusal) {
+	if h.dialer == nil {
+		return nil, &refusal{tunnel.EgressUnavailable, string(authz.ReasonUnavailable)}
+	}
+	resolveCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	targets, err := h.dialer.ResolveAll(resolveCtx, dest)
+	if err != nil {
+		h.log.Info("egress destination refused", "agent_id", agent.ID, "destination", dest, "err", err)
+		if errors.Is(err, proxy.ErrBlocked) {
+			return nil, &refusal{tunnel.EgressDenied, reasonBlocked}
+		}
+		return nil, &refusal{tunnel.EgressDialFailed, reasonResolve}
+	}
+	return targets, nil
+}
+
+func (h *Handler) dial(ctx context.Context, agent, exit *store.Agent, dest string, targets []string) (net.Conn, *refusal) {
 	if exit != nil {
 		return h.dialViaExit(ctx, exit, dest)
 	}
-	upstream, err := h.dialer.Dial(ctx, dest, nil, dialTimeout)
+	var upstream net.Conn
+	var err error
+	for _, target := range targets {
+		if upstream, err = h.dialer.Dial(ctx, target, nil, dialTimeout); err == nil || ctx.Err() != nil {
+			break
+		}
+	}
 	if err != nil {
 		h.log.Info("egress dial refused", "agent_id", agent.ID, "destination", dest, "err", err)
 		if errors.Is(err, proxy.ErrBlocked) {
@@ -271,15 +306,31 @@ func (h *Handler) dialViaExit(ctx context.Context, exit *store.Agent, dest strin
 	return stream, nil
 }
 
-func (h *Handler) decide(ctx context.Context, agent *store.Agent, p identity.Principal, hasPrincipal bool, dest string, exit *store.Agent) (authz.Decision, tunnel.EgressStatus) {
+func (h *Handler) decideAll(ctx context.Context, agent *store.Agent, p identity.Principal, hasPrincipal bool, clientIP, dest string, targets []string, exit *store.Agent) (authz.Decision, tunnel.EgressStatus) {
+	var first authz.Decision
+	for i, target := range targets {
+		d, status := h.decide(ctx, agent, p, hasPrincipal, clientIP, dest, target, exit)
+		if status != tunnel.EgressOK {
+			return d, status
+		}
+		if i == 0 {
+			first = d
+		}
+	}
+	return first, tunnel.EgressOK
+}
+
+func (h *Handler) decide(ctx context.Context, agent *store.Agent, p identity.Principal, hasPrincipal bool, clientIP, dest, target string, exit *store.Agent) (authz.Decision, tunnel.EgressStatus) {
 	if h.deciders == nil || h.dialer == nil {
 		return authz.Decision{Reason: authz.ReasonUnavailable}, tunnel.EgressUnavailable
 	}
 	scope := identity.Scope{OrgID: agent.OrgID, AgentID: agent.ID}
 	principal := authz.EntityRef{Type: authz.EntityAgent, ID: agent.ID}
-	reqCtx := authz.RequestContext{ClientIP: agentClientIP, AuthMethod: authz.AuthMethodAgentToken}
+	reqCtx := authz.RequestContext{ClientIP: clientIP, AuthMethod: authz.AuthMethodAgentToken}
 	if exit != nil {
 		reqCtx.Exit = exit.ID
+	} else if host, _, err := net.SplitHostPort(target); err == nil {
+		reqCtx.ResolvedIP = host
 	}
 	if hasPrincipal {
 		principal = p.Ref
@@ -331,6 +382,14 @@ func (h *Handler) record(rec *flowRecord) {
 	rec.event.DurationMs = time.Since(rec.started).Milliseconds()
 	e := rec.event
 	h.access.Record(&e)
+}
+
+func egressClientIP(reported string) string {
+	addr, err := netip.ParseAddr(reported)
+	if err != nil {
+		return agentClientIP
+	}
+	return addr.Unmap().WithZone("").String()
 }
 
 func policyIDs(d authz.Decision) []string {

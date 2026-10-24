@@ -73,7 +73,7 @@ func TestEgressViaExitAgent(t *testing.T) {
 	assertEcho(t, c, br)
 	_ = c.Close()
 	ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.Destination == echo })
-	if ev.Decision != store.AccessAllow {
+	if ev.Decision != store.AccessAllow || ev.ExitAgentID == "" || ev.ExitAgentID == ev.AgentID {
 		t.Fatalf("access event = %+v", ev)
 	}
 }

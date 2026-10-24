@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -33,6 +34,7 @@ type EgressSpec struct {
 	RequireAuth bool
 	Exit        string
 	ServeExit   bool
+	ExitAllow   []string
 }
 
 type ExitDialer interface {
@@ -166,7 +168,7 @@ func (a *Agent) serveConnect(client net.Conn, br *bufio.Reader, req *http.Reques
 		writeProxyError(client, http.StatusBadRequest, "CONNECT target must be host:port")
 		return
 	}
-	stream, err := a.openEgress(dest, creds)
+	stream, err := a.openEgress(client, dest, creds)
 	if err != nil {
 		writeEgressFailure(client, err)
 		a.log.Info("egress refused", "destination", truncateLog(dest), "err", err)
@@ -193,7 +195,7 @@ func (a *Agent) serveAbsoluteForm(client net.Conn, req *http.Request, creds egre
 	if _, _, err := net.SplitHostPort(dest); err != nil {
 		dest = net.JoinHostPort(strings.Trim(req.URL.Hostname(), "[]"), "80")
 	}
-	stream, err := a.openEgress(dest, creds)
+	stream, err := a.openEgress(client, dest, creds)
 	if err != nil {
 		writeEgressFailure(client, err)
 		a.log.Info("egress refused", "destination", truncateLog(dest), "err", err)
@@ -216,12 +218,15 @@ func (a *Agent) serveAbsoluteForm(client net.Conn, req *http.Request, creds egre
 	_, _ = io.Copy(client, stream)
 }
 
-func (a *Agent) openEgress(dest string, creds egressCreds) (net.Conn, error) {
+func (a *Agent) openEgress(client net.Conn, dest string, creds egressCreds) (net.Conn, error) {
 	sess := a.sess.Load()
 	if sess == nil {
 		return nil, &egressRefusal{status: http.StatusServiceUnavailable, reason: errNotConnected.Error()}
 	}
 	meta := map[string]string{tunnel.MetaEgress: dest}
+	if host, _, err := net.SplitHostPort(client.RemoteAddr().String()); err == nil {
+		meta[tunnel.MetaEgressClient] = host
+	}
 	if creds.token != "" {
 		meta[tunnel.MetaEgressAuth] = creds.token
 	}
@@ -252,6 +257,15 @@ func (a *Agent) openEgress(dest string, creds egressCreds) (net.Conn, error) {
 		return nil, &egressRefusal{status: code, reason: printable(reply.Reason, reply.Status.String())}
 	}
 	return stream, nil
+}
+
+func exitGuard(allow []string, log *slog.Logger) ExitDialer {
+	g, err := proxy.NewGuard(false, false, allow)
+	if err != nil {
+		log.Warn("egress exit_allow ignored, using the default guard", "err", err)
+		return proxy.DefaultGuard()
+	}
+	return g
 }
 
 func (a *Agent) serveExit(stream net.Conn, dest string) {

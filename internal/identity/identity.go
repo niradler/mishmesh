@@ -18,6 +18,8 @@ import (
 var (
 	ErrUnauthenticated = errors.New("identity: unauthenticated")
 	ErrUnavailable     = errors.New("identity: session store unavailable")
+	ErrRefreshReused   = fmt.Errorf("%w: refresh token reused, session revoked", ErrUnauthenticated)
+	errTokenSuperseded = fmt.Errorf("%w: token superseded", ErrUnauthenticated)
 )
 
 type Scope struct {
@@ -210,8 +212,11 @@ func (s *Service) verify(ctx context.Context, raw string, allowed []token.Type) 
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	if subtle.ConstantTimeCompare([]byte(ts.TokenID), []byte(claims.TokenID)) != 1 || ts.OrgID != claims.OrgID {
+	if ts.OrgID != claims.OrgID {
 		return nil, "", ErrUnauthenticated
+	}
+	if subtle.ConstantTimeCompare([]byte(ts.TokenID), []byte(claims.TokenID)) != 1 {
+		return ts, claims.Type, errTokenSuperseded
 	}
 	if !s.now().Before(ts.ExpiresAt) {
 		return nil, "", ErrUnauthenticated

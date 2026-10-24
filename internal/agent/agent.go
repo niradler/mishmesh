@@ -76,6 +76,9 @@ func New(opts Options) *Agent {
 	if out == nil {
 		out = os.Stdout
 	}
+	if opts.ExitDialer == nil && opts.Egress != nil && opts.Egress.ServeExit {
+		opts.ExitDialer = exitGuard(opts.Egress.ExitAllow, log)
+	}
 	return &Agent{opts: opts, log: log, out: out, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget), dec: newRemoteDecider(time.Now)}
 }
 

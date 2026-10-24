@@ -48,7 +48,7 @@ func (a *Agent) serveSocksClient(client net.Conn) {
 		}
 		return
 	}
-	stream, err := a.openEgress(dest, creds)
+	stream, err := a.openEgress(client, dest, creds)
 	if err != nil {
 		writeSocksReply(client, socksRefusalCode(err))
 		a.log.Info("egress refused", "proto", "socks5", "destination", truncateLog(dest), "err", err)

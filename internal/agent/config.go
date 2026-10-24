@@ -70,7 +70,7 @@ var (
 	rootKeys      = []string{"gateway", "token", "allow", "log_level", "tunnels", "connects", "egress"}
 	tunnelKeys    = []string{"proto", "addr", "subdomain", "domain", "port", "reserved", "private", "target_https", "insecure", "policy"}
 	connectKeys   = []string{"endpoint", "proto", "listen", "idle_timeout"}
-	egressKeys    = []string{"listen", "socks_listen", "require_auth", "exit", "serve_exit"}
+	egressKeys    = []string{"listen", "socks_listen", "require_auth", "exit", "serve_exit", "exit_allow"}
 	validProtos   = []string{store.KindHTTP, store.KindTCP, store.KindTLS, store.KindUDP}
 	validProtoMsg = strings.Join(validProtos, ", ")
 )
@@ -224,11 +224,12 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 }
 
 type egressConfig struct {
-	Listen      string `yaml:"listen"`
-	SocksListen string `yaml:"socks_listen"`
-	RequireAuth bool   `yaml:"require_auth"`
-	Exit        string `yaml:"exit"`
-	ServeExit   bool   `yaml:"serve_exit"`
+	Listen      string   `yaml:"listen"`
+	SocksListen string   `yaml:"socks_listen"`
+	RequireAuth bool     `yaml:"require_auth"`
+	Exit        string   `yaml:"exit"`
+	ServeExit   bool     `yaml:"serve_exit"`
+	ExitAllow   []string `yaml:"exit_allow"`
 }
 
 func (p *configParser) parseEgress(n *yaml.Node, connects []ConnectSpec) *EgressSpec {
@@ -267,7 +268,17 @@ func (p *configParser) parseEgress(n *yaml.Node, connects []ConnectSpec) *Egress
 		}
 		used[l.addr] = "egress " + l.key
 	}
+	for _, c := range ec.ExitAllow {
+		cidr := strings.TrimSpace(c)
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			p.addf(n.Line, "egress: exit_allow %q is not a CIDR", c)
+			continue
+		}
+		spec.ExitAllow = append(spec.ExitAllow, cidr)
+	}
 	switch {
+	case len(ec.ExitAllow) > 0 && !spec.ServeExit:
+		p.addf(n.Line, "egress: exit_allow needs serve_exit")
 	case spec.RequireAuth && spec.SocksListen != "":
 		p.addf(n.Line, "egress: require_auth cannot cover socks_listen: SOCKS5 passwords are capped at 255 bytes, shorter than mishmesh tokens")
 	case spec.RequireAuth && spec.Listen == "":

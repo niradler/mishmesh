@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -418,6 +419,7 @@ func TestParseConfigEgress(t *testing.T) {
 		{name: "shared gateway", yaml: "egress: {listen: 3128, require_auth: true}", want: &EgressSpec{Listen: "127.0.0.1:3128", RequireAuth: true}},
 		{name: "via exit", yaml: "egress: {exit: \" office-exit \"}", want: &EgressSpec{Listen: DefaultEgressListen, Exit: "office-exit"}},
 		{name: "exit only", yaml: "egress: {serve_exit: true}", want: &EgressSpec{ServeExit: true}},
+		{name: "exit with lan allowance", yaml: "egress: {serve_exit: true, exit_allow: [\" 10.20.0.0/16 \", \"fd00::/8\"]}", want: &EgressSpec{ServeExit: true, ExitAllow: []string{"10.20.0.0/16", "fd00::/8"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -425,7 +427,7 @@ func TestParseConfigEgress(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (cfg.Egress == nil) != (tt.want == nil) || (tt.want != nil && *cfg.Egress != *tt.want) {
+			if (cfg.Egress == nil) != (tt.want == nil) || (tt.want != nil && !reflect.DeepEqual(cfg.Egress, tt.want)) {
 				t.Fatalf("egress = %+v, want %+v", cfg.Egress, tt.want)
 			}
 		})
@@ -446,6 +448,8 @@ func TestParseConfigEgressValidation(t *testing.T) {
 		{name: "bad socks listen", yaml: "egress: {socks_listen: nope}", want: `socks_listen "nope" must be a port or host:port`},
 		{name: "require auth without listener", yaml: "egress: {serve_exit: true, require_auth: true}", want: "require_auth needs listen"},
 		{name: "require auth with socks", yaml: "egress: {listen: 3128, socks_listen: 1080, require_auth: true}", want: "require_auth cannot cover socks_listen"},
+		{name: "exit allow without serve exit", yaml: "egress: {exit_allow: [10.0.0.0/8]}", want: "exit_allow needs serve_exit"},
+		{name: "exit allow not a cidr", yaml: "egress: {serve_exit: true, exit_allow: [10.0.0.1]}", want: `exit_allow "10.0.0.1" is not a CIDR`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
