@@ -100,6 +100,7 @@ const healthProbeTimeout = 10 * time.Second
 
 func (a *API) endpointChanged(ep *store.Endpoint) {
 	a.invalidateIngressCaches()
+	a.flushDecisions()
 	a.triggerConnections(ep.OrgID)
 	if a.endpointHealth == nil {
 		return
@@ -115,6 +116,7 @@ func (a *API) endpointChanged(ep *store.Endpoint) {
 
 func (a *API) endpointRemoved(ep *store.Endpoint) {
 	a.invalidateIngressCaches()
+	a.flushDecisions()
 	if a.endpointHealth != nil {
 		a.endpointHealth.Forget(ep.ID)
 	}

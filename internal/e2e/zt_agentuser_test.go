@@ -120,6 +120,20 @@ permit (principal in Group::"` + group + `", action == Action::"agent:connect", 
 		}
 	})
 
+	t.Run("leaving the group drops the live tcp stream", func(t *testing.T) {
+		temp := owner.invite("temp@example.com")
+		owner.addGroupMember(group, store.GroupMemberUser, temp.id)
+		listen := freeAddr(t, "tcp")
+		s.runUserAgent(owner, temp, "temp-laptop", "", []agent.ConnectSpec{{Name: "pg", Endpoint: "postgres", Kind: store.KindTCP, Listen: listen}})
+		ztAwaitTCP(t, listen, 8*time.Second)
+		stream := ztLiveStream(t, listen)
+
+		owner.mustOK("DELETE", "/api/v1/groups/"+group+"/members/"+store.GroupMemberUser+"/"+temp.id, nil)
+
+		ztAwaitDropped(t, stream, "after leaving the group")
+		ztRefusedTCP(t, listen)
+	})
+
 	t.Run("revoking the user drops live tcp stream and udp flow", func(t *testing.T) {
 		tcpListen := freeAddr(t, "tcp")
 		udpListen := freeAddr(t, "udp")
@@ -198,4 +212,36 @@ permit (principal in Group::"` + group + `", action == Action::"agent:connect", 
 		relay.restore()
 		ztAwaitTCP(t, listen, 40*time.Second)
 	})
+}
+
+func ztLiveStream(t *testing.T, addr string) net.Conn {
+	t.Helper()
+	stream, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	buf := make([]byte, 64)
+	if _, err := stream.Write([]byte("live")); err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if n, err := stream.Read(buf); err != nil || string(buf[:n]) != "live" {
+		t.Fatalf("live stream: got %q, err %v", buf[:n], err)
+	}
+	return stream
+}
+
+func ztAwaitDropped(t *testing.T, stream net.Conn, when string) {
+	t.Helper()
+	buf := make([]byte, 64)
+	_ = stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+	n, err := stream.Read(buf)
+	var ne net.Error
+	switch {
+	case err == nil:
+		t.Fatalf("live stream still delivering %s: %q", when, buf[:n])
+	case errors.As(err, &ne) && ne.Timeout():
+		t.Fatalf("live stream not dropped %s", when)
+	}
 }

@@ -201,6 +201,7 @@ func serve() error {
 		return err
 	}
 	cp.SetIdentity(idSvc)
+	idSvc.OnFlush(cp.ClearAuthzCache)
 	cp.SetWorkloadVerifier(workload.NewVerifier(workload.Options{Client: safehttp.Client(false, cfg.OIDCAllowPrivate)}))
 	gwOpts.Users = idSvc
 	accessLog := accesslog.New(data, accesslog.Options{Retention: cfg.AccessLogRetention, Log: log})
@@ -209,7 +210,6 @@ func serve() error {
 	gwOpts.Egress = egress.New(egress.Options{Conns: conns, Log: log, Meter: mx, Deciders: cp, Dialer: proxyGuard, Access: accessLog, Revocations: idSvc, Auth: idSvc, Agents: data})
 	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)
 	gw := gateway.New(gwOpts)
-	idSvc.OnFlush(cp.ClearAuthzCache)
 	idSvc.OnFlush(gw.FlushAll)
 	cp.SetDecisionFlusher(idSvc.FlushAll)
 	if bus, ok := conns.(store.EventBus); ok {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,7 +58,7 @@ func TestRevocationOnOneNodeClosesFlowOnAnother(t *testing.T) {
 	tracker := flows.NewTracker(slog.New(slog.NewTextHandler(io.Discard, nil)), "test", nodeB)
 	near, far := net.Pipe()
 	defer far.Close()
-	_, untrack := tracker.Track(p.OrgID, p.SessionID, near)
+	_, untrack := tracker.Track(p.OrgID, p.SessionID, near, nil)
 	defer untrack()
 
 	if err := nodeA.RevokeSession(context.Background(), p.SessionID); err != nil {
@@ -69,5 +70,29 @@ func TestRevocationOnOneNodeClosesFlowOnAnother(t *testing.T) {
 	}
 	if _, err := nodeB.Authenticate(context.Background(), issued.Token, token.TypeAccess); !errors.Is(err, identity.ErrUnauthenticated) {
 		t.Fatalf("revoked token on node B = %v, want unauthenticated", err)
+	}
+}
+
+func TestPolicyFlushOnOneNodeReevaluatesFlowsOnAnother(t *testing.T) {
+	mr := miniredis.RunT(t)
+	nodeA := clusterIdentityNode(t, mr.Addr())
+	nodeB := clusterIdentityNode(t, mr.Addr())
+	tracker := flows.NewTracker(slog.New(slog.NewTextHandler(io.Discard, nil)), "test", nodeB)
+	var denied atomic.Bool
+	near, far := net.Pipe()
+	defer far.Close()
+	_, untrack := tracker.Track("org_1", "", near, func(context.Context) error {
+		if denied.Load() {
+			return errors.New("policy now denies")
+		}
+		return nil
+	})
+	defer untrack()
+
+	denied.Store(true)
+	nodeA.FlushAll()
+	_ = far.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := far.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("flow on node B still open after a policy flush on node A: %v", err)
 	}
 }

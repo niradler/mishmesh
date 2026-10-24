@@ -310,7 +310,7 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 	defer stream.Close()
 	stop := context.AfterFunc(r.Context(), func() { _ = stream.Close() })
 	defer stop()
-	flow, untrack, err := i.trackUpgrade(r, stream)
+	flow, untrack, err := i.trackUpgrade(r, stream, ep, outPath)
 	defer untrack()
 	if errors.Is(err, store.ErrNotFound) {
 		writeIdentityUnauthorized(w)
@@ -425,16 +425,49 @@ func newUpgradeTracker(i *Ingress, ids *identity.Service) *flows.Tracker {
 	return flows.NewTracker(i.log, "ingress upgrade", ids)
 }
 
-func (i *Ingress) trackUpgrade(r *http.Request, stream net.Conn) (*flows.Flow, func(), error) {
-	id := identityFrom(r)
-	if id == nil || id.principal == nil || id.principal.SessionID == "" {
-		return nil, func() {}, nil
+func (i *Ingress) trackUpgrade(r *http.Request, stream net.Conn, ep *store.Endpoint, outPath string) (*flows.Flow, func(), error) {
+	var principal *identity.Principal
+	if id := identityFrom(r); id != nil {
+		principal = id.principal
 	}
-	flow, untrack := i.upgrades.Track(id.principal.OrgID, id.principal.SessionID, stream)
-	if _, err := i.identity.Sessions().GetTokenSession(r.Context(), id.principal.SessionID); err != nil {
+	sessionID := ""
+	if principal != nil {
+		sessionID = principal.SessionID
+	}
+	flow, untrack := i.upgrades.Track(ep.OrgID, sessionID, stream, i.upgradeRecheck(r, ep.ID, outPath, principal))
+	if sessionID == "" {
+		return flow, untrack, nil
+	}
+	if _, err := i.identity.Sessions().GetTokenSession(r.Context(), sessionID); err != nil {
 		return nil, untrack, err
 	}
 	return flow, untrack, nil
+}
+
+func (i *Ingress) upgradeRecheck(r *http.Request, endpointID, outPath string, principal *identity.Principal) flows.Recheck {
+	if i.data == nil {
+		return nil
+	}
+	return func(ctx context.Context) error {
+		ep, err := i.data.GetEndpoint(ctx, endpointID)
+		if err != nil {
+			return fmt.Errorf("endpoint %s: %w", endpointID, err)
+		}
+		if ep.Policy == nil || ep.Policy.Identity == nil {
+			return nil
+		}
+		if i.deciders == nil {
+			return errors.New("endpoint is identity gated but no decider is configured")
+		}
+		decision, err := i.decideEndpoint(r.WithContext(ctx), ep, outPath, principal)
+		switch {
+		case err != nil:
+			return err
+		case !decision.Allowed:
+			return fmt.Errorf("endpoint access re-evaluated to %s", decision.Reason)
+		}
+		return nil
+	}
 }
 
 type bufferedConn struct {

@@ -93,6 +93,7 @@ func newEgressHarness(t *testing.T, allowLoopback bool) *egressHarness {
 	}
 	ids := identity.New(keys, memory.NewSessionStore())
 	cp.SetIdentity(ids)
+	ids.OnFlush(cp.ClearAuthzCache)
 	gw := gateway.New(gateway.Options{
 		Data: data, Conns: conns, Log: log, BaseDomain: "localhost", PublicScheme: "http",
 		Egress: egress.New(egress.Options{Conns: conns, Log: log, Deciders: cp, Dialer: guard, Access: access, Auth: ids, Agents: data, Revocations: ids}),

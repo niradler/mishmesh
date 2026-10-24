@@ -593,6 +593,9 @@ func (a *API) patchAgentHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
+	if req.Status != "" {
+		a.flushDecisions()
+	}
 	writeJSON(w, http.StatusOK, a.toAgentDTO(ag))
 }
 

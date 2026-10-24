@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -149,12 +150,13 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 			return
 		}
 	}
-	var flow *flows.Flow
-	if hasPrincipal {
-		var untrack func()
-		flow, untrack = h.flows.Track(agent.OrgID, p.SessionID, stream)
-		defer untrack()
-	}
+	flow, untrack := h.flows.Track(agent.OrgID, p.SessionID, stream, func(ctx context.Context) error {
+		if d, status := h.decideAll(ctx, agent, p, hasPrincipal, dest, targets, exit); status != tunnel.EgressOK {
+			return fmt.Errorf("egress %s re-evaluated to %s", dest, d.Reason)
+		}
+		return nil
+	})
+	defer untrack()
 	decision, status := h.decideAll(ctx, agent, p, hasPrincipal, dest, targets, exit)
 	rec.event.PolicyIDs = policyIDs(decision)
 	if status != tunnel.EgressOK {
@@ -167,7 +169,7 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		return
 	}
 	defer upstream.Close()
-	if flow != nil && !h.flows.Attach(flow, upstream) {
+	if !h.flows.Attach(flow, upstream) {
 		h.refuse(stream, rec, &refusal{tunnel.EgressDenied, string(authz.ReasonSessionRevoked)})
 		return
 	}

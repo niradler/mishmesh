@@ -265,3 +265,30 @@ func TestEgressSocks5(t *testing.T) {
 		t.Fatalf("unauthenticated socks method = %#x, want 0xff", code)
 	}
 }
+
+func TestEgressPolicyChangeClosesLiveTunnel(t *testing.T) {
+	h := newEgressHarness(t, true)
+	echo := tcpEchoServer(t)
+	orgID := h.orgWithPolicy(egressPolicyFor(echo))
+	listen := h.runAgent(orgID)
+	c, br, status := proxyConnect(t, listen, echo)
+	if status != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", status)
+	}
+	assertEcho(t, c, br)
+
+	if err := h.data.SetOrgPolicy(h.ctx, &store.OrgPolicy{OrgID: orgID, CedarSrc: egressPolicyFor("127.0.0.1:1"), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h.ids.FlushAll()
+
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := br.ReadByte(); err == nil {
+		t.Fatal("tunnel still delivering after the policy stopped allowing it")
+	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("live egress tunnel not closed after the policy change")
+	}
+	if _, _, status := proxyConnect(t, listen, echo); status == http.StatusOK {
+		t.Fatal("new CONNECT allowed after the policy change")
+	}
+}

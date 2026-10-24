@@ -70,12 +70,8 @@ func New(opts Options) *Bridge {
 
 func (b *Bridge) HandleConnect(ctx context.Context, agent *store.Agent, stream net.Conn, init tunnel.StreamInit) {
 	defer stream.Close()
-	var f *flows.Flow
-	if p, ok := identity.PrincipalFrom(ctx); ok {
-		var untrack func()
-		f, untrack = b.flows.Track(agent.OrgID, p.SessionID, stream)
-		defer untrack()
-	}
+	f, untrack := b.flows.Track(agent.OrgID, sessionOf(ctx), stream, b.recheck(ctx, agent, init))
+	defer untrack()
 	ep, origin, err := b.authorize(ctx, agent, init)
 	if err != nil {
 		b.log.Warn("connect refused", "agent_id", agent.ID, "connect", init.Meta[tunnel.MetaConnect], "kind", init.Kind, "err", err)
@@ -91,7 +87,7 @@ func (b *Bridge) HandleConnect(ctx context.Context, agent *store.Agent, stream n
 		return
 	}
 	defer upstream.Close()
-	if f != nil && !b.flows.Attach(f, upstream) {
+	if !b.flows.Attach(f, upstream) {
 		b.log.Info("connect flow revoked before splice", "agent_id", agent.ID, "endpoint_id", ep.ID)
 		return
 	}
@@ -100,6 +96,26 @@ func (b *Bridge) HandleConnect(ctx context.Context, agent *store.Agent, stream n
 	b.conns.AddUsage(ep.OrgID, up+down)
 	if b.meter != nil {
 		b.meter.AddBytes(ep.Kind, up, down)
+	}
+}
+
+func sessionOf(ctx context.Context) string {
+	p, _ := identity.PrincipalFrom(ctx)
+	return p.SessionID
+}
+
+func (b *Bridge) recheck(ctx context.Context, agent *store.Agent, init tunnel.StreamInit) flows.Recheck {
+	if b.deciders == nil {
+		return nil
+	}
+	p, hasPrincipal := identity.PrincipalFrom(ctx)
+	ref, kind := init.Meta[tunnel.MetaConnect], init.Kind
+	return func(ctx context.Context) error {
+		if hasPrincipal {
+			ctx = identity.WithPrincipal(ctx, p)
+		}
+		_, err := b.decide(ctx, agent, ref, kind)
+		return err
 	}
 }
 
