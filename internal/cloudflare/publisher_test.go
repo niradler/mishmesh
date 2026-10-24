@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -131,6 +132,31 @@ func TestSyncDNSZoneAndRecord(t *testing.T) {
 	}
 	if len(f.records["z-example"]) != 0 {
 		t.Fatalf("record created in wrong zone")
+	}
+}
+
+func TestSyncLooksUpDNSConcurrentlyWithABound(t *testing.T) {
+	f := newFakeCF(t)
+	f.listDelay = 50 * time.Millisecond
+	hosts := make([]Hostname, 3*dnsLookupConcurrency)
+	for i := range hosts {
+		hosts[i] = Hostname{Host: fmt.Sprintf("svc%d.example.com", i)}
+	}
+	fd, _ := newTestPublisher(t, f, f.testClientConfig(), hosts...)
+	st, err := fd.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if peak := f.listPeak.Load(); peak < 2 || peak > dnsLookupConcurrency {
+		t.Fatalf("peak concurrent DNS lookups = %d, want 2..%d", peak, dnsLookupConcurrency)
+	}
+	if got := len(f.records["z-example"]); got != len(hosts) {
+		t.Fatalf("records created = %d, want %d", got, len(hosts))
+	}
+	for _, h := range hosts {
+		if e := hostEntryFor(t, st, h.Host); e.DNS != DNSOK {
+			t.Fatalf("%s dns = %s (%s)", h.Host, e.DNS, e.DNSDetail)
+		}
 	}
 }
 
