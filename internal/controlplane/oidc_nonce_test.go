@@ -10,16 +10,20 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
 )
 
 type fakeProvider struct {
-	srv      *httptest.Server
-	idToken  func(nonce string) string
-	clientID string
+	srv         *httptest.Server
+	idToken     func(nonce string) string
+	clientID    string
+	tokenStatus int
+	tokenBody   []byte
 }
 
 func makeIDToken(claims map[string]any) string {
@@ -28,6 +32,18 @@ func makeIDToken(claims map[string]any) string {
 		return base64.RawURLEncoding.EncodeToString(b)
 	}
 	return enc(map[string]string{"alg": "none"}) + "." + enc(claims) + ".sig"
+}
+
+func (p *fakeProvider) claims(nonce string, overrides map[string]any) map[string]any {
+	c := map[string]any{"iss": p.srv.URL, "exp": time.Now().Add(time.Hour).Unix(), "sub": "g-123", "nonce": nonce, "aud": p.clientID}
+	for k, v := range overrides {
+		if v == nil {
+			delete(c, k)
+			continue
+		}
+		c[k] = v
+	}
+	return c
 }
 
 func newFakeProvider(t *testing.T, clientID string) *fakeProvider {
@@ -42,6 +58,13 @@ func newFakeProvider(t *testing.T, clientID string) *fakeProvider {
 		})
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if p.tokenStatus != 0 {
+			w.WriteHeader(p.tokenStatus)
+		}
+		if p.tokenBody != nil {
+			_, _ = w.Write(p.tokenBody)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "at", "id_token": p.idToken(p.lastNonce())})
 	})
 	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
@@ -105,36 +128,42 @@ func startGoogle(t *testing.T, c *http.Client, srv *httptest.Server) (state stri
 
 func TestGoogleCallbackNonceAndCookieCleanup(t *testing.T) {
 	const clientID = "client-1"
+	expired := time.Now().Add(-time.Hour).Unix()
 	tests := []struct {
-		name    string
-		idToken func(nonce string) string
-		want    int
+		name        string
+		claims      map[string]any
+		rawToken    *string
+		tokenStatus int
+		tokenBody   []byte
+		want        int
 	}{
-		{"matching nonce", func(n string) string {
-			return makeIDToken(map[string]any{"sub": "g-123", "nonce": n, "aud": clientID})
-		}, http.StatusFound},
-		{"audience list", func(n string) string {
-			return makeIDToken(map[string]any{"sub": "g-123", "nonce": n, "aud": []string{"x", clientID}})
-		}, http.StatusFound},
-		{"wrong nonce", func(string) string {
-			return makeIDToken(map[string]any{"sub": "g-123", "nonce": "attacker", "aud": clientID})
-		}, http.StatusUnauthorized},
-		{"missing nonce claim", func(string) string {
-			return makeIDToken(map[string]any{"sub": "g-123", "aud": clientID})
-		}, http.StatusUnauthorized},
-		{"wrong audience", func(n string) string {
-			return makeIDToken(map[string]any{"sub": "g-123", "nonce": n, "aud": "other"})
-		}, http.StatusUnauthorized},
-		{"subject mismatch", func(n string) string {
-			return makeIDToken(map[string]any{"sub": "someone-else", "nonce": n, "aud": clientID})
-		}, http.StatusUnauthorized},
-		{"no id token", func(string) string { return "" }, http.StatusUnauthorized},
-		{"malformed id token", func(string) string { return "not-a-jwt" }, http.StatusUnauthorized},
+		{name: "matching nonce", want: http.StatusFound},
+		{name: "audience list", claims: map[string]any{"aud": []string{"x", clientID}}, want: http.StatusFound},
+		{name: "wrong nonce", claims: map[string]any{"nonce": "attacker"}, want: http.StatusUnauthorized},
+		{name: "missing nonce claim", claims: map[string]any{"nonce": nil}, want: http.StatusUnauthorized},
+		{name: "wrong audience", claims: map[string]any{"aud": "other"}, want: http.StatusUnauthorized},
+		{name: "subject mismatch", claims: map[string]any{"sub": "someone-else"}, want: http.StatusUnauthorized},
+		{name: "missing subject", claims: map[string]any{"sub": nil}, want: http.StatusUnauthorized},
+		{name: "wrong issuer", claims: map[string]any{"iss": "https://evil.example.com"}, want: http.StatusUnauthorized},
+		{name: "missing issuer", claims: map[string]any{"iss": nil}, want: http.StatusUnauthorized},
+		{name: "expired", claims: map[string]any{"exp": expired}, want: http.StatusUnauthorized},
+		{name: "missing expiry", claims: map[string]any{"exp": nil}, want: http.StatusUnauthorized},
+		{name: "no id token", rawToken: ptr(""), want: http.StatusUnauthorized},
+		{name: "malformed id token", rawToken: ptr("not-a-jwt"), want: http.StatusUnauthorized},
+		{name: "token endpoint error", tokenStatus: http.StatusBadRequest, want: http.StatusUnauthorized},
+		{name: "token endpoint oversized", tokenBody: []byte(`{"access_token":"` + strings.Repeat("a", maxOIDCResponseBytes) + `"}`), want: http.StatusUnauthorized},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newFakeProvider(t, clientID)
-			p.idToken = tc.idToken
+			p.tokenStatus = tc.tokenStatus
+			p.tokenBody = tc.tokenBody
+			p.idToken = func(n string) string {
+				if tc.rawToken != nil {
+					return *tc.rawToken
+				}
+				return makeIDToken(p.claims(n, tc.claims))
+			}
 			srv := newGoogleAPI(t, p)
 			c := noRedirectClient()
 			state := startGoogle(t, c, srv)
@@ -160,11 +189,32 @@ func TestGoogleCallbackNonceAndCookieCleanup(t *testing.T) {
 	}
 }
 
+func ptr[T any](v T) *T { return &v }
+
+func TestIssuerAcceptedGoogleDefault(t *testing.T) {
+	c := &authConfig{}
+	for _, tc := range []struct {
+		iss  string
+		want bool
+	}{
+		{"https://accounts.google.com", true},
+		{"accounts.google.com", true},
+		{"https://accounts.google.com.evil.com", false},
+		{"", false},
+	} {
+		if got := c.issuerAccepted(tc.iss); got != tc.want {
+			t.Errorf("issuerAccepted(%q) = %v want %v", tc.iss, got, tc.want)
+		}
+	}
+	custom := &authConfig{issuer: "https://idp.example.com/"}
+	if !custom.issuerAccepted("https://idp.example.com") || custom.issuerAccepted("accounts.google.com") {
+		t.Fatal("custom issuer must match exactly")
+	}
+}
+
 func TestGoogleCallbackStateReplayRejected(t *testing.T) {
 	p := newFakeProvider(t, "client-1")
-	p.idToken = func(n string) string {
-		return makeIDToken(map[string]any{"sub": "g-123", "nonce": n, "aud": "client-1"})
-	}
+	p.idToken = func(n string) string { return makeIDToken(p.claims(n, nil)) }
 	srv := newGoogleAPI(t, p)
 	c := noRedirectClient()
 	state := startGoogle(t, c, srv)

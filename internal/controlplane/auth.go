@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -26,6 +27,17 @@ const (
 	sessionCookie    = "mm_session"
 	oauthNonceCookie = "mm_oauth_nonce"
 )
+
+const (
+	googleIssuer         = "https://accounts.google.com"
+	googleIssuerBare     = "accounts.google.com"
+	oidcRequestTimeout   = 10 * time.Second
+	maxOIDCResponseBytes = 1 << 20
+	idTokenClockSkew     = 2 * time.Minute
+)
+
+var oidcHTTPClient = &http.Client{Timeout: oidcRequestTimeout}
+
 const (
 	oauthStateCookie = "mm_oauth_state"
 	oauthNextCookie  = "mm_oauth_next"
@@ -585,7 +597,7 @@ func (a *API) googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "oidc discovery failed")
 		return
 	}
-	profile, err := a.auth.exchangeAndProfile(r.Context(), disc, r.URL.Query().Get("code"), nonceCookie.Value)
+	profile, err := a.auth.exchangeAndProfile(r.Context(), disc, r.URL.Query().Get("code"), nonceCookie.Value, a.now())
 	if err != nil {
 		a.log.Warn("google oauth exchange failed", "err", err)
 		writeError(w, http.StatusUnauthorized, "oauth exchange failed")
@@ -679,28 +691,54 @@ func (c *authConfig) discover(ctx context.Context) (*oidcDiscovery, error) {
 	if c.discovery != nil {
 		return c.discovery, nil
 	}
-	issuer := strings.TrimRight(c.issuer, "/")
-	if issuer == "" {
-		issuer = "https://accounts.google.com"
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/.well-known/openid-configuration", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.issuerURL()+"/.well-known/openid-configuration", nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
 	var disc oidcDiscovery
-	if err := json.NewDecoder(resp.Body).Decode(&disc); err != nil {
-		return nil, err
+	if err := fetchOIDCJSON(req, &disc); err != nil {
+		return nil, fmt.Errorf("oidc discovery: %w", err)
 	}
-	if disc.TokenEndpoint == "" || disc.AuthorizationEndpoint == "" {
+	if disc.TokenEndpoint == "" || disc.AuthorizationEndpoint == "" || disc.UserinfoEndpoint == "" {
 		return nil, errors.New("incomplete oidc discovery document")
 	}
 	c.discovery = &disc
 	return &disc, nil
+}
+
+func (c *authConfig) issuerURL() string {
+	if issuer := strings.TrimRight(c.issuer, "/"); issuer != "" {
+		return issuer
+	}
+	return googleIssuer
+}
+
+func (c *authConfig) issuerAccepted(iss string) bool {
+	expected := c.issuerURL()
+	if iss == expected {
+		return true
+	}
+	return expected == googleIssuer && iss == googleIssuerBare
+}
+
+func fetchOIDCJSON(req *http.Request, dst any) error {
+	resp, err := oidcHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxOIDCResponseBytes))
+		return fmt.Errorf("%s %s: status %d", req.Method, req.URL.Path, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOIDCResponseBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > maxOIDCResponseBytes {
+		return fmt.Errorf("%s %s: response exceeds %d bytes", req.Method, req.URL.Path, maxOIDCResponseBytes)
+	}
+	return json.Unmarshal(body, dst)
 }
 
 func (a *API) clearOAuthCookies(w http.ResponseWriter) {
@@ -710,6 +748,8 @@ func (a *API) clearOAuthCookies(w http.ResponseWriter) {
 }
 
 type idTokenClaims struct {
+	Iss   string          `json:"iss"`
+	Exp   int64           `json:"exp"`
 	Sub   string          `json:"sub"`
 	Nonce string          `json:"nonce"`
 	Aud   json.RawMessage `json:"aud"`
@@ -748,7 +788,7 @@ func audienceContains(raw json.RawMessage, clientID string) bool {
 	return false
 }
 
-func (c *authConfig) verifyIDToken(idToken, nonce string) (*idTokenClaims, error) {
+func (c *authConfig) verifyIDToken(idToken, nonce string, now time.Time) (*idTokenClaims, error) {
 	if idToken == "" {
 		return nil, errors.New("no id_token in response")
 	}
@@ -762,10 +802,19 @@ func (c *authConfig) verifyIDToken(idToken, nonce string) (*idTokenClaims, error
 	if !audienceContains(claims.Aud, c.googleClientID) {
 		return nil, errors.New("id_token audience mismatch")
 	}
+	if !c.issuerAccepted(claims.Iss) {
+		return nil, errors.New("id_token issuer mismatch")
+	}
+	if claims.Exp == 0 || !now.Before(time.Unix(claims.Exp, 0).Add(idTokenClockSkew)) {
+		return nil, errors.New("id_token expired")
+	}
+	if claims.Sub == "" {
+		return nil, errors.New("id_token missing subject")
+	}
 	return claims, nil
 }
 
-func (c *authConfig) exchangeAndProfile(ctx context.Context, disc *oidcDiscovery, code, nonce string) (*oidcProfile, error) {
+func (c *authConfig) exchangeAndProfile(ctx context.Context, disc *oidcDiscovery, code, nonce string, now time.Time) (*oidcProfile, error) {
 	if code == "" {
 		return nil, errors.New("missing code")
 	}
@@ -780,22 +829,18 @@ func (c *authConfig) exchangeAndProfile(ctx context.Context, disc *oidcDiscovery
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	req.Header.Set("Accept", "application/json")
 	var tok struct {
 		AccessToken string `json:"access_token"`
 		IDToken     string `json:"id_token"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
-		return nil, err
+	if err := fetchOIDCJSON(req, &tok); err != nil {
+		return nil, fmt.Errorf("token exchange: %w", err)
 	}
 	if tok.AccessToken == "" {
 		return nil, errors.New("no access token in response")
 	}
-	claims, err := c.verifyIDToken(tok.IDToken, nonce)
+	claims, err := c.verifyIDToken(tok.IDToken, nonce, now)
 	if err != nil {
 		return nil, err
 	}
@@ -804,19 +849,14 @@ func (c *authConfig) exchangeAndProfile(ctx context.Context, disc *oidcDiscovery
 		return nil, err
 	}
 	uReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-	uResp, err := http.DefaultClient.Do(uReq)
-	if err != nil {
-		return nil, err
-	}
-	defer uResp.Body.Close()
 	var profile oidcProfile
-	if err := json.NewDecoder(uResp.Body).Decode(&profile); err != nil {
-		return nil, err
+	if err := fetchOIDCJSON(uReq, &profile); err != nil {
+		return nil, fmt.Errorf("userinfo: %w", err)
 	}
 	if profile.Sub == "" || profile.Email == "" {
 		return nil, errors.New("incomplete userinfo")
 	}
-	if claims.Sub != "" && claims.Sub != profile.Sub {
+	if claims.Sub != profile.Sub {
 		return nil, errors.New("id_token subject does not match userinfo")
 	}
 	return &profile, nil
