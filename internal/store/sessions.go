@@ -35,6 +35,7 @@ type SessionStore interface {
 	ClaimOnce(ctx context.Context, key string, ttl time.Duration) (bool, error)
 	PutOnce(ctx context.Context, key string, value []byte, ttl time.Duration) error
 	TakeOnce(ctx context.Context, key string) ([]byte, error)
+	PeekOnce(ctx context.Context, key string) ([]byte, error)
 }
 
 func SubjectKey(orgID, subjectType, subjectID string) string {

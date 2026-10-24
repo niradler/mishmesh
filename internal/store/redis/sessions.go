@@ -147,3 +147,16 @@ func (s *SessionStore) TakeOnce(ctx context.Context, key string) ([]byte, error)
 	}
 	return raw, nil
 }
+
+func (s *SessionStore) PeekOnce(ctx context.Context, key string) ([]byte, error) {
+	ctx, cancel := opCtx(ctx)
+	defer cancel()
+	raw, err := s.rdb.Get(ctx, onceKeyPrefix+key).Bytes()
+	if errors.Is(err, goredis.Nil) {
+		return nil, store.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("redis: peek once: %w", err)
+	}
+	return raw, nil
+}

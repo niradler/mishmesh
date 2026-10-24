@@ -20,15 +20,21 @@ const (
 	oauthAuthorizationPending = "authorization_pending"
 	oauthExpiredToken         = "expired_token"
 	oauthUnauthorizedClient   = "unauthorized_client"
+	oauthAccessDenied         = "access_denied"
 
 	deviceVerificationPath = "/device"
+	consentPath            = "/consent"
 )
 
 func (a *API) registerAgentOAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /oauth2/authorize", a.oauthAuthorizeHandler)
 	mux.HandleFunc("POST /oauth2/device_authorization", a.deviceAuthorizationHandler)
 	mux.HandleFunc("POST /oauth2/revoke", a.oauthRevokeHandler)
+	mux.HandleFunc("GET /api/v1/auth/device", a.deviceLookupHandler)
 	mux.HandleFunc("POST /api/v1/auth/device/approve", a.csrfGuarded(a.deviceApproveHandler))
+	mux.HandleFunc("POST /api/v1/auth/device/deny", a.csrfGuarded(a.deviceDenyHandler))
+	mux.HandleFunc("GET /api/v1/auth/consent/{id}", a.consentLookupHandler)
+	mux.HandleFunc("POST /api/v1/auth/consent/{id}", a.csrfGuarded(a.consentDecideHandler))
 }
 
 func (a *API) agentLoginOrg(ctx context.Context, su *sessionUser, requested string) (string, error) {
@@ -66,7 +72,7 @@ func (a *API) oauthAuthorizeHandler(w http.ResponseWriter, r *http.Request) {
 		fail("unsupported_response_type")
 		return
 	}
-	if q.Get("state") == "" || q.Get("code_challenge_method") != "S256" || !identity.ValidCodeChallenge(q.Get("code_challenge")) {
+	if !identity.ValidState(q.Get("state")) || q.Get("code_challenge_method") != "S256" || !identity.ValidCodeChallenge(q.Get("code_challenge")) {
 		fail(oauthInvalidRequest)
 		return
 	}
@@ -81,30 +87,159 @@ func (a *API) oauthAuthorizeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	orgID, err := a.agentLoginOrg(r.Context(), su, q.Get("org_id"))
 	if errors.Is(err, store.ErrNotFound) {
-		fail("access_denied")
+		fail(oauthAccessDenied)
 		return
 	}
 	if err != nil {
 		writeStoreUnavailable(w)
 		return
 	}
-	code, err := a.identity.PutAuthCode(r.Context(), identity.AgentLogin{
+	consentID, err := a.identity.StartConsent(r.Context(), identity.AgentLogin{
 		OrgID:       orgID,
 		UserID:      su.user.ID,
 		AuthMethod:  su.authMethod,
 		AuthTime:    su.authTime,
 		Challenge:   q.Get("code_challenge"),
 		RedirectURI: redirectURI,
-	})
+	}, q.Get("state"))
 	if err != nil {
-		a.log.Error("agent auth code failed", "err", err)
+		a.log.Error("agent consent request failed", "err", err)
 		writeStoreUnavailable(w)
 		return
 	}
-	a.auditAs(r, orgID, su.user.Email, "oauth.authorize", identity.AgentClientID, string(su.authMethod))
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	http.Redirect(w, r, redirectURI+"?"+url.Values{"code": {code}, "state": {q.Get("state")}}.Encode(), http.StatusFound)
+	http.Redirect(w, r, consentPath+"?"+url.Values{"request": {consentID}}.Encode(), http.StatusFound)
+}
+
+func (a *API) agentLoginSession(w http.ResponseWriter, r *http.Request, guessable bool) (*sessionUser, bool) {
+	if a.identity == nil || !a.authEnabled() {
+		writeError(w, http.StatusServiceUnavailable, "agent login unavailable")
+		return nil, false
+	}
+	su, err := a.lookupSession(r)
+	if errors.Is(err, errNoSession) {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return nil, false
+	}
+	if err != nil {
+		writeStoreUnavailable(w)
+		return nil, false
+	}
+	rateKey := ""
+	if guessable {
+		rateKey = "device:" + su.user.ID
+	}
+	if !a.authRateAllowed(r, rateKey) {
+		w.Header().Set("Retry-After", "12")
+		writeError(w, http.StatusTooManyRequests, "too many attempts")
+		return nil, false
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	return su, true
+}
+
+func (a *API) consentLookupHandler(w http.ResponseWriter, r *http.Request) {
+	su, ok := a.agentLoginSession(w, r, false)
+	if !ok {
+		return
+	}
+	req, err := a.identity.LookupConsent(r.Context(), r.PathValue("id"), su.user.ID)
+	if a.agentLoginLookupFailed(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":           req.ID,
+		"client_id":    req.ClientID,
+		"org_id":       req.OrgID,
+		"redirect_uri": req.RedirectURI,
+		"auth_method":  string(req.AuthMethod),
+		"expires_at":   req.ExpiresAt,
+	})
+}
+
+func (a *API) consentDecideHandler(w http.ResponseWriter, r *http.Request) {
+	su, ok := a.agentLoginSession(w, r, false)
+	if !ok {
+		return
+	}
+	var body struct {
+		Approve *bool `json:"approve"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Approve == nil {
+		writeError(w, http.StatusBadRequest, "approve is required")
+		return
+	}
+	id := r.PathValue("id")
+	if *body.Approve {
+		req, err := a.identity.LookupConsent(r.Context(), id, su.user.ID)
+		if a.agentLoginLookupFailed(w, err) {
+			return
+		}
+		if _, err := a.agentLoginOrg(r.Context(), su, req.OrgID); a.agentLoginLookupFailed(w, err) {
+			return
+		}
+	}
+	redirect, req, err := a.identity.DecideConsent(r.Context(), id, su.user.ID, *body.Approve)
+	if a.agentLoginLookupFailed(w, err) {
+		return
+	}
+	action := "oauth.consent_deny"
+	if *body.Approve {
+		action = "oauth.authorize"
+	}
+	a.auditAs(r, req.OrgID, su.user.Email, action, identity.AgentClientID, string(su.authMethod))
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	writeJSON(w, http.StatusOK, map[string]any{"redirect_to": redirect})
+}
+
+func (a *API) agentLoginLookupFailed(w http.ResponseWriter, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, identity.ErrUnauthenticated), errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "unknown or expired request")
+	default:
+		a.log.Error("agent login request failed", "err", err)
+		writeStoreUnavailable(w)
+	}
+	return true
+}
+
+func (a *API) deviceLookupHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.agentLoginSession(w, r, true); !ok {
+		return
+	}
+	req, err := a.identity.LookupDevice(r.Context(), r.URL.Query().Get("user_code"))
+	if a.agentLoginLookupFailed(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_code":  req.UserCode,
+		"client_id":  req.ClientID,
+		"expires_at": req.ExpiresAt,
+	})
+}
+
+func (a *API) deviceDenyHandler(w http.ResponseWriter, r *http.Request) {
+	su, ok := a.agentLoginSession(w, r, true)
+	if !ok {
+		return
+	}
+	var req struct {
+		UserCode string `json:"user_code"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if a.agentLoginLookupFailed(w, a.identity.DenyDevice(r.Context(), req.UserCode)) {
+		return
+	}
+	a.auditAs(r, su.orgID, su.user.Email, "oauth.device_deny", identity.AgentClientID, string(su.authMethod))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) deviceAuthorizationHandler(w http.ResponseWriter, r *http.Request) {
@@ -145,17 +280,8 @@ func (a *API) deviceAuthorizationHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *API) deviceApproveHandler(w http.ResponseWriter, r *http.Request) {
-	if a.identity == nil || !a.authEnabled() {
-		writeError(w, http.StatusServiceUnavailable, "agent login unavailable")
-		return
-	}
-	su, err := a.lookupSession(r)
-	if errors.Is(err, errNoSession) {
-		writeError(w, http.StatusUnauthorized, "not authenticated")
-		return
-	}
-	if err != nil {
-		writeStoreUnavailable(w)
+	su, ok := a.agentLoginSession(w, r, true)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -163,11 +289,6 @@ func (a *API) deviceApproveHandler(w http.ResponseWriter, r *http.Request) {
 		OrgID    string `json:"org_id"`
 	}
 	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if !a.authRateAllowed(r, "device:"+su.user.ID) {
-		w.Header().Set("Retry-After", "12")
-		writeError(w, http.StatusTooManyRequests, "too many attempts")
 		return
 	}
 	orgID, err := a.agentLoginOrg(r.Context(), su, req.OrgID)
@@ -274,6 +395,8 @@ func (a *API) agentGrantFailed(w http.ResponseWriter, err error) bool {
 		writeOAuthError(w, http.StatusBadRequest, oauthSlowDown, "")
 	case errors.Is(err, identity.ErrExpiredCode):
 		writeOAuthError(w, http.StatusBadRequest, oauthExpiredToken, "")
+	case errors.Is(err, identity.ErrAccessDenied):
+		writeOAuthError(w, http.StatusBadRequest, oauthAccessDenied, "")
 	case errors.Is(err, identity.ErrUnauthenticated):
 		writeOAuthError(w, http.StatusBadRequest, oauthInvalidGrant, "")
 	default:

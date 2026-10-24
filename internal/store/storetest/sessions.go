@@ -111,6 +111,30 @@ func RunSessionStore(t *testing.T, open func(t *testing.T) store.SessionStore) {
 			t.Fatalf("second take err = %v", err)
 		}
 	})
+
+	t.Run("peek once leaves the value", func(t *testing.T) {
+		s := open(t)
+		ctx := context.Background()
+		if _, err := s.PeekOnce(ctx, "consent:1"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("peek missing err = %v", err)
+		}
+		if err := s.PutOnce(ctx, "consent:1", []byte("pending"), time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			got, err := s.PeekOnce(ctx, "consent:1")
+			if err != nil || string(got) != "pending" {
+				t.Fatalf("peek = %q %v", got, err)
+			}
+		}
+		got, err := s.TakeOnce(ctx, "consent:1")
+		if err != nil || string(got) != "pending" {
+			t.Fatalf("take after peek = %q %v", got, err)
+		}
+		if _, err := s.PeekOnce(ctx, "consent:1"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("peek after take err = %v", err)
+		}
+	})
 }
 
 func sampleSession(id, org, subject string) *store.TokenSession {

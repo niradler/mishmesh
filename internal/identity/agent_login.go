@@ -222,24 +222,12 @@ func (s *Service) StartDevice(ctx context.Context) (DeviceStart, error) {
 }
 
 func (s *Service) ApproveDevice(ctx context.Context, userCode string, l AgentLogin) error {
-	code := NormalizeUserCode(userCode)
-	if code == "" || l.OrgID == "" || l.UserID == "" {
+	if l.OrgID == "" || l.UserID == "" {
 		return ErrUnauthenticated
 	}
-	raw, err := s.sessions.TakeOnce(ctx, deviceUserKey+code)
-	if errors.Is(err, store.ErrNotFound) {
-		return ErrUnauthenticated
-	}
+	pending, remaining, err := s.takePendingDevice(ctx, userCode)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	var pending pendingDevice
-	if err := json.Unmarshal(raw, &pending); err != nil {
-		return ErrUnauthenticated
-	}
-	remaining := time.Unix(pending.ExpiresAt, 0).Sub(s.now())
-	if remaining <= 0 {
-		return ErrUnauthenticated
+		return err
 	}
 	l.Challenge, l.RedirectURI = "", ""
 	login, err := json.Marshal(l)
@@ -271,7 +259,7 @@ func (s *Service) PollDevice(ctx context.Context, deviceCode string) (AgentLogin
 	}
 	raw, err := s.sessions.TakeOnce(ctx, deviceApprovedKey+hash)
 	if errors.Is(err, store.ErrNotFound) {
-		return AgentLogin{}, ErrAuthorizationPending
+		return AgentLogin{}, s.pendingOrDenied(ctx, hash)
 	}
 	if err != nil {
 		return AgentLogin{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
@@ -281,6 +269,18 @@ func (s *Service) PollDevice(ctx context.Context, deviceCode string) (AgentLogin
 		return AgentLogin{}, ErrUnauthenticated
 	}
 	return l, nil
+}
+
+func (s *Service) pendingOrDenied(ctx context.Context, hash string) error {
+	_, err := s.sessions.TakeOnce(ctx, deviceDeniedKey+hash)
+	switch {
+	case err == nil:
+		return ErrAccessDenied
+	case errors.Is(err, store.ErrNotFound):
+		return ErrAuthorizationPending
+	default:
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
 }
 
 func (s *Service) IssueAgentUser(ctx context.Context, l AgentLogin) (AgentTokens, error) {
