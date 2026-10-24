@@ -352,6 +352,10 @@ func TestShouldDeriveCacheScopePerAction(t *testing.T) {
 		{"action list", `permit (principal, action in [Action::"endpoint:access", Action::"http:request"], resource) when { context.path == "/" };`, ActionHTTPRequest, CacheScope{Path: true}},
 		{"bare context", `permit (principal, action == Action::"http:request", resource) when { context == {} };`, ActionHTTPRequest, CacheScope{Path: true, Method: true}},
 		{"other attrs", `permit (principal, action == Action::"http:request", resource) when { context.host == "a" };`, ActionHTTPRequest, CacheScope{}},
+		{"resolved ip on egress connect", `forbid (principal, action == Action::"egress:connect", resource) when { context has resolved_ip && context.resolved_ip.isLoopback() };`, ActionEgressConnect, CacheScope{ResolvedIP: true}},
+		{"resolved ip ignored for other actions", `permit (principal, action, resource) when { context has resolved_ip };`, ActionHTTPRequest, CacheScope{}},
+		{"bare context on egress connect", `permit (principal, action == Action::"egress:connect", resource) when { context == {} };`, ActionEgressConnect, CacheScope{Path: true, Method: true, ResolvedIP: true}},
+		{"hostname only egress policy", `forbid (principal, action == Action::"egress:connect", resource) when { context has exit };`, ActionEgressConnect, CacheScope{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

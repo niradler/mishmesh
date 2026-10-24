@@ -350,7 +350,7 @@ func computeScopes(ps *cedar.PolicySet) map[Action]CacheScope {
 		pj, err := parsePolicyJSON(p)
 		if err != nil {
 			for _, act := range DataPlaneActions() {
-				scopes[act] = CacheScope{Path: true, Method: true}
+				scopes[act] = allContextScope.forAction(act)
 			}
 			return scopes
 		}
@@ -358,7 +358,7 @@ func computeScopes(ps *cedar.PolicySet) map[Action]CacheScope {
 		for _, cond := range pj.Conditions {
 			var node any
 			if err := json.Unmarshal(cond, &node); err != nil {
-				refs = CacheScope{Path: true, Method: true}
+				refs = allContextScope
 				break
 			}
 			collectContextRefs(node, &refs)
@@ -370,8 +370,10 @@ func computeScopes(ps *cedar.PolicySet) map[Action]CacheScope {
 		for _, act := range DataPlaneActions() {
 			if scope.covers(act) {
 				s := scopes[act]
-				s.Path = s.Path || refs.Path
-				s.Method = s.Method || refs.Method
+				r := refs.forAction(act)
+				s.Path = s.Path || r.Path
+				s.Method = s.Method || r.Method
+				s.ResolvedIP = s.ResolvedIP || r.ResolvedIP
 				scopes[act] = s
 			}
 		}
@@ -379,11 +381,20 @@ func computeScopes(ps *cedar.PolicySet) map[Action]CacheScope {
 	return scopes
 }
 
+var allContextScope = CacheScope{Path: true, Method: true, ResolvedIP: true}
+
+func (s CacheScope) forAction(act Action) CacheScope {
+	if act != ActionEgressConnect {
+		s.ResolvedIP = false
+	}
+	return s
+}
+
 func collectContextRefs(node any, refs *CacheScope) {
 	switch n := node.(type) {
 	case map[string]any:
 		if isContextVar(n) {
-			refs.Path, refs.Method = true, true
+			*refs = allContextScope
 			return
 		}
 		for _, key := range []string{".", "has"} {
@@ -397,6 +408,8 @@ func collectContextRefs(node any, refs *CacheScope) {
 					refs.Path = true
 				case "method":
 					refs.Method = true
+				case "resolved_ip":
+					refs.ResolvedIP = true
 				}
 				return
 			}

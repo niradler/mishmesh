@@ -116,8 +116,9 @@ type DeterminingPolicy struct {
 }
 
 type CacheScope struct {
-	Path   bool `json:"path"`
-	Method bool `json:"method"`
+	Path       bool `json:"path"`
+	Method     bool `json:"method"`
+	ResolvedIP bool `json:"resolved_ip,omitempty"`
 }
 
 type Decision struct {
