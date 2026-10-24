@@ -64,6 +64,7 @@ func (a *API) putSecretHandler(w http.ResponseWriter, r *http.Request) {
 	case a.handleErr(w, err):
 		return
 	}
+	a.flushDecisions(a.orgScope(r))
 	a.audit(r, "secret.put", name, "version="+strconv.Itoa(sec.Version))
 	writeJSON(w, http.StatusOK, toOrgSecretDTO(sec))
 }
@@ -82,6 +83,7 @@ func (a *API) deleteSecretHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
+	a.flushDecisions(a.orgScope(r))
 	a.audit(r, "secret.delete", name, "")
 	w.WriteHeader(http.StatusNoContent)
 }

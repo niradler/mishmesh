@@ -451,6 +451,16 @@ type DataStore interface {
 	ListOrgSecrets(ctx context.Context, orgID string) ([]*OrgSecret, error)
 	DeleteOrgSecret(ctx context.Context, orgID, name string) error
 
+	PutEgressCredential(ctx context.Context, c *EgressCredential) error
+	GetEgressCredential(ctx context.Context, orgID, name string) (*EgressCredential, error)
+	ListEgressCredentials(ctx context.Context, orgID string) ([]*EgressCredential, error)
+	DeleteEgressCredential(ctx context.Context, orgID, name string) error
+
+	EnsureOrgCA(ctx context.Context, ca *OrgCA) (*OrgCA, error)
+	GetOrgCA(ctx context.Context, orgID string) (*OrgCA, error)
+	GetOrgDecrypt(ctx context.Context, orgID string) (*OrgDecrypt, error)
+	SetOrgDecrypt(ctx context.Context, d *OrgDecrypt) error
+
 	CreateService(ctx context.Context, svc *Service) error
 	GetService(ctx context.Context, id string) (*Service, error)
 	ListServices(ctx context.Context, orgID string) ([]*Service, error)

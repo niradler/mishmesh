@@ -164,6 +164,11 @@ func egressPolicyFor(addr string) string {
 	return fmt.Sprintf(`permit (principal, action == Action::"egress:connect", resource) when { resource.host == %q && resource.port == %s };`, host, port)
 }
 
+func egressRequestPolicyFor(addr string) string {
+	host, port, _ := net.SplitHostPort(addr)
+	return fmt.Sprintf(`permit (principal, action == Action::"egress:request", resource) when { resource.host == %q && resource.port == %s };`, host, port)
+}
+
 func proxyConnect(t *testing.T, proxyAddr, target string) (net.Conn, *bufio.Reader, int) {
 	t.Helper()
 	c, br, resp := proxyConnectAuth(t, proxyAddr, target, "")
@@ -233,7 +238,7 @@ func TestEgressAbsoluteFormReachesBackend(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 	addr := strings.TrimPrefix(backend.URL, "http://")
-	orgID := h.orgWithPolicy(egressPolicyFor(addr))
+	orgID := h.orgWithPolicy(egressPolicyFor(addr) + "\n" + egressRequestPolicyFor(addr))
 	listen := h.runAgent(orgID)
 	proxyConnect(t, listen, addr)
 	_, raw := h.serviceAccountToken(orgID, "ci")

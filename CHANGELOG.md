@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Agent HTTP origination: `egress.originate` listeners (name → listen, upstream, token) and absolute-form `http://` / `https://` requests on the egress proxy are proxied per request, with TLS originated by the agent and strict upstream certificate verification (502 with a clear body on failure).
+- `egress:request` Cedar action evaluated per request with `context.method`, `context.path`, `context.tls`, `context.decrypted` and `context.exit`. Dot-segment and non-absolute paths are refused before policy.
+- Scoped credential injection: `@credential("name")` on an `egress:request` permit releases a secret only to agents listed on the credential (`/api/v1/egress/credentials`), sealed with HPKE to a per-session agent key bound to org, agent and credential name. The client's own copy of the header is stripped; injection onto plaintext `http` is refused with `credential_requires_tls`. Secret updates and deletions flush agent caches and pooled upstream connections.
+- **Behavior change:** absolute-form `http://` requests through the egress proxy now need an `egress:request` permit in addition to `egress:connect`.
+- Egress decryption foundation (server side): a per-org root CA created lazily with its key sealed at rest (`GET /api/v1/egress/ca` returns the PEM and SHA-256), a decrypt scope (`GET/PUT /api/v1/egress/decrypt`, `allow` = `host` or `*.domain`, `bypass` wins, IPs rejected, an empty allowlist means off), and agent intermediate issuance over the control channel (`cert_request`/`cert_response`). The server builds every name constraint from the org scope: the CSR supplies only a P-256 key, intermediates live 24h with path length 0 and exclude all IP addresses. Agent-side TLS termination is not included yet.
+
 ## v0.1.0-beta.7
 
 - Named Cloudflare public access and Tailscale private HTTPS connections over existing networks, with provider-owned hostname/protocol capabilities and per-endpoint Access refs. Preserve Connect, UDP and canonical ingress behavior. NetBird/WireGuard remain extension targets; VPN peer/key/route management and Kubernetes providers/drivers are outside this release.

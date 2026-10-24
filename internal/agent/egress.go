@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -38,6 +39,7 @@ type EgressSpec struct {
 	Exit        string
 	ServeExit   bool
 	ExitAllow   []string
+	Originate   []OriginateSpec
 }
 
 type ExitDialer interface {
@@ -110,6 +112,22 @@ func (a *Agent) listenEgress(spec EgressSpec, wg *sync.WaitGroup) (func(), error
 		})
 		a.log.Info("egress proxy listening", "proto", l.kind, "addr", ln.Addr().String(), "require_auth", spec.RequireAuth)
 	}
+	for _, o := range spec.Originate {
+		target, err := parseOriginTarget(o.Upstream)
+		if err != nil {
+			closeAll()
+			return nil, fmt.Errorf("originate %s: upstream %w", o.Name, err)
+		}
+		ln, err := net.Listen("tcp", o.Listen)
+		if err != nil {
+			closeAll()
+			return nil, err
+		}
+		listeners = append(listeners, ln)
+		srv := a.origin.server(a.origin.fixedHandler(target, egressCreds{token: o.Token}))
+		wg.Go(func() { _ = srv.Serve(ln) })
+		a.log.Info("egress originate listening", "name", o.Name, "addr", ln.Addr().String(), "upstream", target.scheme+"://"+target.authority())
+	}
 	return closeAll, nil
 }
 
@@ -117,8 +135,10 @@ func (a *Agent) serveEgressClient(client net.Conn) {
 	defer client.Close()
 	_ = client.SetDeadline(time.Now().Add(egressHandshakeTimeout))
 	limited := &io.LimitedReader{R: client, N: maxProxyHeaderBytes}
-	br := bufio.NewReader(limited)
+	rec := &recordingReader{r: limited, on: true}
+	br := bufio.NewReader(rec)
 	req, err := http.ReadRequest(br)
+	rec.on = false
 	if err != nil {
 		writeProxyError(client, http.StatusBadRequest, "malformed proxy request")
 		return
@@ -138,7 +158,8 @@ func (a *Agent) serveEgressClient(client net.Conn) {
 		a.serveConnect(client, br, req, creds)
 		return
 	}
-	a.serveAbsoluteForm(client, req, creds)
+	_ = client.SetDeadline(time.Time{})
+	a.serveProxyHTTP(client, rec.buf.Bytes())
 }
 
 func isConnectUDP(req *http.Request) bool {
@@ -193,7 +214,7 @@ func (a *Agent) serveConnect(client net.Conn, br *bufio.Reader, req *http.Reques
 		writeProxyError(client, http.StatusBadRequest, "CONNECT target must be host:port")
 		return
 	}
-	stream, err := a.openEgress(client, dest, creds)
+	stream, err := a.openEgress(remoteHost(client.RemoteAddr().String()), dest, creds)
 	if err != nil {
 		writeEgressFailure(client, err)
 		a.log.Info("egress refused", "destination", truncateLog(dest), "err", err)
@@ -207,50 +228,48 @@ func (a *Agent) serveConnect(client net.Conn, br *bufio.Reader, req *http.Reques
 	tunnel.Splice(&bufferedConn{Conn: client, r: br}, stream)
 }
 
-func (a *Agent) serveAbsoluteForm(client net.Conn, req *http.Request, creds egressCreds) {
-	if req.URL == nil || req.URL.Host == "" {
-		writeProxyError(client, http.StatusBadRequest, "proxy requests need an absolute http:// URL or CONNECT")
-		return
-	}
-	if !strings.EqualFold(req.URL.Scheme, "http") {
-		writeProxyError(client, http.StatusBadRequest, "use CONNECT for "+req.URL.Scheme+" URLs")
-		return
-	}
-	dest := req.URL.Host
-	if _, _, err := net.SplitHostPort(dest); err != nil {
-		dest = net.JoinHostPort(strings.Trim(req.URL.Hostname(), "[]"), "80")
-	}
-	stream, err := a.openEgress(client, dest, creds)
-	if err != nil {
-		writeEgressFailure(client, err)
-		a.log.Info("egress refused", "destination", truncateLog(dest), "err", err)
-		return
-	}
-	defer stream.Close()
-	for name := range req.Header {
-		if strings.HasPrefix(strings.ToLower(name), "proxy-") {
-			req.Header.Del(name)
-		}
-	}
-	req.RequestURI = ""
-	req.URL.Scheme = ""
-	req.URL.Host = ""
-	req.Close = true
-	_ = client.SetDeadline(time.Time{})
-	if err := req.Write(stream); err != nil {
-		return
-	}
-	_, _ = io.Copy(client, stream)
+func (a *Agent) serveProxyHTTP(client net.Conn, head []byte) {
+	replay := &replayConn{Conn: client, head: head}
+	srv := a.origin.server(a.origin.proxyHandler(remoteHost(client.RemoteAddr().String())))
+	_ = srv.Serve(newOneConnListener(replay))
 }
 
-func (a *Agent) openEgress(client net.Conn, dest string, creds egressCreds) (net.Conn, error) {
+type replayConn struct {
+	net.Conn
+	head []byte
+}
+
+func (c *replayConn) Read(p []byte) (int, error) {
+	if len(c.head) > 0 {
+		n := copy(p, c.head)
+		c.head = c.head[n:]
+		return n, nil
+	}
+	return c.Conn.Read(p)
+}
+
+type recordingReader struct {
+	r   io.Reader
+	buf bytes.Buffer
+	on  bool
+}
+
+func (r *recordingReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if r.on && n > 0 {
+		r.buf.Write(p[:n])
+	}
+	return n, err
+}
+
+func (a *Agent) openEgress(clientIP, dest string, creds egressCreds) (net.Conn, error) {
 	sess := a.sess.Load()
 	if sess == nil {
 		return nil, &egressRefusal{status: http.StatusServiceUnavailable, reason: errNotConnected.Error()}
 	}
 	meta := map[string]string{tunnel.MetaEgress: dest}
-	if host, _, err := net.SplitHostPort(client.RemoteAddr().String()); err == nil {
-		meta[tunnel.MetaEgressClient] = host
+	if clientIP != "" {
+		meta[tunnel.MetaEgressClient] = clientIP
 	}
 	if creds.token != "" {
 		meta[tunnel.MetaEgressAuth] = creds.token

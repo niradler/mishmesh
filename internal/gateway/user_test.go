@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -62,6 +63,13 @@ type fakeDecider struct {
 }
 
 func (f *fakeDecider) HandleConnect(context.Context, *store.Agent, net.Conn, tunnel.StreamInit) {}
+
+func (f *fakeDecider) HandleEgress(context.Context, *store.Agent, net.Conn, tunnel.StreamInit) {}
+
+func (f *fakeDecider) DecideRequest(_ context.Context, _ *store.Agent, q tunnel.DecisionQuery) tunnel.DecisionAnswer {
+	f.got <- q
+	return f.answer
+}
 
 func (f *fakeDecider) DecideConnect(_ context.Context, _ *store.Agent, q tunnel.DecisionQuery) tunnel.DecisionAnswer {
 	f.got <- q
@@ -199,7 +207,7 @@ func TestDecisionRequestAnsweredAndClamped(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := a.recvType(t, tunnel.MsgDecisionResponse)
-	if got := <-dec.got; got != q {
+	if got := <-dec.got; !reflect.DeepEqual(got, q) {
 		t.Fatalf("decider got %+v", got)
 	}
 	if msg.Answer == nil || msg.Answer.ID != 7 || !msg.Answer.Allowed || msg.Answer.TTLSeconds != tunnel.MaxDecisionTTLSeconds {
@@ -219,6 +227,43 @@ func TestDecisionRequestDeniedWithoutDecider(t *testing.T) {
 	msg := a.recvType(t, tunnel.MsgDecisionResponse)
 	if msg.Answer == nil || msg.Answer.ID != 3 || msg.Answer.Allowed {
 		t.Fatalf("answer = %+v, want deny", msg.Answer)
+	}
+}
+
+func TestDecisionRequestDispatchedByAction(t *testing.T) {
+	connect := &fakeDecider{answer: tunnel.DecisionAnswer{Allowed: true, Reason: "connect"}, got: make(chan tunnel.DecisionQuery, 4)}
+	egress := &fakeDecider{answer: tunnel.DecisionAnswer{Allowed: true, Reason: "egress", Credential: &tunnel.SealedCredential{Name: "billing", Header: "Authorization", Sealed: []byte{1}}}, got: make(chan tunnel.DecisionQuery, 4)}
+	g, ag, _, data := newRegisterFixture(t, Options{Connect: connect, Egress: egress})
+	srv := httptest.NewServer(http.HandlerFunc(g.HandleAgentConnect))
+	t.Cleanup(srv.Close)
+	a := dialAgent(t, srv, agentToken(t, data, ag), "")
+
+	cases := []struct {
+		q      tunnel.DecisionQuery
+		reason string
+		via    *fakeDecider
+	}{
+		{tunnel.DecisionQuery{ID: 1, Action: tunnel.DecisionActionEgressRequest, HTTP: &tunnel.HTTPQuery{Host: "api.example.com", Port: 443, Method: "GET", Path: "/"}}, "egress", egress},
+		{tunnel.DecisionQuery{ID: 2, Action: tunnel.DecisionActionConnect, Connect: "db", Kind: "tcp"}, "connect", connect},
+		{tunnel.DecisionQuery{ID: 3, Action: "http:request"}, "unsupported", nil},
+	}
+	for _, tc := range cases {
+		if err := a.ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgDecisionRequest, Decision: &tc.q}); err != nil {
+			t.Fatal(err)
+		}
+		msg := a.recvType(t, tunnel.MsgDecisionResponse)
+		if msg.Answer == nil || msg.Answer.ID != tc.q.ID || msg.Answer.Reason != tc.reason {
+			t.Fatalf("query %d answer = %+v", tc.q.ID, msg.Answer)
+		}
+		if tc.via == nil {
+			continue
+		}
+		if got := <-tc.via.got; !reflect.DeepEqual(got, tc.q) {
+			t.Fatalf("query %d reached %+v", tc.q.ID, got)
+		}
+	}
+	if len(connect.got) != 0 || len(egress.got) != 0 {
+		t.Fatal("query reached the wrong decider")
 	}
 }
 
@@ -247,4 +292,54 @@ func TestFlushAllAndRevocationFlushBoundAgentsOnly(t *testing.T) {
 	users.publish(identity.Revocation{OrgID: "org1", SessionIDs: []string{"s1"}})
 	bound.recvType(t, tunnel.MsgFlush)
 	plain.expectNoMessage(t)
+}
+
+type fakeCertIssuer struct {
+	resp tunnel.CertResponse
+	err  error
+	got  chan []byte
+}
+
+func (f *fakeCertIssuer) IssueDecryptCert(_ context.Context, _ *store.Agent, csr []byte) (tunnel.CertResponse, error) {
+	f.got <- csr
+	return f.resp, f.err
+}
+
+func TestCertRequestAnswered(t *testing.T) {
+	ok := &fakeCertIssuer{resp: tunnel.CertResponse{ID: 999, Chain: [][]byte{{1}}, Allow: []string{"api.example.com"}}, got: make(chan []byte, 1)}
+	failing := &fakeCertIssuer{err: errors.New("store down: secret detail"), got: make(chan []byte, 1)}
+	tests := []struct {
+		name      string
+		issuer    CertIssuer
+		wantError string
+		wantChain bool
+	}{
+		{"no issuer", nil, "egress decryption is not available on this server", false},
+		{"issuer error is generic", failing, "certificate issuance unavailable", false},
+		{"issued", ok, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := Options{}
+			if tt.issuer != nil {
+				opts.Certs = tt.issuer
+			}
+			g, ag, _, data := newRegisterFixture(t, opts)
+			srv := httptest.NewServer(http.HandlerFunc(g.HandleAgentConnect))
+			t.Cleanup(srv.Close)
+			a := dialAgent(t, srv, agentToken(t, data, ag), "")
+			if err := a.ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgCertRequest, CertRequest: &tunnel.CertRequest{ID: 42, CSR: []byte("csr")}}); err != nil {
+				t.Fatal(err)
+			}
+			msg := a.recvType(t, tunnel.MsgCertResponse)
+			if msg.Cert == nil || msg.Cert.ID != 42 || msg.Cert.Error != tt.wantError || (len(msg.Cert.Chain) > 0) != tt.wantChain {
+				t.Fatalf("cert = %+v", msg.Cert)
+			}
+			if fi, isFake := tt.issuer.(*fakeCertIssuer); isFake {
+				if got := <-fi.got; string(got) != "csr" {
+					t.Fatalf("issuer got csr %q", got)
+				}
+			}
+		})
+	}
 }

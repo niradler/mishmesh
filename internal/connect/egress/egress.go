@@ -71,18 +71,22 @@ type Options struct {
 	Revocations flows.Revocations
 	Auth        Authenticator
 	Agents      Agents
+	Credentials Credentials
+	Secrets     Secrets
 }
 
 type Handler struct {
-	conns    store.ConnectionStore
-	log      *slog.Logger
-	meter    Meter
-	deciders identity.Deciders
-	dialer   Dialer
-	access   Recorder
-	auth     Authenticator
-	agents   Agents
-	flows    *flows.Tracker
+	conns       store.ConnectionStore
+	log         *slog.Logger
+	meter       Meter
+	deciders    identity.Deciders
+	dialer      Dialer
+	access      Recorder
+	auth        Authenticator
+	agents      Agents
+	credentials Credentials
+	secrets     Secrets
+	flows       *flows.Tracker
 }
 
 func New(opts Options) *Handler {
@@ -91,15 +95,17 @@ func New(opts Options) *Handler {
 		log = slog.Default()
 	}
 	return &Handler{
-		conns:    opts.Conns,
-		log:      log,
-		meter:    opts.Meter,
-		deciders: opts.Deciders,
-		dialer:   opts.Dialer,
-		access:   opts.Access,
-		auth:     opts.Auth,
-		agents:   opts.Agents,
-		flows:    flows.NewTracker(log, "egress", opts.Revocations),
+		conns:       opts.Conns,
+		log:         log,
+		meter:       opts.Meter,
+		deciders:    opts.Deciders,
+		dialer:      opts.Dialer,
+		access:      opts.Access,
+		auth:        opts.Auth,
+		agents:      opts.Agents,
+		credentials: opts.Credentials,
+		secrets:     opts.Secrets,
+		flows:       flows.NewTracker(log, "egress", opts.Revocations),
 	}
 }
 

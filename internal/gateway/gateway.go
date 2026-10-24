@@ -36,6 +36,14 @@ type ConnectDecider interface {
 	DecideConnect(ctx context.Context, agent *store.Agent, q tunnel.DecisionQuery) tunnel.DecisionAnswer
 }
 
+type RequestDecider interface {
+	DecideRequest(ctx context.Context, agent *store.Agent, q tunnel.DecisionQuery) tunnel.DecisionAnswer
+}
+
+type CertIssuer interface {
+	IssueDecryptCert(ctx context.Context, agent *store.Agent, csr []byte) (tunnel.CertResponse, error)
+}
+
 type UserAuthenticator interface {
 	Authenticate(ctx context.Context, raw string, allowed ...token.Type) (identity.Principal, error)
 	Subscribe(fn func(identity.Revocation)) func()
@@ -69,6 +77,7 @@ type Options struct {
 	Egress             EgressHandler
 	Metrics            Metrics
 	Users              UserAuthenticator
+	Certs              CertIssuer
 
 	KindUnavailable map[string]string
 }
@@ -87,6 +96,7 @@ type Gateway struct {
 	egress             EgressHandler
 	metrics            Metrics
 	users              UserAuthenticator
+	certs              CertIssuer
 	unavailable        map[string]string
 
 	liveMu sync.Mutex
@@ -112,6 +122,7 @@ func New(opts Options) *Gateway {
 		egress:             opts.Egress,
 		metrics:            opts.Metrics,
 		users:              opts.Users,
+		certs:              opts.Certs,
 		unavailable:        opts.KindUnavailable,
 		live:               make(map[*agentConn]struct{}),
 	}
@@ -308,6 +319,10 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 			if msg.Decision != nil {
 				g.answerDecision(ctx, agent, ctrl, *msg.Decision, decisions)
 			}
+		case tunnel.MsgCertRequest:
+			if msg.CertRequest != nil {
+				g.answerCert(ctx, agent, ctrl, *msg.CertRequest, decisions)
+			}
 		case tunnel.MsgRegister:
 			ack := g.handleRegister(ctx, agent, msg.Register)
 			if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgRegisterAck, RegisterAck: ack}); err != nil {
@@ -361,8 +376,8 @@ func (g *Gateway) acceptControl(ac *agentConn) (*tunnel.Control, error) {
 }
 
 func (g *Gateway) answerDecision(ctx context.Context, agent *store.Agent, ctrl *tunnel.Control, q tunnel.DecisionQuery, slots chan struct{}) {
-	decider, ok := g.connect.(ConnectDecider)
-	if !ok {
+	decide := g.decisionFor(q.Action)
+	if decide == nil {
 		_ = ctrl.Send(denyAnswer(q.ID, "unsupported"))
 		return
 	}
@@ -375,11 +390,53 @@ func (g *Gateway) answerDecision(ctx context.Context, agent *store.Agent, ctrl *
 	go func() {
 		defer func() { <-slots }()
 		defer g.recoverPanic("decision", agent.ID)
-		answer := decider.DecideConnect(ctx, agent, q)
+		answer := decide(ctx, agent, q)
 		answer.ID = q.ID
 		answer.TTLSeconds = min(max(answer.TTLSeconds, 0), tunnel.MaxDecisionTTLSeconds)
 		_ = ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgDecisionResponse, Answer: &answer})
 	}()
+}
+
+func (g *Gateway) answerCert(ctx context.Context, agent *store.Agent, ctrl *tunnel.Control, req tunnel.CertRequest, slots chan struct{}) {
+	if g.certs == nil {
+		_ = ctrl.Send(certError(req.ID, "egress decryption is not available on this server"))
+		return
+	}
+	select {
+	case slots <- struct{}{}:
+	default:
+		_ = ctrl.Send(certError(req.ID, "busy"))
+		return
+	}
+	go func() {
+		defer func() { <-slots }()
+		defer g.recoverPanic("cert", agent.ID)
+		resp, err := g.certs.IssueDecryptCert(ctx, agent, req.CSR)
+		if err != nil {
+			g.log.Error("decrypt certificate issuance failed", "agent_id", agent.ID, "err", err)
+			resp = tunnel.CertResponse{Error: "certificate issuance unavailable"}
+		}
+		resp.ID = req.ID
+		_ = ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgCertResponse, Cert: &resp})
+	}()
+}
+
+func certError(id uint64, reason string) tunnel.ControlMessage {
+	return tunnel.ControlMessage{Type: tunnel.MsgCertResponse, Cert: &tunnel.CertResponse{ID: id, Error: reason}}
+}
+
+func (g *Gateway) decisionFor(action string) func(context.Context, *store.Agent, tunnel.DecisionQuery) tunnel.DecisionAnswer {
+	switch action {
+	case tunnel.DecisionActionConnect:
+		if d, ok := g.connect.(ConnectDecider); ok {
+			return d.DecideConnect
+		}
+	case tunnel.DecisionActionEgressRequest:
+		if d, ok := g.egress.(RequestDecider); ok {
+			return d.DecideRequest
+		}
+	}
+	return nil
 }
 
 func denyAnswer(id uint64, reason string) tunnel.ControlMessage {

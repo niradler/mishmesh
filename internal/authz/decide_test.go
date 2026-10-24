@@ -2,6 +2,8 @@ package authz
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
 	"slices"
 	"testing"
 	"time"
@@ -489,5 +491,81 @@ func TestShouldRejectResolvedIPOutsideEgress(t *testing.T) {
 	req.Context.ResolvedIP = "10.0.0.1"
 	if err := req.Validate(); err == nil {
 		t.Fatal("resolved_ip on agent:connect validated")
+	}
+}
+
+func egressRequest(method, path string) DecisionRequest {
+	return DecisionRequest{
+		Principal: EntityRef{Type: EntityAgent, ID: "ag_1"},
+		Action:    ActionEgressRequest,
+		Resource:  EntityRef{Type: EntityDestination, ID: "api.example.com:443"},
+		Context:   RequestContext{ClientIP: "10.0.0.1", AuthMethod: AuthMethodAgentToken, Method: method, Path: path, TLS: true},
+	}
+}
+
+func egressFacts() Facts {
+	facts := connectFacts(EndpointEntity{})
+	facts.Endpoint = nil
+	return facts
+}
+
+func TestShouldDenyEgressRequestWithDefaultPolicy(t *testing.T) {
+	if got := Default().Decide(egressRequest(http.MethodGet, "/"), egressFacts()); got.Allowed || got.Reason != ReasonNoPolicyMatch {
+		t.Fatalf("egress request = %+v, want no_policy_match deny", got)
+	}
+}
+
+func TestShouldDecideEgressRequestOnMethodPathAndMode(t *testing.T) {
+	az := mustAuthorizer(t, `@credential("billing")
+permit (principal, action == Action::"egress:request", resource)
+when { resource.host == "api.example.com" && context.method == "GET" && context.path like "/v1/*" && context.tls && !context.decrypted };`)
+	tests := []struct {
+		name      string
+		method    string
+		path      string
+		decrypted bool
+		want      Reason
+	}{
+		{"matching", http.MethodGet, "/v1/items", false, ReasonAllow},
+		{"wrong method", http.MethodPost, "/v1/items", false, ReasonNoPolicyMatch},
+		{"wrong path", http.MethodGet, "/admin", false, ReasonNoPolicyMatch},
+		{"decrypted mode", http.MethodGet, "/v1/items", true, ReasonNoPolicyMatch},
+		{"missing path", http.MethodGet, "", false, ReasonInvalidRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := egressRequest(tt.method, tt.path)
+			req.Context.Decrypted = tt.decrypted
+			got := az.Decide(req, egressFacts())
+			if got.Reason != tt.want {
+				t.Fatalf("reason = %q, want %q", got.Reason, tt.want)
+			}
+			if got.Allowed {
+				if name, err := SelectedCredential(got); err != nil || name != "billing" {
+					t.Fatalf("credential = %q, %v", name, err)
+				}
+			}
+		})
+	}
+	if scope := az.Scope(ActionEgressRequest); scope != (CacheScope{Path: true, Method: true}) {
+		t.Fatalf("scope = %+v", scope)
+	}
+}
+
+func TestShouldRejectDecryptedOutsideEgressRequest(t *testing.T) {
+	req := httpRequest("/")
+	req.Context.Decrypted = true
+	if err := req.Validate(); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("validate = %v", err)
+	}
+}
+
+func TestShouldReportConflictingCredentials(t *testing.T) {
+	d := Decision{Policies: []DeterminingPolicy{
+		{ID: "a", Annotations: map[string]string{CredentialAnnotation: "x"}},
+		{ID: "b", Annotations: map[string]string{CredentialAnnotation: "y"}},
+	}}
+	if _, err := SelectedCredential(d); !errors.Is(err, ErrCredentialConflict) {
+		t.Fatalf("err = %v", err)
 	}
 }

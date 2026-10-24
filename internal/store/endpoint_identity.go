@@ -50,19 +50,26 @@ func (e *EndpointIdentity) Validate() error {
 		if !ValidCredentialName(name) {
 			return fmt.Errorf("identity.credentials name %q must match %s", name, credentialNamePattern)
 		}
-		if !ValidCredentialName(c.Secret) {
-			return fmt.Errorf("identity.credentials.%s.secret must be a secret name", name)
+		if err := c.validate("identity.credentials." + name); err != nil {
+			return err
 		}
-		if !headerNamePattern.MatchString(c.Header) {
-			return fmt.Errorf("identity.credentials.%s.header is not a valid header name", name)
-		}
-		canonical := http.CanonicalHeaderKey(c.Header)
-		if reservedCredentialHdr[canonical] || strings.HasPrefix(canonical, "X-Mishmesh-") || strings.HasPrefix(canonical, "X-Forwarded-") {
-			return fmt.Errorf("identity.credentials.%s.header %q is reserved", name, c.Header)
-		}
-		if len(c.Prefix) > maxCredentialPrefix || strings.ContainsAny(c.Prefix, "\r\n\x00") {
-			return fmt.Errorf("identity.credentials.%s.prefix is invalid", name)
-		}
+	}
+	return nil
+}
+
+func (c EndpointCredential) validate(field string) error {
+	if !ValidCredentialName(c.Secret) {
+		return fmt.Errorf("%s.secret must be a secret name", field)
+	}
+	if !headerNamePattern.MatchString(c.Header) {
+		return fmt.Errorf("%s.header is not a valid header name", field)
+	}
+	canonical := http.CanonicalHeaderKey(c.Header)
+	if reservedCredentialHdr[canonical] || strings.HasPrefix(canonical, "X-Mishmesh-") || strings.HasPrefix(canonical, "X-Forwarded-") {
+		return fmt.Errorf("%s.header %q is reserved", field, c.Header)
+	}
+	if len(c.Prefix) > maxCredentialPrefix || strings.ContainsAny(c.Prefix, "\r\n\x00") {
+		return fmt.Errorf("%s.prefix is invalid", field)
 	}
 	return nil
 }

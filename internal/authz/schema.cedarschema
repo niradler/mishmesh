@@ -82,3 +82,20 @@ action "egress:connect" appliesTo {
     resolved_ip?: ipaddr
   }
 };
+
+action "egress:request" appliesTo {
+  principal: [User, ServiceAccount, Agent],
+  resource: [Destination],
+  context: {
+    agent: Agent,
+    client_ip: ipaddr,
+    now: datetime,
+    auth_method: String,
+    auth_time?: datetime,
+    method: String,
+    path: String,
+    tls: Bool,
+    decrypted: Bool,
+    exit?: Agent
+  }
+};

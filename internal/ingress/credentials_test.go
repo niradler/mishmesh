@@ -32,7 +32,7 @@ func annotated(credentials ...string) func(authz.DecisionRequest) (authz.Decisio
 	return func(authz.DecisionRequest) (authz.Decision, error) {
 		d := authz.Decision{Allowed: true, Reason: authz.ReasonAllow}
 		for i, c := range credentials {
-			d.Policies = append(d.Policies, authz.DeterminingPolicy{ID: "p" + string(rune('0'+i)), Annotations: map[string]string{credentialAnnotation: c}})
+			d.Policies = append(d.Policies, authz.DeterminingPolicy{ID: "p" + string(rune('0'+i)), Annotations: map[string]string{authz.CredentialAnnotation: c}})
 		}
 		return d, nil
 	}

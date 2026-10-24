@@ -25,6 +25,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connect/sshfwd"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
+	"github.com/mishmesh/mishmesh/internal/egressca"
 	"github.com/mishmesh/mishmesh/internal/gateway"
 	"github.com/mishmesh/mishmesh/internal/ingress"
 	"github.com/mishmesh/mishmesh/internal/metrics"
@@ -196,6 +197,9 @@ func serve() error {
 	vault := orgsecret.New(data, box)
 	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
 	cp.SetSecretVault(vault)
+	ca := egressca.New(data, box)
+	cp.SetEgressCA(ca)
+	gwOpts.Certs = ca
 	idSvc, err := newIdentityService(cfg, conns)
 	if err != nil {
 		return err
@@ -207,7 +211,7 @@ func serve() error {
 	accessLog := accesslog.New(data, accesslog.Options{Retention: cfg.AccessLogRetention, Log: log})
 	mx.RegisterAccessLog(accessLog)
 	gwOpts.Connect = bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Meter: mx, Deciders: cp, Revocations: idSvc})
-	gwOpts.Egress = egress.New(egress.Options{Conns: conns, Log: log, Meter: mx, Deciders: cp, Dialer: proxyGuard, Access: accessLog, Revocations: idSvc, Auth: idSvc, Agents: data})
+	gwOpts.Egress = egress.New(egress.Options{Conns: conns, Log: log, Meter: mx, Deciders: cp, Dialer: proxyGuard, Access: accessLog, Revocations: idSvc, Auth: idSvc, Agents: data, Credentials: data, Secrets: vault})
 	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)
 	gw := gateway.New(gwOpts)
 	idSvc.OnFlush(gw.FlushOrg)

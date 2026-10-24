@@ -18,6 +18,7 @@ func HasEncryptedConnections(ctx context.Context, dsn string, pool PoolConfig) (
 	for _, probe := range []struct{ table, query string }{
 		{"connections", `SELECT EXISTS(SELECT 1 FROM connections WHERE octet_length(secrets_enc)>0)`},
 		{"org_secrets", `SELECT EXISTS(SELECT 1 FROM org_secrets)`},
+		{"org_cas", `SELECT EXISTS(SELECT 1 FROM org_cas)`},
 	} {
 		var exists bool
 		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=$1)`, probe.table).Scan(&exists); err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 )
 
 const (
@@ -24,25 +25,54 @@ const (
 	MsgDecisionRequest  MsgType = "decision_request"
 	MsgDecisionResponse MsgType = "decision_response"
 	MsgFlush            MsgType = "flush"
+	MsgCertRequest      MsgType = "cert_request"
+	MsgCertResponse     MsgType = "cert_response"
 )
 
 const (
-	DecisionActionConnect = "agent:connect"
-	MaxDecisionTTLSeconds = 300
+	DecisionActionConnect       = "agent:connect"
+	DecisionActionEgressRequest = "egress:request"
+	MaxDecisionTTLSeconds       = 300
 )
 
 type DecisionQuery struct {
-	ID      uint64 `json:"id"`
-	Action  string `json:"action"`
-	Connect string `json:"connect,omitempty"`
-	Kind    string `json:"kind,omitempty"`
+	ID      uint64     `json:"id"`
+	Action  string     `json:"action"`
+	Connect string     `json:"connect,omitempty"`
+	Kind    string     `json:"kind,omitempty"`
+	HTTP    *HTTPQuery `json:"http,omitempty"`
+	SealTo  []byte     `json:"seal_to,omitempty"`
+}
+
+type HTTPQuery struct {
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	Method    string `json:"method"`
+	Path      string `json:"path"`
+	TLS       bool   `json:"tls"`
+	Decrypted bool   `json:"decrypted,omitempty"`
+	Auth      string `json:"auth,omitempty"`
+	Exit      string `json:"exit,omitempty"`
+}
+
+type DecisionScope struct {
+	Path   bool `json:"path"`
+	Method bool `json:"method"`
+}
+
+type SealedCredential struct {
+	Name   string `json:"name"`
+	Header string `json:"header"`
+	Sealed []byte `json:"sealed"`
 }
 
 type DecisionAnswer struct {
-	ID         uint64 `json:"id"`
-	Allowed    bool   `json:"allowed"`
-	Reason     string `json:"reason,omitempty"`
-	TTLSeconds int    `json:"ttl_seconds"`
+	ID         uint64            `json:"id"`
+	Allowed    bool              `json:"allowed"`
+	Reason     string            `json:"reason,omitempty"`
+	TTLSeconds int               `json:"ttl_seconds"`
+	Scope      *DecisionScope    `json:"scope,omitempty"`
+	Credential *SealedCredential `json:"credential,omitempty"`
 }
 
 type StreamInit struct {
@@ -82,7 +112,23 @@ type RegisterPayload struct {
 	Endpoints []EndpointRequest `json:"endpoints"`
 }
 
+type CertRequest struct {
+	ID  uint64 `json:"id"`
+	CSR []byte `json:"csr"`
+}
+
+type CertResponse struct {
+	ID       uint64    `json:"id"`
+	Chain    [][]byte  `json:"chain,omitempty"`
+	Allow    []string  `json:"allow,omitempty"`
+	Bypass   []string  `json:"bypass,omitempty"`
+	NotAfter time.Time `json:"not_after"`
+	Error    string    `json:"error,omitempty"`
+}
+
 type RegisterAckPayload struct {
+	OrgID     string            `json:"org_id,omitempty"`
+	AgentID   string            `json:"agent_id,omitempty"`
 	Endpoints []EndpointBinding `json:"endpoints"`
 }
 
@@ -92,6 +138,8 @@ type ControlMessage struct {
 	RegisterAck *RegisterAckPayload `json:"register_ack,omitempty"`
 	Decision    *DecisionQuery      `json:"decision,omitempty"`
 	Answer      *DecisionAnswer     `json:"answer,omitempty"`
+	CertRequest *CertRequest        `json:"cert_request,omitempty"`
+	Cert        *CertResponse       `json:"cert,omitempty"`
 	Error       string              `json:"error,omitempty"`
 }
 

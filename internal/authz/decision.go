@@ -16,10 +16,11 @@ const (
 	ActionHTTPRequest    Action = "http:request"
 	ActionAgentConnect   Action = "agent:connect"
 	ActionEgressConnect  Action = "egress:connect"
+	ActionEgressRequest  Action = "egress:request"
 )
 
 func DataPlaneActions() []Action {
-	return []Action{ActionEndpointAccess, ActionHTTPRequest, ActionAgentConnect, ActionEgressConnect}
+	return []Action{ActionEndpointAccess, ActionHTTPRequest, ActionAgentConnect, ActionEgressConnect, ActionEgressRequest}
 }
 
 type EntityType string
@@ -97,6 +98,7 @@ type RequestContext struct {
 	SNI        string     `json:"sni,omitempty"`
 	Exit       string     `json:"exit,omitempty"`
 	ResolvedIP string     `json:"resolved_ip,omitempty"`
+	Decrypted  bool       `json:"decrypted,omitempty"`
 	AuthMethod AuthMethod `json:"auth_method"`
 	AuthTime   *time.Time `json:"auth_time,omitempty"`
 }
@@ -144,6 +146,7 @@ var actionShapes = map[Action]actionShape{
 	ActionHTTPRequest:    {principals: []EntityType{EntityUser, EntityServiceAccount, EntityAnonymous}, resource: EntityEndpoint, needsHTTP: true},
 	ActionAgentConnect:   {principals: []EntityType{EntityUser, EntityServiceAccount, EntityAgent}, resource: EntityEndpoint, needsProto: true},
 	ActionEgressConnect:  {principals: []EntityType{EntityUser, EntityServiceAccount, EntityAgent}, resource: EntityDestination},
+	ActionEgressRequest:  {principals: []EntityType{EntityUser, EntityServiceAccount, EntityAgent}, resource: EntityDestination, needsHTTP: true},
 }
 
 func invalid(format string, args ...any) error {
@@ -200,8 +203,11 @@ func (r DecisionRequest) Validate() error {
 	if shape.needsProto && r.Context.Protocol == "" {
 		return invalid("protocol is required for %s", r.Action)
 	}
-	if r.Context.Exit != "" && r.Action != ActionEgressConnect {
-		return invalid("exit only applies to %s", ActionEgressConnect)
+	if r.Context.Exit != "" && r.Action != ActionEgressConnect && r.Action != ActionEgressRequest {
+		return invalid("exit only applies to egress actions")
+	}
+	if r.Context.Decrypted && r.Action != ActionEgressRequest {
+		return invalid("decrypted only applies to %s", ActionEgressRequest)
 	}
 	if r.Context.ResolvedIP != "" {
 		if r.Action != ActionEgressConnect {
