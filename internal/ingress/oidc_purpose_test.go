@@ -17,8 +17,8 @@ func TestOIDCStateTokenNotAcceptedAsSession(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
-			fmt.Fprintf(w, `{"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
-				issuer+"/authorize", issuer+"/token", issuer+"/jwks")
+			fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
+				issuer, issuer+"/authorize", issuer+"/token", issuer+"/jwks")
 		case "/jwks":
 			io.WriteString(w, jwksJSON(kid, &key.PublicKey))
 		default:

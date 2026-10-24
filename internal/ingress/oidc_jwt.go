@@ -2,19 +2,32 @@ package ingress
 
 import (
 	"context"
-	"crypto"
 	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
+	"io"
 	"net/http"
-	"slices"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
+
+const (
+	maxIDTokenBytes     = 16 << 10
+	maxOIDCDocumentSize = 1 << 20
+	idTokenClockSkew    = 2 * time.Minute
+)
+
+var (
+	errIDTokenInvalid = errors.New("id token invalid")
+	errUnknownKeyID   = errors.New("id token signed by an unknown key")
+)
+
+var idTokenAlgorithms = []jose.SignatureAlgorithm{jose.RS256, jose.ES256}
 
 type idClaims struct {
 	Iss           string
@@ -28,146 +41,86 @@ func (c *idClaims) verifiedEmail() bool {
 	return c.Email != "" && c.EmailVerified
 }
 
-func verifyIDToken(raw string, keys map[string]*rsa.PublicKey, issuer, clientID string, now time.Time) (*idClaims, error) {
-	headerSeg, rest, ok := cut(raw, ".")
-	if !ok {
-		return nil, errors.New("malformed jwt")
-	}
-	payloadSeg, sigSeg, ok := cut(rest, ".")
-	if !ok {
-		return nil, errors.New("malformed jwt")
-	}
+type idTokenExtra struct {
+	Email         string `json:"email"`
+	EmailVerified *bool  `json:"email_verified"`
+	Nonce         string `json:"nonce"`
+}
 
-	var header struct {
-		Alg string `json:"alg"`
-		Kid string `json:"kid"`
+func verifyIDToken(raw string, keys *jose.JSONWebKeySet, issuer, clientID, nonce string, now time.Time) (*idClaims, error) {
+	if raw == "" || len(raw) > maxIDTokenBytes || keys == nil {
+		return nil, errIDTokenInvalid
 	}
-	if err := decodeSegment(headerSeg, &header); err != nil {
-		return nil, fmt.Errorf("jwt header: %w", err)
+	tok, err := jwt.ParseSigned(raw, idTokenAlgorithms)
+	if err != nil || len(tok.Headers) != 1 {
+		return nil, errIDTokenInvalid
 	}
-	if header.Alg != "RS256" {
-		return nil, fmt.Errorf("unsupported alg %q", header.Alg)
+	header := tok.Headers[0]
+	candidates := keys.Keys
+	if header.KeyID != "" {
+		candidates = keys.Key(header.KeyID)
 	}
-	key := keys[header.Kid]
-	if key == nil {
-		return nil, errors.New("no matching jwks key")
+	if len(candidates) == 0 {
+		return nil, errUnknownKeyID
 	}
-	sig, err := base64.RawURLEncoding.DecodeString(sigSeg)
-	if err != nil {
-		return nil, fmt.Errorf("jwt signature: %w", err)
+	var std jwt.Claims
+	var extra idTokenExtra
+	verified := false
+	for _, k := range candidates {
+		if !k.Valid() || !k.IsPublic() || k.Use == "enc" || (k.Algorithm != "" && k.Algorithm != header.Algorithm) {
+			continue
+		}
+		if tok.Claims(k.Key, &std, &extra) == nil {
+			verified = true
+			break
+		}
 	}
-	digest := sha256.Sum256([]byte(headerSeg + "." + payloadSeg))
-	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], sig); err != nil {
-		return nil, errors.New("signature verification failed")
+	if !verified {
+		return nil, errIDTokenInvalid
 	}
-
-	var raw0 struct {
-		Iss           string          `json:"iss"`
-		Aud           json.RawMessage `json:"aud"`
-		Email         string          `json:"email"`
-		EmailVerified *bool           `json:"email_verified"`
-		Exp           int64           `json:"exp"`
+	if std.Expiry == nil {
+		return nil, errIDTokenInvalid
 	}
-	if err := decodeSegment(payloadSeg, &raw0); err != nil {
-		return nil, fmt.Errorf("jwt payload: %w", err)
+	if err := std.ValidateWithLeeway(jwt.Expected{Issuer: issuer, AnyAudience: jwt.Audience{clientID}, Time: now}, idTokenClockSkew); err != nil {
+		return nil, fmt.Errorf("%w: %w", errIDTokenInvalid, err)
 	}
-	claims := &idClaims{Iss: raw0.Iss, Email: raw0.Email, Exp: raw0.Exp, Aud: parseAud(raw0.Aud)}
-	if raw0.EmailVerified != nil {
-		claims.EmailVerified = *raw0.EmailVerified
+	if nonce == "" || subtle.ConstantTimeCompare([]byte(extra.Nonce), []byte(nonce)) != 1 {
+		return nil, fmt.Errorf("%w: nonce mismatch", errIDTokenInvalid)
 	}
-
-	if claims.Iss != issuer {
-		return nil, fmt.Errorf("issuer mismatch: %q", claims.Iss)
-	}
-	if !slices.Contains(claims.Aud, clientID) {
-		return nil, errors.New("audience mismatch")
-	}
-	if now.Unix() > claims.Exp {
-		return nil, errors.New("token expired")
+	claims := &idClaims{Iss: std.Issuer, Aud: []string(std.Audience), Email: extra.Email, Exp: std.Expiry.Time().Unix()}
+	if extra.EmailVerified != nil {
+		claims.EmailVerified = *extra.EmailVerified
 	}
 	return claims, nil
 }
 
-func parseAud(raw json.RawMessage) []string {
-	if len(raw) == 0 {
-		return nil
-	}
-	var single string
-	if err := json.Unmarshal(raw, &single); err == nil {
-		return []string{single}
-	}
-	var many []string
-	if err := json.Unmarshal(raw, &many); err == nil {
-		return many
-	}
-	return nil
-}
-
-func decodeSegment(seg string, v any) error {
-	data, err := base64.RawURLEncoding.DecodeString(seg)
+func decodeLimitedJSON(resp *http.Response, out any) error {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOIDCDocumentSize+1))
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, v)
-}
-
-func cut(s, sep string) (before, after string, found bool) {
-	for i := 0; i+len(sep) <= len(s); i++ {
-		if s[i:i+len(sep)] == sep {
-			return s[:i], s[i+len(sep):], true
-		}
+	if len(body) > maxOIDCDocumentSize {
+		return errors.New("oidc response too large")
 	}
-	return s, "", false
+	return json.Unmarshal(body, out)
 }
 
-type jwksDoc struct {
-	Keys []struct {
-		Kty string `json:"kty"`
-		Kid string `json:"kid"`
-		N   string `json:"n"`
-		E   string `json:"e"`
-	} `json:"keys"`
-}
-
-func fetchJWKS(ctx context.Context, client *http.Client, uri string) (map[string]*rsa.PublicKey, error) {
-	doc, err := fetchJSON[jwksDoc](ctx, client, uri)
+func fetchJWKS(ctx context.Context, client *http.Client, uri string) (*jose.JSONWebKeySet, error) {
+	set, err := fetchJSON[jose.JSONWebKeySet](ctx, client, uri)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]*rsa.PublicKey)
-	for _, k := range doc.Keys {
-		if k.Kty != "RSA" {
-			continue
+	usable := set.Keys[:0]
+	for _, k := range set.Keys {
+		if k.Valid() && k.IsPublic() && k.Use != "enc" {
+			usable = append(usable, k)
 		}
-		pub, err := rsaKeyFromJWK(k.N, k.E)
-		if err != nil {
-			continue
-		}
-		out[k.Kid] = pub
 	}
-	if len(out) == 0 {
-		return nil, errors.New("no usable RSA keys in jwks")
+	if len(usable) == 0 {
+		return nil, errors.New("no usable signing keys in jwks")
 	}
-	return out, nil
-}
-
-func rsaKeyFromJWK(nStr, eStr string) (*rsa.PublicKey, error) {
-	nBytes, err := base64.RawURLEncoding.DecodeString(nStr)
-	if err != nil {
-		return nil, err
-	}
-	eBytes, err := base64.RawURLEncoding.DecodeString(eStr)
-	if err != nil {
-		return nil, err
-	}
-	e := 0
-	for _, b := range eBytes {
-		e = e<<8 | int(b)
-	}
-	if e == 0 {
-		return nil, errors.New("invalid jwk exponent")
-	}
-	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}, nil
+	set.Keys = usable
+	return set, nil
 }
 
 func fetchJSON[T any](ctx context.Context, client *http.Client, uri string) (*T, error) {
@@ -175,6 +128,7 @@ func fetchJSON[T any](ctx context.Context, client *http.Client, uri string) (*T,
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -184,8 +138,8 @@ func fetchJSON[T any](ctx context.Context, client *http.Client, uri string) (*T,
 		return nil, fmt.Errorf("GET %s: status %d", uri, resp.StatusCode)
 	}
 	var out T
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+	if err := decodeLimitedJSON(resp, &out); err != nil {
+		return nil, fmt.Errorf("GET %s: %w", uri, err)
 	}
 	return &out, nil
 }

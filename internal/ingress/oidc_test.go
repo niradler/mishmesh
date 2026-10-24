@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,8 +18,11 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
@@ -127,14 +131,14 @@ func TestAllowlistPermits(t *testing.T) {
 
 func TestProviderRejectsInsecureIssuer(t *testing.T) {
 	g := newOIDCGate(nil, []byte("k"), nil, false, false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if _, err := g.provider(context.Background(), "http://accounts.google.com"); err == nil {
+	if _, err := g.provider(context.Background(), "http://accounts.google.com", false); err == nil {
 		t.Fatal("non-https issuer must be rejected when loopback is disallowed")
 	}
 }
 
 func TestProviderBlocksMetadataIssuer(t *testing.T) {
 	g := newOIDCGate(nil, []byte("k"), nil, false, false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	_, err := g.provider(context.Background(), "https://169.254.169.254")
+	_, err := g.provider(context.Background(), "https://169.254.169.254", false)
 	if err == nil {
 		t.Fatal("metadata-IP issuer must be blocked by the SSRF dialer")
 	}
@@ -149,10 +153,20 @@ func genKey(t *testing.T) (*rsa.PrivateKey, string) {
 	return key, "kid-1"
 }
 
-func mintIDToken(t *testing.T, key *rsa.PrivateKey, kid, iss, aud, email string, verified bool, exp time.Time) string {
+type idTokenSpec struct {
+	iss, aud, email, nonce, alg string
+	verified                    bool
+	exp                         time.Time
+}
+
+func mintIDToken(t *testing.T, key *rsa.PrivateKey, kid string, s idTokenSpec) string {
 	t.Helper()
-	header := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"alg":"RS256","kid":%q,"typ":"JWT"}`, kid))
-	pj, _ := json.Marshal(map[string]any{"iss": iss, "aud": aud, "email": email, "email_verified": verified, "exp": exp.Unix()})
+	alg := s.alg
+	if alg == "" {
+		alg = "RS256"
+	}
+	header := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"alg":%q,"kid":%q,"typ":"JWT"}`, alg, kid))
+	pj, _ := json.Marshal(map[string]any{"iss": s.iss, "aud": s.aud, "email": s.email, "email_verified": s.verified, "exp": s.exp.Unix(), "nonce": s.nonce})
 	payload := base64.RawURLEncoding.EncodeToString(pj)
 	digest := sha256.Sum256([]byte(header + "." + payload))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
@@ -168,60 +182,121 @@ func jwksJSON(kid string, pub *rsa.PublicKey) string {
 	return fmt.Sprintf(`{"keys":[{"kty":"RSA","kid":%q,"n":%q,"e":%q}]}`, kid, n, e)
 }
 
+func jwksSet(t *testing.T, kid string, pub *rsa.PublicKey) *jose.JSONWebKeySet {
+	t.Helper()
+	var set jose.JSONWebKeySet
+	if err := json.Unmarshal([]byte(jwksJSON(kid, pub)), &set); err != nil {
+		t.Fatal(err)
+	}
+	return &set
+}
+
 func TestVerifyIDToken(t *testing.T) {
 	key, kid := genKey(t)
-	keys := map[string]*rsa.PublicKey{kid: &key.PublicKey}
-	iss, aud := "https://idp.example.com", "client123"
+	keys := jwksSet(t, kid, &key.PublicKey)
+	iss, aud, nonce := "https://idp.example.com", "client123", "n-1"
 	now := time.Now()
+	good := idTokenSpec{iss: iss, aud: aud, email: "u@x.com", nonce: nonce, verified: true, exp: now.Add(time.Hour)}
 
-	valid := mintIDToken(t, key, kid, iss, aud, "u@x.com", true, now.Add(time.Hour))
-	if claims, err := verifyIDToken(valid, keys, iss, aud, now); err != nil || claims.Email != "u@x.com" {
+	if claims, err := verifyIDToken(mintIDToken(t, key, kid, good), keys, iss, aud, nonce, now); err != nil || claims.Email != "u@x.com" || !claims.verifiedEmail() {
 		t.Fatalf("valid token: claims=%+v err=%v", claims, err)
 	}
 
-	expired := mintIDToken(t, key, kid, iss, aud, "u@x.com", true, now.Add(-time.Hour))
-	if _, err := verifyIDToken(expired, keys, iss, aud, now); err == nil {
-		t.Error("expired token should fail")
-	}
-
-	wrongAud := mintIDToken(t, key, kid, iss, "other", "u@x.com", true, now.Add(time.Hour))
-	if _, err := verifyIDToken(wrongAud, keys, iss, aud, now); err == nil {
-		t.Error("wrong aud should fail")
-	}
-
-	wrongIss := mintIDToken(t, key, kid, "https://evil", aud, "u@x.com", true, now.Add(time.Hour))
-	if _, err := verifyIDToken(wrongIss, keys, iss, aud, now); err == nil {
-		t.Error("wrong issuer should fail")
-	}
-
 	otherKey, _ := genKey(t)
-	forged := mintIDToken(t, otherKey, kid, iss, aud, "u@x.com", true, now.Add(time.Hour))
-	if _, err := verifyIDToken(forged, keys, iss, aud, now); err == nil {
-		t.Error("token signed by unknown key should fail")
+	cases := []struct {
+		name   string
+		key    *rsa.PrivateKey
+		kid    string
+		mutate func(*idTokenSpec)
+	}{
+		{"expired", key, kid, func(s *idTokenSpec) { s.exp = now.Add(-time.Hour) }},
+		{"wrong audience", key, kid, func(s *idTokenSpec) { s.aud = "other" }},
+		{"wrong issuer", key, kid, func(s *idTokenSpec) { s.iss = "https://evil" }},
+		{"missing nonce", key, kid, func(s *idTokenSpec) { s.nonce = "" }},
+		{"wrong nonce", key, kid, func(s *idTokenSpec) { s.nonce = "replayed" }},
+		{"unlisted algorithm", key, kid, func(s *idTokenSpec) { s.alg = "RS512" }},
+		{"forged signature", otherKey, kid, func(*idTokenSpec) {}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := good
+			tc.mutate(&spec)
+			if _, err := verifyIDToken(mintIDToken(t, tc.key, tc.kid, spec), keys, iss, aud, nonce, now); err == nil {
+				t.Fatal("token was accepted")
+			}
+		})
+	}
+
+	if _, err := verifyIDToken(mintIDToken(t, key, "rotated", good), keys, iss, aud, nonce, now); !errors.Is(err, errUnknownKeyID) {
+		t.Fatalf("unknown kid = %v, want errUnknownKeyID", err)
+	}
+	unsigned := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`)) + "." + base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://idp.example.com"}`)) + "."
+	if _, err := verifyIDToken(unsigned, keys, iss, aud, nonce, now); err == nil {
+		t.Fatal("alg none was accepted")
+	}
+	if _, err := verifyIDToken(strings.Repeat("a", maxIDTokenBytes+1), keys, iss, aud, nonce, now); err == nil {
+		t.Fatal("oversized token was accepted")
 	}
 }
 
-func TestOIDCFullCallbackFlow(t *testing.T) {
+type fakeIdP struct {
+	t   *testing.T
+	srv *httptest.Server
+
+	mu              sync.Mutex
+	key             *rsa.PrivateKey
+	kid             string
+	email           string
+	nonce           string
+	discoveryIssuer string
+	padJWKS         int
+	jwksFetches     int
+}
+
+func newFakeIdP(t *testing.T, email string) *fakeIdP {
+	t.Helper()
 	key, kid := genKey(t)
+	f := &fakeIdP{t: t, key: key, kid: kid, email: email}
+	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+	t.Cleanup(f.srv.Close)
+	return f
+}
 
-	var issuer string
-	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/.well-known/openid-configuration":
-			fmt.Fprintf(w, `{"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
-				issuer+"/authorize", issuer+"/token", issuer+"/jwks")
-		case "/jwks":
-			io.WriteString(w, jwksJSON(kid, &key.PublicKey))
-		case "/token":
-			tok := mintIDToken(t, key, kid, issuer, "client123", "dev@corp.com", true, time.Now().Add(time.Hour))
-			fmt.Fprintf(w, `{"id_token":%q}`, tok)
-		default:
-			http.NotFound(w, r)
+func (f *fakeIdP) issuer() string { return f.srv.URL }
+
+func (f *fakeIdP) serve(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch r.URL.Path {
+	case "/.well-known/openid-configuration":
+		iss := f.issuer()
+		if f.discoveryIssuer != "" {
+			iss = f.discoveryIssuer
 		}
-	}))
-	defer idp.Close()
-	issuer = idp.URL
+		fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`, iss, f.issuer()+"/authorize", f.issuer()+"/token", f.issuer()+"/jwks")
+	case "/jwks":
+		f.jwksFetches++
+		doc := jwksJSON(f.kid, &f.key.PublicKey)
+		if f.padJWKS > 0 {
+			doc = doc[:len(doc)-1] + `,"pad":"` + strings.Repeat("x", f.padJWKS) + `"}`
+		}
+		io.WriteString(w, doc)
+	case "/token":
+		tok := mintIDToken(f.t, f.key, f.kid, idTokenSpec{iss: f.issuer(), aud: "client123", email: f.email, nonce: f.nonce, verified: true, exp: time.Now().Add(time.Hour)})
+		fmt.Fprintf(w, `{"id_token":%q}`, tok)
+	default:
+		http.NotFound(w, r)
+	}
+}
 
+func (f *fakeIdP) set(update func(*fakeIdP)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	update(f)
+}
+
+func oidcEndpointFixture(t *testing.T, issuer string, domains []string) (*oidcGate, *store.Endpoint) {
+	t.Helper()
 	data, err := sqlite.Open(filepath.Join(t.TempDir(), "oidc.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -232,26 +307,27 @@ func TestOIDCFullCallbackFlow(t *testing.T) {
 	_ = data.CreateAgent(ctx, &store.Agent{ID: "ag_1", OrgID: "org_1", Name: "a", Status: store.AgentActive, CreatedAt: time.Now()})
 	ep := &store.Endpoint{
 		ID: "ep_1", AgentID: "ag_1", OrgID: "org_1", Kind: store.KindHTTP, CreatedAt: time.Now(),
-		Policy: &store.EndpointPolicy{OIDC: &store.OIDCEndpointAuth{Issuer: issuer, ClientID: "client123", ClientSecret: "secret", AllowedDomains: []string{"corp.com"}}},
+		Policy: &store.EndpointPolicy{OIDC: &store.OIDCEndpointAuth{Issuer: issuer, ClientID: "client123", ClientSecret: "secret", AllowedDomains: domains}},
 	}
 	if err := data.CreateEndpoint(ctx, ep); err != nil {
 		t.Fatal(err)
 	}
+	return newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), newIdentityService(t), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil))), ep
+}
 
-	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), newIdentityService(t), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
+func runOIDCLogin(t *testing.T, g *oidcGate, ep *store.Endpoint, idp *fakeIdP) *httptest.ResponseRecorder {
+	t.Helper()
 	w1 := httptest.NewRecorder()
-	r1 := httptest.NewRequest("GET", "http://app.local/secret", nil)
-	if g.authenticate(w1, r1, ep) {
+	if g.authenticate(w1, httptest.NewRequest("GET", "http://app.local/secret", nil), ep) {
 		t.Fatal("unauthenticated request must not pass")
 	}
 	if w1.Code != http.StatusFound {
 		t.Fatalf("expected 302 to provider, got %d", w1.Code)
 	}
 	loc, _ := url.Parse(w1.Result().Header.Get("Location"))
-	state := loc.Query().Get("state")
-	if state == "" {
-		t.Fatal("no state in redirect")
+	state, nonce := loc.Query().Get("state"), loc.Query().Get("nonce")
+	if state == "" || nonce == "" {
+		t.Fatal("authorization redirect lacks state or nonce")
 	}
 	var stateCookie *http.Cookie
 	for _, c := range w1.Result().Cookies() {
@@ -262,11 +338,21 @@ func TestOIDCFullCallbackFlow(t *testing.T) {
 	if stateCookie == nil {
 		t.Fatal("no state cookie set")
 	}
-
+	if nonce == stateCookie.Value {
+		t.Fatal("the id token nonce exposes the state cookie value")
+	}
+	idp.set(func(f *fakeIdP) { f.nonce = nonce })
 	w2 := httptest.NewRecorder()
 	r2 := httptest.NewRequest("GET", "http://app.local"+oidcCallbackPath+"?code=abc&state="+url.QueryEscape(state), nil)
 	r2.AddCookie(stateCookie)
 	g.handleCallback(w2, r2)
+	return w2
+}
+
+func TestOIDCFullCallbackFlow(t *testing.T) {
+	idp := newFakeIdP(t, "dev@corp.com")
+	g, ep := oidcEndpointFixture(t, idp.issuer(), []string{"corp.com"})
+	w2 := runOIDCLogin(t, g, ep, idp)
 	if w2.Code != http.StatusFound {
 		t.Fatalf("callback should redirect on success, got %d: %s", w2.Code, w2.Body)
 	}
@@ -282,7 +368,6 @@ func TestOIDCFullCallbackFlow(t *testing.T) {
 	if w2.Result().Header.Get("Location") != "http://app.local/secret" {
 		t.Fatalf("should redirect back to original path, got %q", w2.Result().Header.Get("Location"))
 	}
-
 	w3 := httptest.NewRecorder()
 	r3 := httptest.NewRequest("GET", "http://app.local/secret", nil)
 	r3.AddCookie(sessionCookie)
@@ -291,51 +376,67 @@ func TestOIDCFullCallbackFlow(t *testing.T) {
 	}
 }
 
-func TestOIDCCallbackDeniesDisallowedDomain(t *testing.T) {
-	key, kid := genKey(t)
-	var issuer string
-	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/.well-known/openid-configuration":
-			fmt.Fprintf(w, `{"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`, issuer+"/authorize", issuer+"/token", issuer+"/jwks")
-		case "/jwks":
-			io.WriteString(w, jwksJSON(kid, &key.PublicKey))
-		case "/token":
-			tok := mintIDToken(t, key, kid, issuer, "client123", "intruder@evil.com", true, time.Now().Add(time.Hour))
-			fmt.Fprintf(w, `{"id_token":%q}`, tok)
-		}
-	}))
-	defer idp.Close()
-	issuer = idp.URL
-
-	data, _ := sqlite.Open(filepath.Join(t.TempDir(), "oidc2.db"))
-	t.Cleanup(func() { _ = data.Close() })
-	ctx := context.Background()
-	_ = data.CreateOrg(ctx, &store.Org{ID: "org_1", Name: "o", CreatedAt: time.Now()})
-	_ = data.CreateAgent(ctx, &store.Agent{ID: "ag_1", OrgID: "org_1", Name: "a", Status: store.AgentActive, CreatedAt: time.Now()})
-	ep := &store.Endpoint{
-		ID: "ep_1", AgentID: "ag_1", OrgID: "org_1", Kind: store.KindHTTP, CreatedAt: time.Now(),
-		Policy: &store.EndpointPolicy{OIDC: &store.OIDCEndpointAuth{Issuer: issuer, ClientID: "client123", AllowedDomains: []string{"corp.com"}}},
-	}
-	_ = data.CreateEndpoint(ctx, ep)
-
-	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), newIdentityService(t), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+func TestOIDCCallbackRejectsReplayedNonce(t *testing.T) {
+	idp := newFakeIdP(t, "dev@corp.com")
+	g, ep := oidcEndpointFixture(t, idp.issuer(), nil)
 	w1 := httptest.NewRecorder()
 	g.authenticate(w1, httptest.NewRequest("GET", "http://app.local/x", nil), ep)
 	loc, _ := url.Parse(w1.Result().Header.Get("Location"))
-	state := loc.Query().Get("state")
-	var sc *http.Cookie
-	for _, c := range w1.Result().Cookies() {
-		if c.Name == oidcStateCookie {
-			sc = c
-		}
-	}
-
+	idp.set(func(f *fakeIdP) { f.nonce = "nonce-from-another-login" })
+	r2 := httptest.NewRequest("GET", "http://app.local"+oidcCallbackPath+"?code=abc&state="+url.QueryEscape(loc.Query().Get("state")), nil)
+	r2.AddCookie(w1.Result().Cookies()[0])
 	w2 := httptest.NewRecorder()
-	r2 := httptest.NewRequest("GET", "http://app.local"+oidcCallbackPath+"?code=abc&state="+url.QueryEscape(state), nil)
-	r2.AddCookie(sc)
 	g.handleCallback(w2, r2)
-	if w2.Code != http.StatusForbidden {
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("id token with a foreign nonce = %d, want 401", w2.Code)
+	}
+}
+
+func TestOIDCCallbackDeniesDisallowedDomain(t *testing.T) {
+	idp := newFakeIdP(t, "intruder@evil.com")
+	g, ep := oidcEndpointFixture(t, idp.issuer(), []string{"corp.com"})
+	if w2 := runOIDCLogin(t, g, ep, idp); w2.Code != http.StatusForbidden {
 		t.Fatalf("disallowed domain should be 403, got %d", w2.Code)
 	}
+}
+
+func TestOIDCRefreshesKeysOnRotation(t *testing.T) {
+	idp := newFakeIdP(t, "dev@corp.com")
+	g, ep := oidcEndpointFixture(t, idp.issuer(), nil)
+	if w := runOIDCLogin(t, g, ep, idp); w.Code != http.StatusFound {
+		t.Fatalf("first login = %d", w.Code)
+	}
+	rotated, _ := genKey(t)
+	idp.set(func(f *fakeIdP) { f.key, f.kid = rotated, "kid-2" })
+	if w := runOIDCLogin(t, g, ep, idp); w.Code != http.StatusFound {
+		t.Fatalf("login after key rotation = %d: %s", w.Code, w.Body)
+	}
+	idp.set(func(f *fakeIdP) { f.kid = "kid-3" })
+	if w := runOIDCLogin(t, g, ep, idp); w.Code != http.StatusUnauthorized {
+		t.Fatalf("second unknown kid within the refresh window = %d, want 401", w.Code)
+	}
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	if idp.jwksFetches != 2 {
+		t.Fatalf("jwks fetched %d times, want 2 (initial + one rotation refresh)", idp.jwksFetches)
+	}
+}
+
+func TestOIDCProviderRejectsBadDiscovery(t *testing.T) {
+	t.Run("issuer mismatch", func(t *testing.T) {
+		idp := newFakeIdP(t, "dev@corp.com")
+		idp.set(func(f *fakeIdP) { f.discoveryIssuer = "https://accounts.example.com" })
+		g, _ := oidcEndpointFixture(t, idp.issuer(), nil)
+		if _, err := g.provider(context.Background(), idp.issuer(), false); err == nil {
+			t.Fatal("discovery for a different issuer was accepted")
+		}
+	})
+	t.Run("oversized jwks", func(t *testing.T) {
+		idp := newFakeIdP(t, "dev@corp.com")
+		idp.set(func(f *fakeIdP) { f.padJWKS = maxOIDCDocumentSize })
+		g, _ := oidcEndpointFixture(t, idp.issuer(), nil)
+		if _, err := g.provider(context.Background(), idp.issuer(), false); err == nil {
+			t.Fatal("oversized jwks was accepted")
+		}
+	})
 }
