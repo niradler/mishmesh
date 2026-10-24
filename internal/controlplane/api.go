@@ -274,6 +274,8 @@ func (a *API) routes() []route {
 		{"DELETE /api/v1/connections/{id}", a.require(authz.ActionConnectionManage, a.deleteConnectionHandler)},
 		{"POST /api/v1/connections/detect", a.require(authz.ActionConnectionManage, a.detectConnectionHandler)},
 		{"POST /api/v1/connections/{id}/sync", a.require(authz.ActionConnectionManage, a.syncConnectionHandler)},
+		{"POST /api/v1/connections/{id}/hostnames", a.require(authz.ActionConnectionManage, a.addConnectionHostnameHandler)},
+		{"DELETE /api/v1/connections/{id}/hostnames/{hostname}", a.require(authz.ActionConnectionManage, a.removeConnectionHostnameHandler)},
 		{"GET /api/v1/topology", a.require(authz.ActionEndpointRead, a.topologyHandler)},
 
 		{"GET /api/v1/quota", a.require(authz.ActionQuotaRead, a.getQuotaHandler)},

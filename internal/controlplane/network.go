@@ -38,6 +38,8 @@ type ConnectionControl interface {
 	Sync(ctx context.Context, connectionID string) (connections.Status, error)
 	SyncIfCurrent(ctx context.Context, expected store.Connection) (connections.Status, error)
 	Trigger(connectionID string)
+	AddHostnameIfCurrent(ctx context.Context, expected store.Connection, host, service string) error
+	RemoveHostnameIfCurrent(ctx context.Context, expected store.Connection, host string) error
 }
 
 type ConnectionSnapshotStatus interface {

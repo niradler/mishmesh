@@ -92,6 +92,7 @@ func (f *tenantFixture) fill(pattern string) (string, string) {
 		"{type}", "user",
 		"{member_id}", f.userA,
 		"{name}", "shared-key",
+		"{hostname}", "alice-lab.example.com",
 	)
 	return method, r.Replace(path)
 }
@@ -222,6 +223,8 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"PUT /api/v1/connections/{id}":                                   {`{"name":"pwned","config":{}}`, notFound},
 		"DELETE /api/v1/connections/{id}":                                {"", notFound},
 		"POST /api/v1/connections/{id}/sync":                             {"", notFound},
+		"POST /api/v1/connections/{id}/hostnames":                        {`{"hostname":"pwned.example.com","service":"http://localhost:1"}`, notFound},
+		"DELETE /api/v1/connections/{id}/hostnames/{hostname}":           {"", notFound},
 		"POST /api/v1/connections/detect":                                {`{"type":"third","input":{}}`, http.StatusOK},
 		"GET /api/v1/topology":                                           {"", http.StatusOK},
 		"GET /api/v1/secrets":                                            {"", http.StatusOK},

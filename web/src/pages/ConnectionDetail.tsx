@@ -26,9 +26,17 @@ import {
 } from "@/api/hooks";
 import { ApiError, errorMessage } from "@/api/client";
 import { useSession } from "@/context/SessionContext";
+import type { TypedConnection } from "@/api/types";
 
 interface ReferenceConflict {
   references?: { kind: string; id: string; name: string }[];
+}
+
+function hostnameManagement(
+  row: TypedConnection,
+): "enabled" | "needs-token" | undefined {
+  if (row.type !== "cloudflare") return undefined;
+  return row.has_api_token ? "enabled" : "needs-token";
 }
 
 export function ConnectionDetail(): React.JSX.Element | null {
@@ -113,6 +121,7 @@ export function ConnectionDetail(): React.JSX.Element | null {
         hostnames={row.status.hostnames ?? []}
         connectionId={row.id}
         canWrite={canWrite}
+        manage={hostnameManagement(row)}
       />
       <Card>
         <CardHeader>
