@@ -231,3 +231,20 @@ func truncate(s string) string {
 	}
 	return s
 }
+
+const ReauthRequiredReason = "reauth_required"
+
+func (d Decision) NeedsReauth() bool {
+	if d.Allowed {
+		return false
+	}
+	if d.Reason == ReasonAuthStale {
+		return true
+	}
+	for _, p := range d.Policies {
+		if p.Annotations["reason"] == ReauthRequiredReason {
+			return true
+		}
+	}
+	return false
+}

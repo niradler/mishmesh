@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
@@ -105,4 +106,26 @@ func scanServiceAccount(scan func(...any) error) (*store.ServiceAccount, error) 
 	sa.CreatedAt = fromNS(created)
 	sa.UpdatedAt = fromNS(updated)
 	return &sa, nil
+}
+
+const zeroTrustColumns = `
+ALTER TABLE memberships ADD COLUMN IF NOT EXISTS disabled_at BIGINT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS auth_method TEXT NOT NULL DEFAULT '';
+`
+
+func (s *Store) SetMembershipDisabled(ctx context.Context, orgID, userID string, at *time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	res, err := s.db.ExecContext(ctx, `UPDATE memberships SET disabled_at = $1 WHERE org_id = $2 AND user_id = $3`, nsPtr(at), orgID, userID)
+	if err != nil {
+		return wrap("set membership disabled", err)
+	}
+	return affected("set membership disabled", res)
+}
+
+func (s *Store) DeleteUserSessions(ctx context.Context, orgID, userID string) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE org_id = $1 AND user_id = $2`, orgID, userID)
+	return wrap("delete user sessions", err)
 }

@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
@@ -95,4 +97,38 @@ func scanServiceAccount(scan func(...any) error) (*store.ServiceAccount, error) 
 	sa.CreatedAt = fromNS(created)
 	sa.UpdatedAt = fromNS(updated)
 	return &sa, nil
+}
+
+var zeroTrustColumns = []struct{ table, column, decl string }{
+	{"memberships", "disabled_at", "INTEGER"},
+	{"sessions", "auth_method", "TEXT NOT NULL DEFAULT ''"},
+}
+
+func migrateZeroTrustColumns(ctx context.Context, tx *sql.Tx) error {
+	for _, c := range zeroTrustColumns {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, c.table, c.column).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE `+c.table+` ADD COLUMN `+c.column+` `+c.decl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) SetMembershipDisabled(ctx context.Context, orgID, userID string, at *time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE memberships SET disabled_at = ? WHERE org_id = ? AND user_id = ?`, nsPtr(at), orgID, userID)
+	if err != nil {
+		return wrap("set membership disabled", err)
+	}
+	return affected("set membership disabled", res)
+}
+
+func (s *Store) DeleteUserSessions(ctx context.Context, orgID, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE org_id = ? AND user_id = ?`, orgID, userID)
+	return wrap("delete user sessions", err)
 }

@@ -232,10 +232,11 @@ type User struct {
 }
 
 type Membership struct {
-	OrgID     string
-	UserID    string
-	Role      string
-	CreatedAt time.Time
+	OrgID      string
+	UserID     string
+	Role       string
+	CreatedAt  time.Time
+	DisabledAt *time.Time
 }
 
 const (
@@ -282,11 +283,12 @@ type Invite struct {
 }
 
 type Session struct {
-	IDHash    string
-	UserID    string
-	OrgID     string
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	IDHash     string
+	UserID     string
+	OrgID      string
+	AuthMethod string
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
 }
 
 type OrgPolicy struct {
@@ -433,6 +435,8 @@ type DataStore interface {
 	GetSession(ctx context.Context, idHash string) (*Session, error)
 	DeleteSession(ctx context.Context, idHash string) error
 	DeleteExpiredSessions(ctx context.Context, now time.Time) error
+	DeleteUserSessions(ctx context.Context, orgID, userID string) error
+	SetMembershipDisabled(ctx context.Context, orgID, userID string, at *time.Time) error
 
 	GetOrgPolicy(ctx context.Context, orgID string) (*OrgPolicy, error)
 	SetOrgPolicy(ctx context.Context, p *OrgPolicy) error

@@ -25,12 +25,13 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
 )
 
-func testGate() *oidcGate {
-	return newOIDCGate(nil, []byte("test-signing-key-0123456789abcdef"), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+func testGate(t *testing.T) *oidcGate {
+	t.Helper()
+	return newOIDCGate(nil, []byte("test-signing-key-0123456789abcdef"), newIdentityService(t), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestStateRoundTrip(t *testing.T) {
-	g := testGate()
+	g := testGate(t)
 	tok := g.signState(stateClaims{Ep: "ep_1", Ret: "https://x/y", Nonce: "n1", Exp: time.Now().Add(time.Minute).Unix()})
 	got, err := g.verifyState(tok)
 	if err != nil {
@@ -42,7 +43,7 @@ func TestStateRoundTrip(t *testing.T) {
 }
 
 func TestStateTamperRejected(t *testing.T) {
-	g := testGate()
+	g := testGate(t)
 	tok := g.signState(stateClaims{Ep: "ep_1", Exp: time.Now().Add(time.Minute).Unix()})
 	_, sig, _ := strings.Cut(tok, ".")
 	forgedBody := base64.RawURLEncoding.EncodeToString([]byte(`{"ep":"ep_evil","exp":9999999999}`))
@@ -52,22 +53,53 @@ func TestStateTamperRejected(t *testing.T) {
 }
 
 func TestStateExpired(t *testing.T) {
-	g := testGate()
+	g := testGate(t)
 	tok := g.signState(stateClaims{Ep: "ep_1", Exp: time.Now().Add(-time.Minute).Unix()})
 	if _, err := g.verifyState(tok); err == nil {
 		t.Fatal("expired state should be rejected")
 	}
 }
 
-func TestSessionRoundTrip(t *testing.T) {
-	g := testGate()
-	tok := g.signSession("ep_1", "u@example.com")
-	email, ok := g.verifySession(tok, "ep_1")
-	if !ok || email != "u@example.com" {
-		t.Fatalf("verifySession: ok=%v email=%q", ok, email)
+func TestOIDCSessionIsServerSide(t *testing.T) {
+	g := testGate(t)
+	ctx := context.Background()
+	ep := &store.Endpoint{ID: "ep_1", OrgID: "org_1", Kind: store.KindHTTP, Policy: &store.EndpointPolicy{OIDC: &store.OIDCEndpointAuth{Issuer: "https://idp.invalid", ClientID: "c"}}}
+	issued, err := g.sessions.IssueGuest(ctx, "org_1", "ep_1", "u@example.com", time.Hour)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := g.verifySession(tok, "ep_other"); ok {
-		t.Fatal("session bound to ep_1 must not validate for ep_other")
+	pass := func(value string, ep *store.Endpoint) bool {
+		r := httptest.NewRequest("GET", "http://app.local/", nil)
+		r.AddCookie(&http.Cookie{Name: oidcSessionCookie, Value: value})
+		return g.authenticate(httptest.NewRecorder(), r, ep)
+	}
+	if !pass(issued.Token, ep) {
+		t.Fatal("valid server-side session must pass")
+	}
+	other := *ep
+	other.ID = "ep_other"
+	if pass(issued.Token, &other) {
+		t.Fatal("session bound to ep_1 must not pass for ep_other")
+	}
+	narrowed := *ep
+	narrowed.Policy = &store.EndpointPolicy{OIDC: &store.OIDCEndpointAuth{Issuer: "https://idp.invalid", ClientID: "c", AllowedDomains: []string{"corp.com"}}}
+	if pass(issued.Token, &narrowed) {
+		t.Fatal("allowlist must be re-checked on every request")
+	}
+	if err := g.sessions.RevokeSession(ctx, issued.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if pass(issued.Token, ep) {
+		t.Fatal("revoked session must not pass")
+	}
+}
+
+func TestOIDCGateFailsClosedWithoutSessions(t *testing.T) {
+	g := newOIDCGate(nil, []byte("k"), nil, false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ep := &store.Endpoint{ID: "ep_1", Kind: store.KindHTTP, Policy: &store.EndpointPolicy{OIDC: &store.OIDCEndpointAuth{Issuer: "https://idp.invalid", ClientID: "c"}}}
+	w := httptest.NewRecorder()
+	if g.authenticate(w, httptest.NewRequest("GET", "http://app.local/", nil), ep) || w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("gate without sessions must fail closed, got %d", w.Code)
 	}
 }
 
@@ -131,14 +163,14 @@ func TestSSRFBlockedTargets(t *testing.T) {
 }
 
 func TestProviderRejectsInsecureIssuer(t *testing.T) {
-	g := newOIDCGate(nil, []byte("k"), false, false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(nil, []byte("k"), nil, false, false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := g.provider(context.Background(), "http://accounts.google.com"); err == nil {
 		t.Fatal("non-https issuer must be rejected when loopback is disallowed")
 	}
 }
 
 func TestProviderBlocksMetadataIssuer(t *testing.T) {
-	g := newOIDCGate(nil, []byte("k"), false, false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(nil, []byte("k"), nil, false, false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_, err := g.provider(context.Background(), "https://169.254.169.254")
 	if err == nil {
 		t.Fatal("metadata-IP issuer must be blocked by the SSRF dialer")
@@ -243,7 +275,7 @@ func TestOIDCFullCallbackFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), newIdentityService(t), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	w1 := httptest.NewRecorder()
 	r1 := httptest.NewRequest("GET", "http://app.local/secret", nil)
@@ -324,7 +356,7 @@ func TestOIDCCallbackDeniesDisallowedDomain(t *testing.T) {
 	}
 	_ = data.CreateEndpoint(ctx, ep)
 
-	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), newIdentityService(t), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	w1 := httptest.NewRecorder()
 	g.authenticate(w1, httptest.NewRequest("GET", "http://app.local/x", nil), ep)
 	loc, _ := url.Parse(w1.Result().Header.Get("Location"))

@@ -8,6 +8,7 @@ import (
 const (
 	SubjectUser           = GroupMemberUser
 	SubjectServiceAccount = GroupMemberServiceAccount
+	SubjectGuest          = "guest"
 )
 
 type TokenSession struct {

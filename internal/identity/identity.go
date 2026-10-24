@@ -182,26 +182,34 @@ func (s *Service) sign(ts *store.TokenSession, typ token.Type) (string, error) {
 	})
 }
 
-func (s *Service) Authenticate(ctx context.Context, raw string, allowed ...token.Type) (Principal, error) {
+func (s *Service) verify(ctx context.Context, raw string, allowed []token.Type) (*store.TokenSession, token.Type, error) {
 	claims, err := s.keys.Verify(raw, s.now())
 	if err != nil {
-		return Principal{}, ErrUnauthenticated
+		return nil, "", ErrUnauthenticated
 	}
 	if len(allowed) > 0 && !slices.Contains(allowed, claims.Type) {
-		return Principal{}, ErrUnauthenticated
+		return nil, "", ErrUnauthenticated
 	}
 	ts, err := s.sessions.GetTokenSession(ctx, claims.SessionID)
 	if errors.Is(err, store.ErrNotFound) {
-		return Principal{}, ErrUnauthenticated
+		return nil, "", ErrUnauthenticated
 	}
 	if err != nil {
-		return Principal{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return nil, "", fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	if subtle.ConstantTimeCompare([]byte(ts.TokenID), []byte(claims.TokenID)) != 1 || ts.OrgID != claims.OrgID {
-		return Principal{}, ErrUnauthenticated
+		return nil, "", ErrUnauthenticated
 	}
 	if !s.now().Before(ts.ExpiresAt) {
-		return Principal{}, ErrUnauthenticated
+		return nil, "", ErrUnauthenticated
+	}
+	return ts, claims.Type, nil
+}
+
+func (s *Service) Authenticate(ctx context.Context, raw string, allowed ...token.Type) (Principal, error) {
+	ts, typ, err := s.verify(ctx, raw, allowed)
+	if err != nil {
+		return Principal{}, err
 	}
 	entity, ok := EntityType(ts.SubjectType)
 	if !ok {
@@ -211,13 +219,44 @@ func (s *Service) Authenticate(ctx context.Context, raw string, allowed ...token
 		OrgID:      ts.OrgID,
 		Ref:        authz.EntityRef{Type: entity, ID: ts.SubjectID},
 		SessionID:  ts.ID,
-		Type:       claims.Type,
+		Type:       typ,
 		AuthMethod: authz.AuthMethod(ts.AuthMethod),
 		AuthTime:   ts.AuthTime,
 		ExpiresAt:  ts.ExpiresAt,
 		EndpointID: ts.EndpointID,
 		AgentID:    ts.AgentID,
 	}, nil
+}
+
+func (s *Service) IssueGuest(ctx context.Context, orgID, endpointID, email string, ttl time.Duration) (Issued, error) {
+	if orgID == "" || endpointID == "" || email == "" || ttl <= 0 {
+		return Issued{}, errors.New("identity: guest session needs org, endpoint, email and ttl")
+	}
+	now := s.now().UTC()
+	ts := &store.TokenSession{
+		ID:          store.NewID("tsn"),
+		OrgID:       orgID,
+		SubjectType: store.SubjectGuest,
+		SubjectID:   email,
+		TokenID:     store.NewID("tid"),
+		AuthMethod:  string(authz.AuthMethodOIDC),
+		AuthTime:    now,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(ttl),
+		EndpointID:  endpointID,
+	}
+	return s.store(ctx, ts, token.TypeSession)
+}
+
+func (s *Service) AuthenticateGuest(ctx context.Context, raw, endpointID string) (string, error) {
+	ts, _, err := s.verify(ctx, raw, []token.Type{token.TypeSession})
+	if err != nil {
+		return "", err
+	}
+	if ts.SubjectType != store.SubjectGuest || ts.EndpointID != endpointID || ts.SubjectID == "" {
+		return "", ErrUnauthenticated
+	}
+	return ts.SubjectID, nil
 }
 
 func (s *Service) RevokeSession(ctx context.Context, id string) error {

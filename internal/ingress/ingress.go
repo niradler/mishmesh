@@ -42,6 +42,7 @@ type Options struct {
 	Services                ServiceWaker
 	Identity                *identity.Service
 	Deciders                identity.Deciders
+	APIPublicURL            string
 }
 
 type Ingress struct {
@@ -58,6 +59,8 @@ type Ingress struct {
 	services    ServiceWaker
 	identity    *identity.Service
 	deciders    identity.Deciders
+	apiURL      string
+	secure      bool
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
@@ -81,6 +84,8 @@ func New(opts Options) *Ingress {
 		services:    opts.Services,
 		identity:    opts.Identity,
 		deciders:    opts.Deciders,
+		apiURL:      strings.TrimRight(opts.APIPublicURL, "/"),
+		secure:      opts.CookieSecure,
 
 		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
@@ -91,7 +96,7 @@ func New(opts Options) *Ingress {
 	}
 	i.proxy = i.newProxy(opts.UpstreamResponseTimeout)
 	if len(opts.OIDCSignKey) > 0 {
-		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.CookieSecure, false, opts.OIDCAllowPrivate, log)
+		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.Identity, opts.CookieSecure, false, opts.OIDCAllowPrivate, log)
 	}
 	return i
 }
@@ -122,6 +127,10 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !applyPolicyGate(w, r, ep, i.gateDeps()) {
+		return
+	}
+	if outPath == identity.EndpointCallbackPath {
+		i.handleEndpointCallback(w, r, ep)
 		return
 	}
 	r, ok := i.applyIdentityGate(w, r, ep, outPath)

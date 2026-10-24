@@ -73,7 +73,8 @@ func (i *Ingress) applyIdentityGate(w http.ResponseWriter, r *http.Request, ep *
 	}
 	idp := ep.Policy.Identity
 	var principal *identity.Principal
-	if raw := presentedToken(r, idp); raw != "" {
+	raw := presentedToken(r, idp)
+	if raw != "" {
 		p, err := i.identity.Authenticate(r.Context(), raw, token.TypeAccess)
 		switch {
 		case errors.Is(err, identity.ErrUnavailable):
@@ -90,8 +91,22 @@ func (i *Ingress) applyIdentityGate(w http.ResponseWriter, r *http.Request, ep *
 			return r, false
 		}
 		principal = &p
+	} else if idp.BrowserLogin {
+		p, err := i.endpointSessionPrincipal(r, ep)
+		if err != nil {
+			i.log.Error("endpoint session lookup failed", "endpoint_id", ep.ID, "err", err)
+			writeIdentityUnavailable(w)
+			i.recordCode(http.StatusServiceUnavailable)
+			return r, false
+		}
+		principal = p
 	}
+	browser := raw == "" && i.canRedirectToLogin(r, idp)
 	if principal == nil && idp.Required {
+		if browser {
+			i.redirectToLogin(w, r, ep, false)
+			return r, false
+		}
 		writeIdentityUnauthorized(w)
 		i.recordCode(http.StatusUnauthorized)
 		return r, false
@@ -104,13 +119,16 @@ func (i *Ingress) applyIdentityGate(w http.ResponseWriter, r *http.Request, ep *
 		return r, false
 	}
 	if !decision.Allowed {
-		if principal == nil {
+		switch {
+		case browser && (principal == nil || decision.NeedsReauth()):
+			i.redirectToLogin(w, r, ep, principal != nil)
+		case principal == nil:
 			writeIdentityUnauthorized(w)
 			i.recordCode(http.StatusUnauthorized)
-			return r, false
+		default:
+			http.Error(w, "forbidden", http.StatusForbidden)
+			i.recordCode(http.StatusForbidden)
 		}
-		http.Error(w, "forbidden", http.StatusForbidden)
-		i.recordCode(http.StatusForbidden)
 		return r, false
 	}
 	ctx := context.WithValue(r.Context(), identityKey{}, &requestIdentity{principal: principal, decision: decision})

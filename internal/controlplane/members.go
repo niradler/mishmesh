@@ -1,9 +1,12 @@
 package controlplane
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -36,6 +39,7 @@ func (a *API) listOrgsHandler(w http.ResponseWriter, r *http.Request) {
 type memberDTO struct {
 	User      map[string]string `json:"user"`
 	Role      string            `json:"role"`
+	Disabled  bool              `json:"disabled"`
 	CreatedAt time.Time         `json:"created_at"`
 }
 
@@ -50,7 +54,7 @@ func (a *API) listMembersHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		out = append(out, memberDTO{User: userDTO(user), Role: m.Role, CreatedAt: m.CreatedAt})
+		out = append(out, memberDTO{User: userDTO(user), Role: m.Role, Disabled: m.DisabledAt != nil, CreatedAt: m.CreatedAt})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -92,29 +96,75 @@ func (a *API) addMemberHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Role string `json:"role"`
+		Role     *string `json:"role"`
+		Disabled *bool   `json:"disabled"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if !validRole(req.Role) {
-		writeError(w, http.StatusBadRequest, "invalid role")
-		return
-	}
-	if !a.canGrant(r, req.Role) {
-		writeError(w, http.StatusForbidden, "cannot grant a role above your own")
+	if req.Role == nil && req.Disabled == nil {
+		writeError(w, http.StatusBadRequest, "role or disabled required")
 		return
 	}
 	orgID := a.orgScope(r)
 	userID := r.PathValue("user_id")
-	if !a.authorizeMemberChange(w, r, orgID, userID, req.Role) {
+	target, err := a.data.GetMembership(r.Context(), orgID, userID)
+	if a.handleErr(w, err) {
 		return
 	}
-	if err := a.data.UpdateMembership(r.Context(), &store.Membership{OrgID: orgID, UserID: userID, Role: req.Role}); a.handleErr(w, err) {
+	role := target.Role
+	if req.Role != nil {
+		if !validRole(*req.Role) {
+			writeError(w, http.StatusBadRequest, "invalid role")
+			return
+		}
+		if !a.canGrant(r, *req.Role) {
+			writeError(w, http.StatusForbidden, "cannot grant a role above your own")
+			return
+		}
+		role = *req.Role
+	}
+	disabling := req.Disabled != nil && *req.Disabled && target.DisabledAt == nil
+	if disabling && a.isSelf(r, userID) {
+		writeError(w, http.StatusConflict, "cannot disable your own membership")
 		return
 	}
-	a.audit(r, "member.update", userID, req.Role)
-	writeJSON(w, http.StatusOK, map[string]string{"user_id": userID, "role": req.Role})
+	guardRole := role
+	if disabling {
+		guardRole = ""
+	}
+	if !a.authorizeMemberChange(w, r, orgID, userID, guardRole) {
+		return
+	}
+	if req.Role != nil && role != target.Role {
+		if err := a.data.UpdateMembership(r.Context(), &store.Membership{OrgID: orgID, UserID: userID, Role: role}); a.handleErr(w, err) {
+			return
+		}
+		a.audit(r, "member.update", userID, role)
+	}
+	disabled := target.DisabledAt != nil
+	if req.Disabled != nil && *req.Disabled != disabled {
+		var at *time.Time
+		if *req.Disabled {
+			now := a.now().UTC()
+			at = &now
+		}
+		if err := a.data.SetMembershipDisabled(r.Context(), orgID, userID, at); a.handleErr(w, err) {
+			return
+		}
+		disabled = *req.Disabled
+		if disabled {
+			if err := a.revokeMemberAccess(r.Context(), orgID, userID); err != nil {
+				a.log.Error("revoke disabled member sessions failed", "org", orgID, "user", userID, "err", err)
+				writeStoreUnavailable(w)
+				return
+			}
+			a.audit(r, "member.disable", userID, "")
+		} else {
+			a.audit(r, "member.enable", userID, "")
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "role": role, "disabled": disabled})
 }
 
 func (a *API) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
@@ -126,8 +176,31 @@ func (a *API) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	if err := a.data.DeleteMembership(r.Context(), orgID, userID); a.handleErr(w, err) {
 		return
 	}
+	if err := a.revokeMemberAccess(r.Context(), orgID, userID); err != nil {
+		a.log.Error("revoke removed member sessions failed", "org", orgID, "user", userID, "err", err)
+		writeStoreUnavailable(w)
+		return
+	}
 	a.audit(r, "member.remove", userID, "")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) revokeMemberAccess(ctx context.Context, orgID, userID string) error {
+	var errs []error
+	if err := a.data.DeleteUserSessions(ctx, orgID, userID); err != nil {
+		errs = append(errs, err)
+	}
+	if a.identity != nil {
+		if err := a.identity.RevokeSubject(ctx, orgID, authz.EntityRef{Type: authz.EntityUser, ID: userID}); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (a *API) isSelf(r *http.Request, userID string) bool {
+	user, err := a.data.GetUserByID(r.Context(), userID)
+	return err == nil && user.Email == a.actor(r)
 }
 
 func (a *API) authorizeMemberChange(w http.ResponseWriter, r *http.Request, orgID, userID, newRole string) bool {
@@ -160,7 +233,7 @@ func (a *API) countOwners(r *http.Request, orgID string) (int, error) {
 	}
 	n := 0
 	for _, m := range ms {
-		if m.Role == store.RoleOwner {
+		if m.Role == store.RoleOwner && m.DisabledAt == nil {
 			n++
 		}
 	}

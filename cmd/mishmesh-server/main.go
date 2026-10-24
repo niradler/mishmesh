@@ -274,6 +274,7 @@ func serve() error {
 			Services:                network.ingressWaker(),
 			Identity:                idSvc,
 			Deciders:                cp,
+			APIPublicURL:            cfg.APIPublicURL,
 		})
 		cp.SetIngressInvalidator(ing.InvalidateCaches)
 		network.invalidateIngress = ing.InvalidateCaches

@@ -148,7 +148,7 @@ func (d serverDecider) userSubject(ctx context.Context, ref authz.EntityRef) (*a
 	if err != nil {
 		return nil, fmt.Errorf("load groups: %w", err)
 	}
-	subject := &authz.Subject{Ref: ref, Email: u.Email, Name: u.Name, Role: m.Role}
+	subject := &authz.Subject{Ref: ref, Email: u.Email, Name: u.Name, Role: m.Role, Disabled: m.DisabledAt != nil}
 	for _, g := range groups {
 		subject.Groups = append(subject.Groups, authz.GroupRef{ID: g.ID, Name: g.Name})
 	}
