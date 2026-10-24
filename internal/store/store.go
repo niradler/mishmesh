@@ -425,6 +425,11 @@ type DataStore interface {
 	UpdateServiceAccount(ctx context.Context, sa *ServiceAccount) error
 	DeleteServiceAccount(ctx context.Context, orgID, id string) error
 
+	CreateWorkloadIdentity(ctx context.Context, w *WorkloadIdentity) error
+	ListWorkloadIdentities(ctx context.Context, orgID, serviceAccountID string) ([]*WorkloadIdentity, error)
+	ListWorkloadIdentitiesByIssuer(ctx context.Context, issuer string) ([]*WorkloadIdentity, error)
+	DeleteWorkloadIdentity(ctx context.Context, orgID, serviceAccountID, id string) error
+
 	CreateInvite(ctx context.Context, i *Invite) error
 	GetInviteByTokenHash(ctx context.Context, tokenHash string) (*Invite, error)
 	ListInvitesByOrg(ctx context.Context, orgID string) ([]*Invite, error)

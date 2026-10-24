@@ -47,11 +47,12 @@ const (
 	AuthMethodMTLS              AuthMethod = "mtls"
 	AuthMethodClientCredentials AuthMethod = "client_credentials"
 	AuthMethodAgentToken        AuthMethod = "agent_token"
+	AuthMethodWorkloadIdentity  AuthMethod = "workload_identity"
 )
 
 var knownAuthMethods = map[AuthMethod]bool{
 	AuthMethodNone: true, AuthMethodPassword: true, AuthMethodOIDC: true, AuthMethodBasic: true,
-	AuthMethodMTLS: true, AuthMethodClientCredentials: true, AuthMethodAgentToken: true,
+	AuthMethodMTLS: true, AuthMethodClientCredentials: true, AuthMethodAgentToken: true, AuthMethodWorkloadIdentity: true,
 }
 
 type Reason string

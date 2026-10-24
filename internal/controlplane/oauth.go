@@ -109,6 +109,10 @@ func (a *API) oauthTokenHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) clientCredentialsGrant(w http.ResponseWriter, r *http.Request) {
+	if r.PostForm.Has("client_assertion_type") || r.PostForm.Has("client_assertion") {
+		a.workloadAssertionGrant(w, r)
+		return
+	}
 	creds, ok := readClientCredentials(r)
 	if !ok {
 		writeOAuthError(w, http.StatusBadRequest, oauthInvalidRequest, "use exactly one client authentication method")
@@ -189,7 +193,7 @@ func (a *API) oauthMetadataHandler(w http.ResponseWriter, _ *http.Request) {
 		"issuer":                                a.apiPublicURL,
 		"token_endpoint":                        a.apiPublicURL + "/oauth2/token",
 		"grant_types_supported":                 a.supportedGrants(),
-		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
+		"token_endpoint_auth_methods_supported": a.tokenAuthMethods(),
 		"authorization_endpoint":                a.apiPublicURL + "/oauth2/authorize",
 		"device_authorization_endpoint":         a.apiPublicURL + "/oauth2/device_authorization",
 		"revocation_endpoint":                   a.apiPublicURL + "/oauth2/revoke",
@@ -263,4 +267,12 @@ func (a *API) authorizeMachine(w http.ResponseWriter, r *http.Request, raw strin
 	}
 	ctx := a.authContext(r, p.OrgID, "service_account:"+sa.ID, sa.Role, false)
 	return context.WithValue(ctx, ctxPrincipalType, authz.EntityServiceAccount), true
+}
+
+func (a *API) tokenAuthMethods() []string {
+	methods := []string{"client_secret_basic", "client_secret_post", "none"}
+	if a.workload != nil {
+		methods = append(methods, "private_key_jwt")
+	}
+	return methods
 }

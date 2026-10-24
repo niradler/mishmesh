@@ -29,10 +29,12 @@ import (
 	"github.com/mishmesh/mishmesh/internal/metrics"
 	"github.com/mishmesh/mishmesh/internal/orgsecret"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
+	"github.com/mishmesh/mishmesh/internal/safehttp"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/redis"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
+	"github.com/mishmesh/mishmesh/internal/workload"
 )
 
 var version = "dev"
@@ -198,6 +200,7 @@ func serve() error {
 		return err
 	}
 	cp.SetIdentity(idSvc)
+	cp.SetWorkloadVerifier(workload.NewVerifier(workload.Options{Client: safehttp.Client(false, cfg.OIDCAllowPrivate)}))
 	gwOpts.Users = idSvc
 	gwOpts.Connect = bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Meter: mx, Deciders: cp, Revocations: idSvc})
 	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)

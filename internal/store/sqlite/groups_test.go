@@ -14,3 +14,7 @@ func TestGroups(t *testing.T) {
 func TestOrgSecrets(t *testing.T) {
 	storetest.RunOrgSecrets(t, func(t *testing.T) store.DataStore { return newStore(t) })
 }
+
+func TestWorkloadIdentities(t *testing.T) {
+	storetest.RunWorkloadIdentities(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}

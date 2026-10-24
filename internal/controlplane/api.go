@@ -22,6 +22,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/services"
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/workload"
 )
 
 type API struct {
@@ -54,6 +55,7 @@ type API struct {
 	connectionRegistry *connections.Registry
 	secretBox          *secrets.Box
 	vault              *orgsecret.Vault
+	workload           *workload.Verifier
 	hostCommands       bool
 	identity           *identity.Service
 	apiPublicURL       string
@@ -281,6 +283,9 @@ func (a *API) routes() []route {
 		{"PATCH /api/v1/service-accounts/{id}", a.require(authz.ActionMemberManage, a.patchServiceAccountHandler)},
 		{"DELETE /api/v1/service-accounts/{id}", a.require(authz.ActionMemberManage, a.deleteServiceAccountHandler)},
 		{"POST /api/v1/service-accounts/{id}/rotate", a.require(authz.ActionMemberManage, a.rotateServiceAccountHandler)},
+		{"GET /api/v1/service-accounts/{id}/workload-identities", a.require(authz.ActionMemberRead, a.listWorkloadIdentitiesHandler)},
+		{"POST /api/v1/service-accounts/{id}/workload-identities", a.require(authz.ActionMemberManage, a.createWorkloadIdentityHandler)},
+		{"DELETE /api/v1/service-accounts/{id}/workload-identities/{wid}", a.require(authz.ActionMemberManage, a.deleteWorkloadIdentityHandler)},
 
 		{"GET /api/v1/policy", a.require(authz.ActionPolicyRead, a.getPolicyHandler)},
 		{"PUT /api/v1/policy", a.require(authz.ActionPolicyWrite, a.putPolicyHandler)},
