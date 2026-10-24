@@ -136,8 +136,8 @@ func TestBrowserLoginRedirects(t *testing.T) {
 	deny := func(authz.DecisionRequest) (authz.Decision, error) {
 		return authz.Decision{Reason: authz.ReasonPolicyDeny}, nil
 	}
-	userCookie := func() *http.Cookie {
-		issued, err := svc.Issue(context.Background(), identity.IssueRequest{OrgID: "org_1", Subject: authz.EntityRef{Type: authz.EntityUser, ID: "usr_1"}, Type: token.TypeSession, AuthMethod: authz.AuthMethodPassword, TTL: time.Hour, EndpointID: "ep_1"})
+	userCookie := func(authAge time.Duration) *http.Cookie {
+		issued, err := svc.Issue(context.Background(), identity.IssueRequest{OrgID: "org_1", Subject: authz.EntityRef{Type: authz.EntityUser, ID: "usr_1"}, Type: token.TypeSession, AuthMethod: authz.AuthMethodPassword, AuthTime: time.Now().Add(-authAge), TTL: time.Hour, EndpointID: "ep_1"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -148,22 +148,24 @@ func TestBrowserLoginRedirects(t *testing.T) {
 		method    string
 		apiURL    string
 		cookie    bool
+		authAge   time.Duration
 		decide    func(authz.DecisionRequest) (authz.Decision, error)
 		want      int
 		wantForce bool
 	}{
-		{"anonymous get redirects", http.MethodGet, testAPIURL, false, allowAll, http.StatusFound, false},
-		{"anonymous post is 401", http.MethodPost, testAPIURL, false, allowAll, http.StatusUnauthorized, false},
-		{"no api url is 401", http.MethodGet, "", false, allowAll, http.StatusUnauthorized, false},
-		{"stale session forces reauth", http.MethodGet, testAPIURL, true, stale, http.StatusFound, true},
-		{"plain deny is 403", http.MethodGet, testAPIURL, true, deny, http.StatusForbidden, false},
+		{"anonymous get redirects", http.MethodGet, testAPIURL, false, 0, allowAll, http.StatusFound, false},
+		{"anonymous post is 401", http.MethodPost, testAPIURL, false, 0, allowAll, http.StatusUnauthorized, false},
+		{"no api url is 401", http.MethodGet, "", false, 0, allowAll, http.StatusUnauthorized, false},
+		{"stale session forces reauth", http.MethodGet, testAPIURL, true, time.Hour, stale, http.StatusFound, true},
+		{"fresh login that still needs reauth is 403", http.MethodGet, testAPIURL, true, time.Second, stale, http.StatusForbidden, false},
+		{"plain deny is 403", http.MethodGet, testAPIURL, true, time.Hour, deny, http.StatusForbidden, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ing := &Ingress{log: discardLogger(), identity: svc, deciders: &fakeDeciders{decide: tc.decide}, apiURL: tc.apiURL}
 			r := httptest.NewRequest(tc.method, "http://app.example.com/x?y=1", nil)
 			if tc.cookie {
-				r.AddCookie(userCookie())
+				r.AddCookie(userCookie(tc.authAge))
 			}
 			w := httptest.NewRecorder()
 			if _, ok := ing.applyIdentityGate(w, r, browserEndpoint(), "/x"); ok || w.Code != tc.want {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -348,6 +349,17 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 		i.recordCode(http.StatusBadGateway)
 		return
 	}
+	resp, err := http.ReadResponse(br, outReq)
+	if err != nil {
+		http.Error(w, upstreamUnreachableMessage(""), http.StatusBadGateway)
+		i.recordCode(http.StatusBadGateway)
+		return
+	}
+	sanitizeUpstreamResponse(resp.Header)
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		i.relayRefusedUpgrade(w, resp)
+		return
+	}
 
 	client, clientBuf, err := hj.Hijack()
 	if err != nil {
@@ -358,9 +370,39 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 	if flow != nil && !i.upgrades.Attach(flow, client) {
 		return
 	}
+	if err := writeUpgradeHead(client, resp); err != nil {
+		return
+	}
 
 	in, out := tunnel.Splice(&bufferedConn{Conn: client, r: clientBuf.Reader}, &bufferedConn{Conn: stream, r: br})
 	accessFrom(r).markUpgraded(in, out)
+}
+
+func (i *Ingress) relayRefusedUpgrade(w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
+	stripHopHeaders(resp.Header)
+	for k, vs := range resp.Header {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	i.recordCode(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func writeUpgradeHead(w io.Writer, resp *http.Response) error {
+	bw := bufio.NewWriter(w)
+	if _, err := fmt.Fprintf(bw, "HTTP/1.1 %s\r\n", resp.Status); err != nil {
+		return err
+	}
+	if err := resp.Header.Write(bw); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("\r\n"); err != nil {
+		return err
+	}
+	return bw.Flush()
 }
 
 func newUpgradeTracker(i *Ingress, ids *identity.Service) *flows.Tracker {

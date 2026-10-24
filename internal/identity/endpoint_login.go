@@ -19,6 +19,7 @@ const (
 	EndpointLoginPath    = "/api/v1/auth/endpoint-login"
 	EndpointSessionTTL   = 12 * time.Hour
 	EndpointLoginTTL     = 60 * time.Second
+	EndpointReauthMaxAge = 2 * time.Minute
 	endpointLoginKey     = "eplogin:"
 	endpointCodeBytes    = 32
 	maxReturnPathBytes   = 2048

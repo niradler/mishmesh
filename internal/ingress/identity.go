@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/clientip"
@@ -122,8 +123,10 @@ func (i *Ingress) applyIdentityGate(w http.ResponseWriter, r *http.Request, ep *
 	}
 	if !decision.Allowed {
 		switch {
-		case browser && (principal == nil || decision.NeedsReauth()):
-			i.redirectToLogin(w, r, ep, principal != nil)
+		case browser && principal == nil:
+			i.redirectToLogin(w, r, ep, false)
+		case browser && decision.NeedsReauth() && !reauthWouldRepeat(principal):
+			i.redirectToLogin(w, r, ep, true)
 		case principal == nil:
 			writeIdentityUnauthorized(w)
 			i.recordCode(http.StatusUnauthorized)
@@ -143,6 +146,10 @@ func (i *Ingress) applyIdentityGate(w http.ResponseWriter, r *http.Request, ep *
 	}
 	ctx := context.WithValue(r.Context(), identityKey{}, &requestIdentity{principal: principal, decision: decision, credential: cred})
 	return r.WithContext(ctx), true
+}
+
+func reauthWouldRepeat(p *identity.Principal) bool {
+	return !p.AuthTime.IsZero() && time.Since(p.AuthTime) <= identity.EndpointReauthMaxAge
 }
 
 func (i *Ingress) decideEndpoint(r *http.Request, ep *store.Endpoint, outPath string, principal *identity.Principal) (authz.Decision, error) {

@@ -4,13 +4,10 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
-
-const endpointReauthMaxAge = 2 * time.Minute
 
 func localNext(next string) bool {
 	return identity.SafeReturnPath(next)
@@ -70,7 +67,7 @@ func (a *API) endpointLoginHandler(w http.ResponseWriter, r *http.Request) {
 		writeStoreUnavailable(w)
 		return
 	}
-	if q.Get("force") == "1" && a.now().Sub(su.authTime) > endpointReauthMaxAge {
+	if q.Get("force") == "1" && a.now().Sub(su.authTime) > identity.EndpointReauthMaxAge {
 		_ = a.data.DeleteSession(r.Context(), su.idHash)
 		a.clearSessionCookie(w)
 		a.loginRedirect(w, r)

@@ -129,3 +129,67 @@ func TestUpgradeRefusedWhenSessionRevokedBeforeTracking(t *testing.T) {
 		t.Fatalf("tracked upgrades = %d, want 0", ing.upgrades.Len())
 	}
 }
+
+type cookieUpgradeAgent struct{ status string }
+
+func (cookieUpgradeAgent) AgentID() string { return "ag_test" }
+func (cookieUpgradeAgent) Close() error    { return nil }
+func (a cookieUpgradeAgent) OpenStream(context.Context, string, string, map[string]string) (net.Conn, error) {
+	client, server := net.Pipe()
+	go func() {
+		defer server.Close()
+		br := bufio.NewReader(server)
+		if _, err := http.ReadRequest(br); err != nil {
+			return
+		}
+		head := "HTTP/1.1 " + a.status + "\r\nSet-Cookie: mm_ep_session=forged; Path=/\r\nSet-Cookie: app=1; Path=/\r\n"
+		if a.status == "101 Switching Protocols" {
+			head += "Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+		} else {
+			head += "Content-Length: 2\r\n\r\nno"
+		}
+		if _, err := io.WriteString(server, head); err != nil {
+			return
+		}
+		_, _ = io.Copy(server, br)
+	}()
+	return client, nil
+}
+
+func TestUpgradeResponseStripsMishmeshCookies(t *testing.T) {
+	for _, status := range []string{"101 Switching Protocols", "403 Forbidden"} {
+		t.Run(status, func(t *testing.T) {
+			svc := newIdentityService(t)
+			raw := issueSAToken(t, svc, "org_1")
+			ing := &Ingress{log: discardLogger(), conns: nopConns{}, identity: svc, deciders: &fakeDeciders{decide: allowAll}}
+			ing.upgrades = newUpgradeTracker(ing, svc)
+			ep := identityEndpoint(store.EndpointIdentity{Required: true})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r, ok := ing.applyIdentityGate(w, r, ep, "/ws")
+				if !ok {
+					return
+				}
+				ing.proxyUpgrade(w, r, cookieUpgradeAgent{status: status}, ep, "/ws", 0)
+			}))
+			t.Cleanup(srv.Close)
+			c, br, resp := dialUpgrade(t, srv.Listener.Addr().String(), raw)
+			if got := resp.Status; got != status {
+				t.Fatalf("status = %q, want %q", got, status)
+			}
+			cookies := resp.Header.Values("Set-Cookie")
+			if len(cookies) != 1 || cookies[0] != "app=1; Path=/" {
+				t.Fatalf("Set-Cookie = %v, want only the app cookie", cookies)
+			}
+			if status != "101 Switching Protocols" {
+				return
+			}
+			if _, err := io.WriteString(c, "ping"); err != nil {
+				t.Fatal(err)
+			}
+			got := make([]byte, 4)
+			if _, err := io.ReadFull(br, got); err != nil || string(got) != "ping" {
+				t.Fatalf("echo = %q, %v", got, err)
+			}
+		})
+	}
+}
