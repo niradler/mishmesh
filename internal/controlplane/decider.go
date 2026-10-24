@@ -49,6 +49,11 @@ func (d serverDecider) facts(ctx context.Context, req authz.DecisionRequest) (au
 	if facts.Subject, err = d.subject(ctx, req.Principal); err != nil {
 		return facts, err
 	}
+	if req.Context.Exit != "" {
+		if facts.Exit, err = d.exitAgent(ctx, req.Context.Exit); err != nil {
+			return facts, err
+		}
+	}
 	if req.Resource.Type == authz.EntityEndpoint {
 		if facts.Endpoint, err = d.endpoint(ctx, req.Resource.ID, facts.Agent); err != nil {
 			return facts, err
@@ -86,6 +91,14 @@ func (d serverDecider) actingAgent(ctx context.Context) (*authz.AgentEntity, err
 		return nil, nil
 	}
 	ag, err := d.loadAgent(ctx, d.scope.AgentID)
+	if ag == nil || err != nil {
+		return nil, err
+	}
+	return &authz.AgentEntity{ID: ag.ID, Name: ag.Name, Disabled: ag.Status != store.AgentActive}, nil
+}
+
+func (d serverDecider) exitAgent(ctx context.Context, id string) (*authz.AgentEntity, error) {
+	ag, err := d.loadAgent(ctx, id)
 	if ag == nil || err != nil {
 		return nil, err
 	}

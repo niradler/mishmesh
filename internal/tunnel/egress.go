@@ -9,7 +9,10 @@ import (
 )
 
 const (
-	MetaEgress = "egress"
+	MetaEgress     = "egress"
+	MetaEgressAuth = "egress_auth"
+	MetaEgressVia  = "egress_via"
+	MetaEgressExit = "egress_exit"
 
 	EgressReplyTimeout = 15 * time.Second
 	maxEgressReason    = 200

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,7 +70,7 @@ var (
 	rootKeys      = []string{"gateway", "token", "allow", "log_level", "tunnels", "connects", "egress"}
 	tunnelKeys    = []string{"proto", "addr", "subdomain", "domain", "port", "reserved", "private", "target_https", "insecure", "policy"}
 	connectKeys   = []string{"endpoint", "proto", "listen", "idle_timeout"}
-	egressKeys    = []string{"listen"}
+	egressKeys    = []string{"listen", "socks_listen", "require_auth", "exit", "serve_exit"}
 	validProtos   = []string{store.KindHTTP, store.KindTCP, store.KindTLS, store.KindUDP}
 	validProtoMsg = strings.Join(validProtos, ", ")
 )
@@ -223,7 +224,11 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 }
 
 type egressConfig struct {
-	Listen string `yaml:"listen"`
+	Listen      string `yaml:"listen"`
+	SocksListen string `yaml:"socks_listen"`
+	RequireAuth bool   `yaml:"require_auth"`
+	Exit        string `yaml:"exit"`
+	ServeExit   bool   `yaml:"serve_exit"`
 }
 
 func (p *configParser) parseEgress(n *yaml.Node, connects []ConnectSpec) *EgressSpec {
@@ -233,17 +238,40 @@ func (p *configParser) parseEgress(n *yaml.Node, connects []ConnectSpec) *Egress
 		p.addf(n.Line, "egress: %s", strings.ReplaceAll(strings.TrimPrefix(err.Error(), "yaml: unmarshal errors:\n  "), "\n  ", "; "))
 		return nil
 	}
-	spec := &EgressSpec{Listen: DefaultEgressListen}
-	if strings.TrimSpace(ec.Listen) != "" {
+	spec := &EgressSpec{RequireAuth: ec.RequireAuth, Exit: strings.TrimSpace(ec.Exit), ServeExit: ec.ServeExit}
+	switch {
+	case strings.TrimSpace(ec.Listen) != "":
 		spec.Listen = normalizeListen(ec.Listen)
+	case strings.TrimSpace(ec.SocksListen) == "" && !ec.ServeExit:
+		spec.Listen = DefaultEgressListen
 	}
-	if _, _, err := net.SplitHostPort(spec.Listen); err != nil {
-		p.addf(n.Line, "egress: listen %q must be a port or host:port", ec.Listen)
+	if strings.TrimSpace(ec.SocksListen) != "" {
+		spec.SocksListen = normalizeListen(ec.SocksListen)
 	}
+	used := map[string]string{}
 	for _, c := range connects {
-		if c.Kind == store.KindTCP && c.Listen == spec.Listen {
-			p.addf(n.Line, "egress: listen %s is already used by connect %q", spec.Listen, c.Name)
+		if c.Kind == store.KindTCP {
+			used[c.Listen] = "connect " + strconv.Quote(c.Name)
 		}
+	}
+	for _, l := range []struct{ key, raw, addr string }{{"listen", ec.Listen, spec.Listen}, {"socks_listen", ec.SocksListen, spec.SocksListen}} {
+		if l.addr == "" {
+			continue
+		}
+		if _, _, err := net.SplitHostPort(l.addr); err != nil {
+			p.addf(n.Line, "egress: %s %q must be a port or host:port", l.key, l.raw)
+			continue
+		}
+		if owner, taken := used[l.addr]; taken {
+			p.addf(n.Line, "egress: %s %s is already used by %s", l.key, l.addr, owner)
+		}
+		used[l.addr] = "egress " + l.key
+	}
+	switch {
+	case spec.RequireAuth && spec.SocksListen != "":
+		p.addf(n.Line, "egress: require_auth cannot cover socks_listen: SOCKS5 passwords are capped at 255 bytes, shorter than mishmesh tokens")
+	case spec.RequireAuth && spec.Listen == "":
+		p.addf(n.Line, "egress: require_auth needs listen")
 	}
 	return spec
 }

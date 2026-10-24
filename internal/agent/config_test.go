@@ -413,6 +413,11 @@ func TestParseConfigEgress(t *testing.T) {
 		{name: "defaults", yaml: "egress: {}", want: &EgressSpec{Listen: DefaultEgressListen}},
 		{name: "port only", yaml: "egress: {listen: 8080}", want: &EgressSpec{Listen: "127.0.0.1:8080"}},
 		{name: "host port", yaml: "egress: {listen: \"127.0.0.2:3129\"}", want: &EgressSpec{Listen: "127.0.0.2:3129"}},
+		{name: "socks only", yaml: "egress: {socks_listen: 1080}", want: &EgressSpec{SocksListen: "127.0.0.1:1080"}},
+		{name: "http and socks", yaml: "egress: {listen: 3128, socks_listen: 1080}", want: &EgressSpec{Listen: "127.0.0.1:3128", SocksListen: "127.0.0.1:1080"}},
+		{name: "shared gateway", yaml: "egress: {listen: 3128, require_auth: true}", want: &EgressSpec{Listen: "127.0.0.1:3128", RequireAuth: true}},
+		{name: "via exit", yaml: "egress: {exit: \" office-exit \"}", want: &EgressSpec{Listen: DefaultEgressListen, Exit: "office-exit"}},
+		{name: "exit only", yaml: "egress: {serve_exit: true}", want: &EgressSpec{ServeExit: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -437,6 +442,10 @@ func TestParseConfigEgressValidation(t *testing.T) {
 		{name: "unknown key", yaml: "egress: {listen: 1, upstream: x}", want: `unknown field "upstream"`},
 		{name: "bad listen", yaml: "egress: {listen: nope}", want: `listen "nope" must be a port or host:port`},
 		{name: "clashes with connect", yaml: "connects:\n  pg: {proto: tcp, listen: 3128}\negress: {}", want: `already used by connect "pg"`},
+		{name: "socks clashes with listen", yaml: "egress: {listen: 3128, socks_listen: 3128}", want: "socks_listen 127.0.0.1:3128 is already used by egress listen"},
+		{name: "bad socks listen", yaml: "egress: {socks_listen: nope}", want: `socks_listen "nope" must be a port or host:port`},
+		{name: "require auth without listener", yaml: "egress: {serve_exit: true, require_auth: true}", want: "require_auth needs listen"},
+		{name: "require auth with socks", yaml: "egress: {listen: 3128, socks_listen: 1080, require_auth: true}", want: "require_auth cannot cover socks_listen"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

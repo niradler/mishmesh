@@ -50,6 +50,7 @@ type Options struct {
 	Allowlist  []string
 	Connects   []ConnectSpec
 	Egress     *EgressSpec
+	ExitDialer ExitDialer
 	Out        io.Writer
 	UserToken  func(ctx context.Context) (string, error)
 }
@@ -281,6 +282,10 @@ func (a *Agent) pingLoop(ctx context.Context, ctrl *tunnel.Control, reconnect co
 
 func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
 	defer stream.Close()
+	if dest, ok := init.Meta[tunnel.MetaEgressExit]; ok && init.EndpointID == "" {
+		a.serveExit(stream, dest)
+		return
+	}
 	tgt, ok := a.resolveStreamTarget(init)
 	if !ok {
 		reportStreamFailure(stream, init, notServedReason(init))

@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -22,9 +23,11 @@ import (
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
 	"github.com/mishmesh/mishmesh/internal/gateway"
+	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
+	"github.com/mishmesh/mishmesh/internal/token"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
@@ -63,6 +66,7 @@ type egressHarness struct {
 	log     *slog.Logger
 	data    store.DataStore
 	access  *accessRecorder
+	ids     *identity.Service
 	gateway string
 }
 
@@ -82,15 +86,21 @@ func newEgressHarness(t *testing.T, allowLoopback bool) *egressHarness {
 		t.Fatal(err)
 	}
 	access := &accessRecorder{}
+	keys, err := token.NewKeyring(bytes.Repeat([]byte{9}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := identity.New(keys, memory.NewSessionStore())
+	cp.SetIdentity(ids)
 	gw := gateway.New(gateway.Options{
 		Data: data, Conns: conns, Log: log, BaseDomain: "localhost", PublicScheme: "http",
-		Egress: egress.New(egress.Options{Conns: conns, Log: log, Deciders: cp, Dialer: guard, Access: access}),
+		Egress: egress.New(egress.Options{Conns: conns, Log: log, Deciders: cp, Dialer: guard, Access: access, Auth: ids, Agents: data, Revocations: ids}),
 	})
 	mux := http.NewServeMux()
 	mux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &egressHarness{t: t, ctx: ctx, log: log, data: data, access: access, gateway: "ws" + strings.TrimPrefix(srv.URL, "http")}
+	return &egressHarness{t: t, ctx: ctx, log: log, data: data, access: access, ids: ids, gateway: "ws" + strings.TrimPrefix(srv.URL, "http")}
 }
 
 func (h *egressHarness) orgWithPolicy(cedarSrc string) string {
@@ -109,7 +119,12 @@ func (h *egressHarness) orgWithPolicy(cedarSrc string) string {
 
 func (h *egressHarness) runAgent(orgID string) string {
 	h.t.Helper()
-	ag := &store.Agent{ID: store.NewID("ag"), OrgID: orgID, Name: "exit", Status: store.AgentActive, CreatedAt: time.Now()}
+	return h.runNamedAgent(orgID, "src", agent.EgressSpec{Listen: freeAddr(h.t, "tcp")}, nil)
+}
+
+func (h *egressHarness) runNamedAgent(orgID, name string, spec agent.EgressSpec, exitDialer agent.ExitDialer) string {
+	h.t.Helper()
+	ag := &store.Agent{ID: store.NewID("ag"), OrgID: orgID, Name: name, Status: store.AgentActive, CreatedAt: time.Now()}
 	if err := h.data.CreateAgent(h.ctx, ag); err != nil {
 		h.t.Fatal(err)
 	}
@@ -120,8 +135,7 @@ func (h *egressHarness) runAgent(orgID string) string {
 	if err := h.data.CreateToken(h.ctx, &store.Token{ID: store.NewID("tok"), OrgID: orgID, AgentID: ag.ID, Hash: hash, CreatedAt: time.Now()}); err != nil {
 		h.t.Fatal(err)
 	}
-	listen := freeAddr(h.t, "tcp")
-	cli := agent.New(agent.Options{GatewayURL: h.gateway, Token: raw, Log: h.log, Out: io.Discard, Egress: &agent.EgressSpec{Listen: listen}})
+	cli := agent.New(agent.Options{GatewayURL: h.gateway, Token: raw, Log: h.log, Out: io.Discard, Egress: &spec, ExitDialer: exitDialer})
 	ctx, cancel := context.WithCancel(h.ctx)
 	done := make(chan struct{})
 	go func() {
@@ -132,7 +146,10 @@ func (h *egressHarness) runAgent(orgID string) string {
 		cancel()
 		<-done
 	})
-	return listen
+	if spec.SocksListen != "" {
+		return spec.SocksListen
+	}
+	return spec.Listen
 }
 
 func egressPolicyFor(addr string) string {
@@ -142,18 +159,28 @@ func egressPolicyFor(addr string) string {
 
 func proxyConnect(t *testing.T, proxyAddr, target string) (net.Conn, *bufio.Reader, int) {
 	t.Helper()
+	c, br, resp := proxyConnectAuth(t, proxyAddr, target, "")
+	return c, br, resp.StatusCode
+}
+
+func proxyConnectAuth(t *testing.T, proxyAddr, target, auth string) (net.Conn, *bufio.Reader, *http.Response) {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		c, err := net.Dial("tcp", proxyAddr)
 		if err == nil {
 			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-			fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+			header := ""
+			if auth != "" {
+				header = "Proxy-Authorization: " + auth + "\r\n"
+			}
+			fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", target, target, header)
 			br := bufio.NewReader(c)
 			resp, rerr := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
 			if rerr == nil && !(resp.StatusCode == http.StatusServiceUnavailable && time.Now().Before(deadline)) {
 				_ = c.SetDeadline(time.Time{})
 				t.Cleanup(func() { _ = c.Close() })
-				return c, br, resp.StatusCode
+				return c, br, resp
 			}
 			_ = c.Close()
 		}
@@ -199,13 +226,15 @@ func TestEgressAbsoluteFormReachesBackend(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 	addr := strings.TrimPrefix(backend.URL, "http://")
-	listen := h.runAgent(h.orgWithPolicy(egressPolicyFor(addr)))
+	orgID := h.orgWithPolicy(egressPolicyFor(addr))
+	listen := h.runAgent(orgID)
 	proxyConnect(t, listen, addr)
+	_, raw := h.serviceAccountToken(orgID, "ci")
 
 	proxyURL, _ := url.Parse("http://" + listen)
 	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
 	req, _ := http.NewRequest(http.MethodGet, backend.URL+"/via-proxy", nil)
-	req.Header.Set("Proxy-Authorization", "Basic c2VjcmV0")
+	req.Header.Set("Proxy-Authorization", basicAuth("ci", raw))
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)

@@ -411,3 +411,44 @@ func TestShouldListPoliciesSortedForDeterminism(t *testing.T) {
 		t.Fatalf("ids = %v", ids)
 	}
 }
+
+func TestShouldDecideEgressOnExitAgent(t *testing.T) {
+	az := mustAuthorizer(t, `permit (principal, action == Action::"egress:connect", resource) when { context has exit && context.exit.name == "office-exit" };`)
+	tests := []struct {
+		name string
+		exit string
+		fact *AgentEntity
+		want Reason
+	}{
+		{"named exit", "ag_2", &AgentEntity{ID: "ag_2", Name: "office-exit"}, ReasonAllow},
+		{"other exit", "ag_3", &AgentEntity{ID: "ag_3", Name: "home-exit"}, ReasonNoPolicyMatch},
+		{"no exit", "", nil, ReasonNoPolicyMatch},
+		{"unknown exit", "ag_9", nil, ReasonUnknownEntity},
+		{"exit fact for another agent", "ag_2", &AgentEntity{ID: "ag_3", Name: "office-exit"}, ReasonUnknownEntity},
+		{"disabled exit", "ag_2", &AgentEntity{ID: "ag_2", Name: "office-exit", Disabled: true}, ReasonAgentDisabled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := DecisionRequest{
+				Principal: EntityRef{Type: EntityAgent, ID: "ag_1"},
+				Action:    ActionEgressConnect,
+				Resource:  EntityRef{Type: EntityDestination, ID: "api.example.com:443"},
+				Context:   RequestContext{ClientIP: "10.0.0.1", AuthMethod: AuthMethodAgentToken, Exit: tt.exit},
+			}
+			facts := connectFacts(EndpointEntity{})
+			facts.Endpoint = nil
+			facts.Exit = tt.fact
+			if got := az.Decide(req, facts); got.Reason != tt.want {
+				t.Fatalf("reason = %q, want %q", got.Reason, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldRejectExitOutsideEgress(t *testing.T) {
+	req := connectRequest()
+	req.Context.Exit = "ag_2"
+	if err := req.Validate(); err == nil {
+		t.Fatal("exit on agent:connect validated")
+	}
+}

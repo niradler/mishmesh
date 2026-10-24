@@ -12,18 +12,25 @@ import (
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/token"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
 const (
-	MeterKind       = "egress"
-	decisionTimeout = 5 * time.Second
-	dialTimeout     = 10 * time.Second
-	replyTimeout    = 5 * time.Second
-	agentClientIP   = "0.0.0.0"
-	reasonBlocked   = "blocked_destination"
-	reasonDial      = "dial_failed"
-	reasonSNI       = "sni_mismatch"
+	MeterKind         = "egress"
+	decisionTimeout   = 5 * time.Second
+	dialTimeout       = 10 * time.Second
+	replyTimeout      = 5 * time.Second
+	agentClientIP     = "0.0.0.0"
+	reasonBlocked     = "blocked_destination"
+	reasonDial        = "dial_failed"
+	reasonSNI         = "sni_mismatch"
+	reasonBadCreds    = "invalid_proxy_credentials"
+	reasonNoAuth      = "proxy_auth_unavailable"
+	reasonUnknownExit = "unknown_exit"
+	reasonExitOffline = "exit_offline"
+	reasonExitSelf    = "exit_is_self"
+	reasonNoExits     = "exits_unavailable"
 )
 
 type Dialer interface {
@@ -38,6 +45,14 @@ type Recorder interface {
 	Record(e *store.AccessEvent)
 }
 
+type Authenticator interface {
+	Authenticate(ctx context.Context, raw string, allowed ...token.Type) (identity.Principal, error)
+}
+
+type Agents interface {
+	ListAgents(ctx context.Context, orgID string) ([]*store.Agent, error)
+}
+
 type Options struct {
 	Conns       store.ConnectionStore
 	Log         *slog.Logger
@@ -46,6 +61,8 @@ type Options struct {
 	Dialer      Dialer
 	Access      Recorder
 	Revocations flows.Revocations
+	Auth        Authenticator
+	Agents      Agents
 }
 
 type Handler struct {
@@ -55,6 +72,8 @@ type Handler struct {
 	deciders identity.Deciders
 	dialer   Dialer
 	access   Recorder
+	auth     Authenticator
+	agents   Agents
 	flows    *flows.Tracker
 }
 
@@ -70,6 +89,8 @@ func New(opts Options) *Handler {
 		deciders: opts.Deciders,
 		dialer:   opts.Dialer,
 		access:   opts.Access,
+		auth:     opts.Auth,
+		agents:   opts.Agents,
 		flows:    flows.NewTracker(log, "egress", opts.Revocations),
 	}
 }
@@ -77,6 +98,11 @@ func New(opts Options) *Handler {
 type flowRecord struct {
 	event   store.AccessEvent
 	started time.Time
+}
+
+type refusal struct {
+	status tunnel.EgressStatus
+	reason string
 }
 
 func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream net.Conn, init tunnel.StreamInit) {
@@ -91,7 +117,11 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		Protocol:      "tcp",
 		Destination:   truncate(init.Meta[tunnel.MetaEgress]),
 	}}
-	p, hasPrincipal := identity.PrincipalFrom(ctx)
+	p, hasPrincipal, refused := h.principal(ctx, agent, init.Meta[tunnel.MetaEgressAuth])
+	if refused != nil {
+		h.refuse(stream, rec, refused)
+		return
+	}
 	if hasPrincipal {
 		rec.event.PrincipalType = string(p.Ref.Type)
 		rec.event.PrincipalID = p.Ref.ID
@@ -100,14 +130,19 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 
 	dest, err := authz.NormalizeDestination(init.Meta[tunnel.MetaEgress])
 	if err != nil {
-		h.refuse(stream, rec, tunnel.EgressInvalid, string(authz.ReasonInvalidRequest))
+		h.refuse(stream, rec, &refusal{tunnel.EgressInvalid, string(authz.ReasonInvalidRequest)})
 		return
 	}
 	rec.event.Destination = dest
-	decision, status := h.decide(ctx, agent, p, hasPrincipal, dest)
+	exit, refused := h.resolveExit(ctx, agent, init.Meta[tunnel.MetaEgressVia])
+	if refused != nil {
+		h.refuse(stream, rec, refused)
+		return
+	}
+	decision, status := h.decide(ctx, agent, p, hasPrincipal, dest, exit)
 	rec.event.PolicyIDs = policyIDs(decision)
 	if status != tunnel.EgressOK {
-		h.refuse(stream, rec, status, string(decision.Reason))
+		h.refuse(stream, rec, &refusal{status, string(decision.Reason)})
 		return
 	}
 
@@ -117,19 +152,14 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		flow, untrack = h.flows.Track(agent.OrgID, p.SessionID, stream)
 		defer untrack()
 	}
-	upstream, err := h.dialer.Dial(ctx, dest, nil, dialTimeout)
-	if err != nil {
-		status, reason := tunnel.EgressDialFailed, reasonDial
-		if errors.Is(err, proxy.ErrBlocked) {
-			status, reason = tunnel.EgressDenied, reasonBlocked
-		}
-		h.log.Info("egress dial refused", "agent_id", agent.ID, "destination", dest, "err", err)
-		h.refuse(stream, rec, status, reason)
+	upstream, refused := h.dial(ctx, agent, exit, dest)
+	if refused != nil {
+		h.refuse(stream, rec, refused)
 		return
 	}
 	defer upstream.Close()
 	if flow != nil && !h.flows.Attach(flow, upstream) {
-		h.refuse(stream, rec, tunnel.EgressDenied, string(authz.ReasonSessionRevoked))
+		h.refuse(stream, rec, &refusal{tunnel.EgressDenied, string(authz.ReasonSessionRevoked)})
 		return
 	}
 	if !h.reply(stream, tunnel.EgressReply{Status: tunnel.EgressOK}) {
@@ -154,13 +184,106 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 	h.record(rec)
 }
 
-func (h *Handler) decide(ctx context.Context, agent *store.Agent, p identity.Principal, hasPrincipal bool, dest string) (authz.Decision, tunnel.EgressStatus) {
+func (h *Handler) principal(ctx context.Context, agent *store.Agent, raw string) (identity.Principal, bool, *refusal) {
+	if raw == "" {
+		p, ok := identity.PrincipalFrom(ctx)
+		return p, ok, nil
+	}
+	if h.auth == nil {
+		return identity.Principal{}, false, &refusal{tunnel.EgressUnavailable, reasonNoAuth}
+	}
+	p, err := h.auth.Authenticate(ctx, raw, token.TypeAccess, token.TypeAgentUser)
+	switch {
+	case errors.Is(err, identity.ErrUnavailable):
+		return identity.Principal{}, false, &refusal{tunnel.EgressUnavailable, string(authz.ReasonUnavailable)}
+	case err != nil || p.OrgID != agent.OrgID:
+		return identity.Principal{}, false, &refusal{tunnel.EgressAuthRequired, reasonBadCreds}
+	}
+	return p, true, nil
+}
+
+func (h *Handler) resolveExit(ctx context.Context, agent *store.Agent, ref string) (*store.Agent, *refusal) {
+	if ref == "" {
+		return nil, nil
+	}
+	if h.agents == nil {
+		return nil, &refusal{tunnel.EgressUnavailable, reasonNoExits}
+	}
+	agents, err := h.agents.ListAgents(ctx, agent.OrgID)
+	if err != nil {
+		h.log.Error("egress exit lookup failed", "org_id", agent.OrgID, "err", err)
+		return nil, &refusal{tunnel.EgressUnavailable, string(authz.ReasonUnavailable)}
+	}
+	var match *store.Agent
+	for _, a := range agents {
+		if a.OrgID != agent.OrgID || (a.ID != ref && a.Name != ref) {
+			continue
+		}
+		if match != nil {
+			return nil, &refusal{tunnel.EgressDenied, reasonUnknownExit}
+		}
+		match = a
+	}
+	switch {
+	case match == nil:
+		return nil, &refusal{tunnel.EgressDenied, reasonUnknownExit}
+	case match.ID == agent.ID:
+		return nil, &refusal{tunnel.EgressInvalid, reasonExitSelf}
+	}
+	return match, nil
+}
+
+func (h *Handler) dial(ctx context.Context, agent, exit *store.Agent, dest string) (net.Conn, *refusal) {
+	if exit != nil {
+		return h.dialViaExit(ctx, exit, dest)
+	}
+	upstream, err := h.dialer.Dial(ctx, dest, nil, dialTimeout)
+	if err != nil {
+		h.log.Info("egress dial refused", "agent_id", agent.ID, "destination", dest, "err", err)
+		if errors.Is(err, proxy.ErrBlocked) {
+			return nil, &refusal{tunnel.EgressDenied, reasonBlocked}
+		}
+		return nil, &refusal{tunnel.EgressDialFailed, reasonDial}
+	}
+	return upstream, nil
+}
+
+func (h *Handler) dialViaExit(ctx context.Context, exit *store.Agent, dest string) (net.Conn, *refusal) {
+	conn, ok := h.conns.GetAgent(exit.ID)
+	if !ok {
+		return nil, &refusal{tunnel.EgressUnavailable, reasonExitOffline}
+	}
+	openCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	stream, err := conn.OpenStream(openCtx, "", store.KindTCP, map[string]string{tunnel.MetaEgressExit: dest})
+	if err != nil {
+		h.log.Info("egress exit stream failed", "exit_id", exit.ID, "err", err)
+		return nil, &refusal{tunnel.EgressUnavailable, reasonExitOffline}
+	}
+	_ = stream.SetReadDeadline(time.Now().Add(tunnel.EgressReplyTimeout))
+	reply, err := tunnel.ReadEgressReply(stream)
+	_ = stream.SetReadDeadline(time.Time{})
+	if err != nil {
+		_ = stream.Close()
+		return nil, &refusal{tunnel.EgressDialFailed, reasonDial}
+	}
+	if reply.Status != tunnel.EgressOK {
+		_ = stream.Close()
+		return nil, &refusal{reply.Status, "exit_" + reply.Reason}
+	}
+	return stream, nil
+}
+
+func (h *Handler) decide(ctx context.Context, agent *store.Agent, p identity.Principal, hasPrincipal bool, dest string, exit *store.Agent) (authz.Decision, tunnel.EgressStatus) {
 	if h.deciders == nil || h.dialer == nil {
 		return authz.Decision{Reason: authz.ReasonUnavailable}, tunnel.EgressUnavailable
 	}
 	scope := identity.Scope{OrgID: agent.OrgID, AgentID: agent.ID}
 	principal := authz.EntityRef{Type: authz.EntityAgent, ID: agent.ID}
 	reqCtx := authz.RequestContext{ClientIP: agentClientIP, AuthMethod: authz.AuthMethodAgentToken}
+	if exit != nil {
+		reqCtx.Exit = exit.ID
+	}
 	if hasPrincipal {
 		principal = p.Ref
 		scope.TokenSessionID = p.SessionID
@@ -190,10 +313,10 @@ func (h *Handler) decide(ctx context.Context, agent *store.Agent, p identity.Pri
 	return d, tunnel.EgressOK
 }
 
-func (h *Handler) refuse(stream net.Conn, rec *flowRecord, status tunnel.EgressStatus, reason string) {
-	h.reply(stream, tunnel.EgressReply{Status: status, Reason: reason})
+func (h *Handler) refuse(stream net.Conn, rec *flowRecord, r *refusal) {
+	h.reply(stream, tunnel.EgressReply{Status: r.status, Reason: r.reason})
 	rec.event.Decision = store.AccessDeny
-	rec.event.Reason = reason
+	rec.event.Reason = truncate(r.reason)
 	h.record(rec)
 }
 
