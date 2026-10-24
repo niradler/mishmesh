@@ -495,8 +495,9 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 	}
 
 	zones := &zoneResolver{client: p.client, accountID: p.cfg.AccountID}
-	for _, e := range entries {
-		p.reconcileDNS(ctx, zones, e, plan)
+	lookups := p.lookupDNS(ctx, zones, entries)
+	for i, e := range entries {
+		p.reconcileDNS(ctx, lookups[i], e, plan)
 	}
 	if p.cfg.AccessAppID != "" {
 		if err := p.reconcileAccess(ctx, entries); err != nil {
@@ -603,17 +604,41 @@ func (p *Publisher) pointsAtTunnel(r DNSRecord) bool {
 	return strings.EqualFold(r.Type, "CNAME") && normalizeHost(r.Content) == strings.ToLower(p.tunnelTarget())
 }
 
-func (p *Publisher) reconcileDNS(ctx context.Context, zones *zoneResolver, e *hostEntry, plan ingressPlan) {
-	zone, err := zones.find(ctx, e.Host)
-	if err != nil {
-		e.DNS, e.DNSDetail = DNSError, err.Error()
+const dnsLookupConcurrency = 8
+
+type dnsLookup struct {
+	zone    Zone
+	records []DNSRecord
+	err     error
+}
+
+func (p *Publisher) lookupDNS(ctx context.Context, zones *zoneResolver, entries []*hostEntry) []dnsLookup {
+	lookups := make([]dnsLookup, len(entries))
+	slots := make(chan struct{}, dnsLookupConcurrency)
+	var wg sync.WaitGroup
+	for i, e := range entries {
+		zone, err := zones.find(ctx, e.Host)
+		if err != nil {
+			lookups[i].err = err
+			continue
+		}
+		lookups[i].zone = zone
+		slots <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-slots }()
+			lookups[i].records, lookups[i].err = p.client.ListDNSRecords(ctx, zone.ID, e.Host)
+		})
+	}
+	wg.Wait()
+	return lookups
+}
+
+func (p *Publisher) reconcileDNS(ctx context.Context, lookup dnsLookup, e *hostEntry, plan ingressPlan) {
+	if lookup.err != nil {
+		e.DNS, e.DNSDetail = DNSError, lookup.err.Error()
 		return
 	}
-	recs, err := p.client.ListDNSRecords(ctx, zone.ID, e.Host)
-	if err != nil {
-		e.DNS, e.DNSDetail = DNSError, err.Error()
-		return
-	}
+	zone, recs := lookup.zone, lookup.records
 	var ours []DNSRecord
 	for _, r := range recs {
 		if p.pointsAtTunnel(r) {

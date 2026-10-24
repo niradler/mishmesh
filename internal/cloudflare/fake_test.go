@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const (
@@ -39,6 +41,9 @@ type fakeCF struct {
 	local            *fakeLocal
 	normalizeIngress bool
 	normalizeAccess  bool
+	listDelay        time.Duration
+	listInFlight     atomic.Int32
+	listPeak         atomic.Int32
 }
 
 func newFakeCF(t *testing.T) *fakeCF {
@@ -151,6 +156,11 @@ func (f *fakeCF) handleZones(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeCF) handleListRecords(w http.ResponseWriter, r *http.Request) {
+	inFlight := f.listInFlight.Add(1)
+	defer f.listInFlight.Add(-1)
+	for peak := f.listPeak.Load(); inFlight > peak && !f.listPeak.CompareAndSwap(peak, inFlight); peak = f.listPeak.Load() {
+	}
+	time.Sleep(f.listDelay)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	name := r.URL.Query().Get("name")
