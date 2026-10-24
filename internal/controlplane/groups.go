@@ -9,7 +9,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-var groupNamePattern = regexp.MustCompile(`^[A-Za-z0-9 ._-]{1,64}$`)
+var groupNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]([A-Za-z0-9 ._-]{0,62}[A-Za-z0-9._-])?$`)
 
 type groupMemberDTO struct {
 	Type      string    `json:"type"`

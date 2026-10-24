@@ -64,6 +64,10 @@ func TestGroupsRejectInvalidInput(t *testing.T) {
 	}{
 		{"empty name", http.MethodPost, "/api/v1/groups", `{"name":""}`, http.StatusBadRequest},
 		{"name too long", http.MethodPost, "/api/v1/groups", `{"name":"` + strings.Repeat("a", 65) + `"}`, http.StatusBadRequest},
+		{"only spaces", http.MethodPost, "/api/v1/groups", `{"name":"   "}`, http.StatusBadRequest},
+		{"leading space", http.MethodPost, "/api/v1/groups", `{"name":" ops2"}`, http.StatusBadRequest},
+		{"max length", http.MethodPost, "/api/v1/groups", `{"name":"` + strings.Repeat("b", 64) + `"}`, http.StatusCreated},
+		{"single char", http.MethodPost, "/api/v1/groups", `{"name":"x"}`, http.StatusCreated},
 		{"name bad chars", http.MethodPost, "/api/v1/groups", `{"name":"ops<script>"}`, http.StatusBadRequest},
 		{"duplicate name", http.MethodPost, "/api/v1/groups", `{"name":"ops"}`, http.StatusConflict},
 		{"rename invalid", http.MethodPatch, "/api/v1/groups/" + g.ID, `{"name":"a/b"}`, http.StatusBadRequest},
