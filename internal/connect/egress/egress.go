@@ -156,6 +156,11 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		h.refuse(stream, rec, refused)
 		return
 	}
+	if d, status := h.decide(ctx, agent, p, hasPrincipal, dest, dest, exit); status != tunnel.EgressOK && !d.Scope.ResolvedIP {
+		rec.event.PolicyIDs = policyIDs(d)
+		h.refuse(stream, rec, &refusal{status, string(d.Reason)})
+		return
+	}
 	targets := []string{dest}
 	var exitStream net.Conn
 	if exit != nil {
