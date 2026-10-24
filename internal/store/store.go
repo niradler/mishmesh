@@ -237,6 +237,26 @@ type Membership struct {
 	CreatedAt time.Time
 }
 
+const (
+	GroupMemberUser           = "user"
+	GroupMemberServiceAccount = "service_account"
+)
+
+type Group struct {
+	ID        string
+	OrgID     string
+	Name      string
+	CreatedAt time.Time
+}
+
+type GroupMember struct {
+	OrgID      string
+	GroupID    string
+	MemberType string
+	MemberID   string
+	CreatedAt  time.Time
+}
+
 type Invite struct {
 	ID        string
 	TokenHash string
@@ -372,6 +392,16 @@ type DataStore interface {
 	ListMembershipsByOrg(ctx context.Context, orgID string) ([]*Membership, error)
 	UpdateMembership(ctx context.Context, m *Membership) error
 	DeleteMembership(ctx context.Context, orgID, userID string) error
+
+	CreateGroup(ctx context.Context, g *Group) error
+	GetGroup(ctx context.Context, orgID, id string) (*Group, error)
+	ListGroups(ctx context.Context, orgID string) ([]*Group, error)
+	RenameGroup(ctx context.Context, orgID, id, name string) error
+	DeleteGroup(ctx context.Context, orgID, id string) error
+	AddGroupMember(ctx context.Context, m *GroupMember) error
+	RemoveGroupMember(ctx context.Context, orgID, groupID, memberType, memberID string) error
+	ListGroupMembers(ctx context.Context, orgID, groupID string) ([]*GroupMember, error)
+	ListMemberGroups(ctx context.Context, orgID, memberType, memberID string) ([]*Group, error)
 
 	CreateInvite(ctx context.Context, i *Invite) error
 	GetInviteByTokenHash(ctx context.Context, tokenHash string) (*Invite, error)

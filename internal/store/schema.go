@@ -23,6 +23,8 @@ func ValidateSchema(tables map[string]map[string]bool) error {
 		"audit":               {"id", "org_id", "actor", "action", "target", "detail", "created_at"},
 		"domains":             {"id", "org_id", "name", "token", "verified_at", "created_at"},
 		"org_policies":        {"org_id", "cedar_src", "updated_at"},
+		"groups":              {"id", "org_id", "name", "created_at"},
+		"group_members":       {"org_id", "group_id", "member_type", "member_id", "created_at"},
 		"service_requires":    {"org_id", "service_id", "requires_id"},
 		"service_connections": {"org_id", "service_id", "connection_id"},
 		"endpoint_aliases":    {"hostname", "org_id", "endpoint_id", "connection_id"},

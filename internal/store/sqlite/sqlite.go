@@ -175,7 +175,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at INTEGER NOT NULL
 );
 `
-	if _, err := tx.ExecContext(ctx, schema+networkSchema); err != nil {
+	if _, err := tx.ExecContext(ctx, schema+networkSchema+groupsSchema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	return tx.Commit()
@@ -594,8 +594,18 @@ func (s *Store) UpdateMembership(ctx context.Context, m *store.Membership) error
 }
 
 func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = ? AND user_id = ?`, orgID, userID)
-	return wrap("delete membership", err)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("delete membership", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM group_members WHERE org_id = ? AND member_type = ? AND member_id = ?`, orgID, store.GroupMemberUser, userID); err != nil {
+		return wrap("delete membership groups", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = ? AND user_id = ?`, orgID, userID); err != nil {
+		return wrap("delete membership", err)
+	}
+	return wrap("delete membership", tx.Commit())
 }
 
 func scanMembership(scan func(...any) error) (*store.Membership, error) {
