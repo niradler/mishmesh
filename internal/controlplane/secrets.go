@@ -74,7 +74,12 @@ func (a *API) deleteSecretHandler(w http.ResponseWriter, r *http.Request) {
 	if a.vault != nil {
 		remove = a.vault.Delete
 	}
-	if a.handleErr(w, remove(r.Context(), a.orgScope(r), name)) {
+	err := remove(r.Context(), a.orgScope(r), name)
+	if errors.Is(err, orgsecret.ErrInvalidName) {
+		writeError(w, http.StatusBadRequest, "secret name must be 1-63 lowercase letters, digits, '_' or '-'")
+		return
+	}
+	if a.handleErr(w, err) {
 		return
 	}
 	a.audit(r, "secret.delete", name, "")

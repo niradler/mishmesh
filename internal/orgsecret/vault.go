@@ -41,7 +41,7 @@ type Vault struct {
 
 	mu     sync.Mutex
 	cache  map[secretKey]cachedSecret
-	gens   map[secretKey]uint64
+	gen    uint64
 	bus    store.EventBus
 	busLog *slog.Logger
 }
@@ -54,7 +54,6 @@ func New(data store.DataStore, box *secrets.Box) *Vault {
 		ttl:    DefaultCacheTTL,
 		origin: store.NewID("node"),
 		cache:  map[secretKey]cachedSecret{},
-		gens:   map[secretKey]uint64{},
 	}
 }
 
@@ -90,6 +89,9 @@ func (v *Vault) Delete(ctx context.Context, orgID, name string) error {
 	if v == nil {
 		return ErrNoBox
 	}
+	if !store.ValidCredentialName(name) {
+		return ErrInvalidName
+	}
 	v.invalidate(secretKey{orgID, name})
 	err := v.data.DeleteOrgSecret(ctx, orgID, name)
 	v.invalidateEverywhere(secretKey{orgID, name})
@@ -104,7 +106,7 @@ func (v *Vault) Open(ctx context.Context, orgID, name string) ([]byte, error) {
 	if value, ok := v.cached(key); ok {
 		return value, nil
 	}
-	gen := v.generation(key)
+	gen := v.generation()
 	sec, err := v.data.GetOrgSecret(ctx, orgID, name)
 	if err != nil {
 		return nil, err
@@ -131,10 +133,10 @@ func (v *Vault) cached(key secretKey) ([]byte, bool) {
 	return append([]byte(nil), entry.value...), true
 }
 
-func (v *Vault) generation(key secretKey) uint64 {
+func (v *Vault) generation() uint64 {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return v.gens[key]
+	return v.gen
 }
 
 func (v *Vault) store(key secretKey, gen uint64, plain []byte) {
@@ -143,7 +145,7 @@ func (v *Vault) store(key secretKey, gen uint64, plain []byte) {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.gens[key] != gen {
+	if v.gen != gen {
 		return
 	}
 	now := v.now()
@@ -163,6 +165,6 @@ func (v *Vault) store(key secretKey, gen uint64, plain []byte) {
 func (v *Vault) invalidate(key secretKey) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.gens[key]++
+	v.gen++
 	delete(v.cache, key)
 }

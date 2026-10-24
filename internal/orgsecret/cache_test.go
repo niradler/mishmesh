@@ -206,3 +206,14 @@ func TestRemoteInvalidationDropsCachedValue(t *testing.T) {
 		t.Fatalf("node B open after delete on node A err = %v", err)
 	}
 }
+
+func TestDeleteRejectsInvalidNames(t *testing.T) {
+	v, _, _ := cachedVault(t)
+	before := v.generation()
+	if err := v.Delete(context.Background(), "org_a", "Not A Name"); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("err = %v, want ErrInvalidName", err)
+	}
+	if v.generation() != before {
+		t.Fatal("an invalid delete must not touch cache state")
+	}
+}

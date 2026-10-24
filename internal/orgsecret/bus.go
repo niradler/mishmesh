@@ -62,7 +62,7 @@ func (v *Vault) invalidateEverywhere(key secretKey) {
 
 func (v *Vault) handleRemoteInvalidation(payload []byte) {
 	var msg invalidation
-	if json.Unmarshal(payload, &msg) != nil || msg.Origin == "" || msg.Origin == v.origin || msg.OrgID == "" || msg.Name == "" {
+	if json.Unmarshal(payload, &msg) != nil || msg.Origin == "" || msg.Origin == v.origin || msg.OrgID == "" || !store.ValidCredentialName(msg.Name) {
 		return
 	}
 	v.invalidate(secretKey{msg.OrgID, msg.Name})
