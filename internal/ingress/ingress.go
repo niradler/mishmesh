@@ -44,6 +44,7 @@ type Options struct {
 	Deciders                identity.Deciders
 	APIPublicURL            string
 	AccessLog               AccessRecorder
+	Secrets                 SecretOpener
 }
 
 type Ingress struct {
@@ -63,6 +64,7 @@ type Ingress struct {
 	apiURL      string
 	secure      bool
 	access      AccessRecorder
+	secrets     SecretOpener
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
@@ -89,6 +91,7 @@ func New(opts Options) *Ingress {
 		apiURL:      strings.TrimRight(opts.APIPublicURL, "/"),
 		secure:      opts.CookieSecure,
 		access:      opts.AccessLog,
+		secrets:     opts.Secrets,
 
 		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
@@ -316,6 +319,7 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 	setForwardedHeaders(r, outReq, i.trusted)
 	stripGateCredentials(outReq.Header, ep)
 	applyRequestPolicy(outReq, ep)
+	applyUpstreamCredential(outReq.Header, r, ep)
 	if err := outReq.Write(stream); err != nil {
 		http.Error(w, upstreamUnreachableMessage(""), http.StatusBadGateway)
 		i.recordCode(http.StatusBadGateway)

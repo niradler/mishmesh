@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/orgsecret"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
@@ -87,6 +88,7 @@ func (f *tenantFixture) fill(pattern string) (string, string) {
 		"/service-accounts/{id}", "/service-accounts/"+f.sa,
 		"{type}", "user",
 		"{member_id}", f.userA,
+		"{name}", "shared-key",
 	)
 	return method, r.Replace(path)
 }
@@ -118,6 +120,8 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	f.api.SetServices(newFakeServices())
 	f.api.SetConnections(newFakeConnectionControl(), testConnectionRegistry(t), testSecretBox(t))
 	f.api.SetHostCommands(true)
+	f.api.SetSecretVault(orgsecret.New(f.api.data, testSecretBox(t)))
+	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/secrets/shared-key", `{"value":"alice-secret-value"}`, http.StatusOK, nil)
 	var svc serviceDTO
 	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/services", `{"name":"alice-svc","driver":"docker","config":{"containers":["alice-c"]}}`, http.StatusCreated, &svc)
 	f.service = svc.ID
@@ -210,10 +214,13 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"POST /api/v1/connections/{id}/sync":                    {"", notFound},
 		"POST /api/v1/connections/detect":                       {`{"type":"third","input":{}}`, http.StatusOK},
 		"GET /api/v1/topology":                                  {"", http.StatusOK},
+		"GET /api/v1/secrets":                                   {"", http.StatusOK},
+		"PUT /api/v1/secrets/{name}":                            {`{"value":"bob-value"}`, http.StatusOK},
+		"DELETE /api/v1/secrets/{name}":                         {"", http.StatusNoContent},
 		"PUT /api/v1/policy":                                    {`{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"],"member":["agent:read"]}}`, http.StatusOK},
 	}
 
-	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, f.group, "alice-credential", f.sa, "alice-robot", "/alice-access-path", "acc_alice"}
+	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, f.group, "alice-credential", f.sa, "alice-robot", "/alice-access-path", "acc_alice", "alice-secret-value"}
 
 	for _, rt := range f.api.routes() {
 		pr, ok := probes[rt.pattern]
@@ -268,6 +275,15 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/invites", "", http.StatusOK, &invites)
 	if len(invites) != 1 || invites[0].ID != f.inviteA {
 		t.Fatalf("alice invites tampered: %+v", invites)
+	}
+	var secretList []orgSecretDTO
+	status, body := f.do(t, f.alice, http.MethodGet, "/api/v1/secrets", "")
+	if status != http.StatusOK || strings.Contains(body, "alice-secret-value") {
+		t.Fatalf("alice secrets list: %d %s", status, body)
+	}
+	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/secrets", "", http.StatusOK, &secretList)
+	if len(secretList) != 1 || secretList[0].Name != "shared-key" || secretList[0].Version != 1 || !secretList[0].HasValue {
+		t.Fatalf("alice secrets tampered: %+v", secretList)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/identity"
+	"github.com/mishmesh/mishmesh/internal/orgsecret"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/services"
@@ -52,6 +53,7 @@ type API struct {
 	connections        ConnectionControl
 	connectionRegistry *connections.Registry
 	secretBox          *secrets.Box
+	vault              *orgsecret.Vault
 	hostCommands       bool
 	identity           *identity.Service
 	apiPublicURL       string
@@ -282,6 +284,9 @@ func (a *API) routes() []route {
 
 		{"GET /api/v1/policy", a.require(authz.ActionPolicyRead, a.getPolicyHandler)},
 		{"PUT /api/v1/policy", a.require(authz.ActionPolicyWrite, a.putPolicyHandler)},
+		{"GET /api/v1/secrets", a.require(authz.ActionPolicyRead, a.listSecretsHandler)},
+		{"PUT /api/v1/secrets/{name}", a.require(authz.ActionPolicyWrite, a.putSecretHandler)},
+		{"DELETE /api/v1/secrets/{name}", a.require(authz.ActionPolicyWrite, a.deleteSecretHandler)},
 	}
 	if a.domainVerification {
 		routes = append(routes,

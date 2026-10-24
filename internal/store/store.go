@@ -441,6 +441,11 @@ type DataStore interface {
 	GetOrgPolicy(ctx context.Context, orgID string) (*OrgPolicy, error)
 	SetOrgPolicy(ctx context.Context, p *OrgPolicy) error
 
+	PutOrgSecret(ctx context.Context, s *OrgSecret) error
+	GetOrgSecret(ctx context.Context, orgID, name string) (*OrgSecret, error)
+	ListOrgSecrets(ctx context.Context, orgID string) ([]*OrgSecret, error)
+	DeleteOrgSecret(ctx context.Context, orgID, name string) error
+
 	CreateService(ctx context.Context, svc *Service) error
 	GetService(ctx context.Context, id string) (*Service, error)
 	ListServices(ctx context.Context, orgID string) ([]*Service, error)

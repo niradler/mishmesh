@@ -27,6 +27,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/gateway"
 	"github.com/mishmesh/mishmesh/internal/ingress"
 	"github.com/mishmesh/mishmesh/internal/metrics"
+	"github.com/mishmesh/mishmesh/internal/orgsecret"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
@@ -189,7 +190,9 @@ func serve() error {
 	if udpIngress != nil {
 		gwOpts.UDPPorts = udpIngress
 	}
+	vault := orgsecret.New(data, box)
 	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
+	cp.SetSecretVault(vault)
 	idSvc, err := newIdentityService(cfg, conns)
 	if err != nil {
 		return err
@@ -288,6 +291,7 @@ func serve() error {
 			Deciders:                cp,
 			APIPublicURL:            cfg.APIPublicURL,
 			AccessLog:               accessLog,
+			Secrets:                 vault,
 		})
 		cp.SetIngressInvalidator(ing.InvalidateCaches)
 		network.invalidateIngress = ing.InvalidateCaches

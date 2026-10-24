@@ -165,6 +165,7 @@ func (i *Ingress) rewriteRequest(pr *httputil.ProxyRequest) {
 	setForwardedHeaders(pr.In, out, u.trusted)
 	stripGateCredentials(out.Header, u.ep)
 	applyRequestPolicy(out, u.ep)
+	applyUpstreamCredential(out.Header, pr.In, u.ep)
 }
 
 func setForwardedHeaders(in, out *http.Request, trusted []*net.IPNet) {

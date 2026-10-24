@@ -23,8 +23,9 @@ const (
 type identityKey struct{}
 
 type requestIdentity struct {
-	principal *identity.Principal
-	decision  authz.Decision
+	principal  *identity.Principal
+	decision   authz.Decision
+	credential *upstreamCredential
 }
 
 func identityFrom(r *http.Request) *requestIdentity {
@@ -132,7 +133,15 @@ func (i *Ingress) applyIdentityGate(w http.ResponseWriter, r *http.Request, ep *
 		}
 		return r, false
 	}
-	ctx := context.WithValue(r.Context(), identityKey{}, &requestIdentity{principal: principal, decision: decision})
+	cred, err := i.resolveCredential(r.Context(), ep, decision)
+	if err != nil {
+		accessFrom(r).setDecision(principal, authz.Decision{Reason: reasonCredentialUnavailable, Policies: decision.Policies})
+		i.log.Error("credential injection failed, refusing request", "endpoint_id", ep.ID, "org_id", ep.OrgID, "err", err)
+		writeCredentialFailure(w)
+		i.recordCode(http.StatusBadGateway)
+		return r, false
+	}
+	ctx := context.WithValue(r.Context(), identityKey{}, &requestIdentity{principal: principal, decision: decision, credential: cred})
 	return r.WithContext(ctx), true
 }
 
@@ -159,6 +168,7 @@ func (i *Ingress) decideEndpoint(r *http.Request, ep *store.Endpoint, outPath st
 	}
 	decider := i.deciders.Decider(scope)
 	var decision authz.Decision
+	var policies []authz.DeterminingPolicy
 	for _, action := range []authz.Action{authz.ActionEndpointAccess, authz.ActionHTTPRequest} {
 		d, err := decider.Decide(r.Context(), authz.DecisionRequest{
 			Principal: ref,
@@ -169,8 +179,10 @@ func (i *Ingress) decideEndpoint(r *http.Request, ep *store.Endpoint, outPath st
 		if err != nil || !d.Allowed {
 			return d, err
 		}
+		policies = append(policies, d.Policies...)
 		decision = d
 	}
+	decision.Policies = mergePolicies(policies)
 	return decision, nil
 }
 
