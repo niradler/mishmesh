@@ -88,3 +88,25 @@ func TestOpenExitReadsResolvedTargets(t *testing.T) {
 		})
 	}
 }
+
+type recordedEvents struct{ events []store.AccessEvent }
+
+func (r *recordedEvents) Record(e *store.AccessEvent) { r.events = append(r.events, *e) }
+
+func TestEgressRefusesNonTCPStreams(t *testing.T) {
+	for _, kind := range []string{store.KindUDP, "", "quic"} {
+		access := &recordedEvents{}
+		h := New(Options{Conns: memory.NewConnStore(), Access: access, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		agentSide, serverSide := net.Pipe()
+		go h.HandleEgress(context.Background(), &store.Agent{ID: "ag_1", OrgID: "org_1"}, serverSide, tunnel.StreamInit{Kind: kind, Meta: map[string]string{tunnel.MetaEgress: "example.com:443"}})
+		_ = agentSide.SetDeadline(time.Now().Add(5 * time.Second))
+		reply, err := tunnel.ReadEgressReply(agentSide)
+		if err != nil || reply.Status != tunnel.EgressInvalid || reply.Reason != reasonNotTCP {
+			t.Fatalf("kind %q: reply %+v err %v", kind, reply, err)
+		}
+		_, _ = io.ReadAll(agentSide)
+		if len(access.events) != 1 || access.events[0].Reason != reasonNotTCP || access.events[0].Decision != store.AccessDeny {
+			t.Fatalf("kind %q: access events %+v", kind, access.events)
+		}
+	}
+}

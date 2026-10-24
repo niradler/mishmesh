@@ -27,6 +27,8 @@ const (
 	exitDialTimeout        = 10 * time.Second
 	maxProxyHeaderBytes    = 32 << 10
 	proxyExitUserPrefix    = "exit="
+	connectUDPProtocol     = "connect-udp"
+	masqueUDPPathPrefix    = "/.well-known/masque/udp/"
 )
 
 type EgressSpec struct {
@@ -127,11 +129,27 @@ func (a *Agent) serveEgressClient(client net.Conn) {
 		writeEgressFailure(client, errProxyAuthRequired)
 		return
 	}
+	if isConnectUDP(req) {
+		writeProxyError(client, http.StatusForbidden, "egress refused: "+errUDPEgress.Error())
+		a.log.Info("egress refused", "proto", "connect-udp", "err", errUDPEgress)
+		return
+	}
 	if req.Method == http.MethodConnect {
 		a.serveConnect(client, br, req, creds)
 		return
 	}
 	a.serveAbsoluteForm(client, req, creds)
+}
+
+func isConnectUDP(req *http.Request) bool {
+	for _, upgrade := range req.Header.Values("Upgrade") {
+		for proto := range strings.SplitSeq(upgrade, ",") {
+			if strings.EqualFold(strings.TrimSpace(proto), connectUDPProtocol) {
+				return true
+			}
+		}
+	}
+	return req.URL != nil && strings.HasPrefix(req.URL.Path, masqueUDPPathPrefix)
 }
 
 func proxyCredentials(header string) (egressCreds, bool) {

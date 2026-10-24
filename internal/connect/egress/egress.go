@@ -28,6 +28,8 @@ const (
 	reasonDial         = "dial_failed"
 	reasonResolve      = "resolve_failed"
 	reasonSNI          = "sni_mismatch"
+	reasonECH          = "ech_outer_sni_mismatch"
+	reasonNotTCP       = "udp_egress_unsupported"
 	reasonBadCreds     = "invalid_proxy_credentials"
 	reasonNoAuth       = "proxy_auth_unavailable"
 	reasonUnknownExit  = "unknown_exit"
@@ -122,6 +124,11 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		ClientIP:      egressClientIP(init.Meta[tunnel.MetaEgressClient]),
 		Protocol:      "tcp",
 	}}
+	if init.Kind != store.KindTCP {
+		rec.event.Protocol = truncate(init.Kind)
+		h.refuse(stream, rec, &refusal{tunnel.EgressInvalid, reasonNotTCP})
+		return
+	}
 	dest, err := authz.NormalizeDestination(init.Meta[tunnel.MetaEgress])
 	if err != nil {
 		h.refuse(stream, rec, &refusal{tunnel.EgressInvalid, string(authz.ReasonInvalidRequest)})
@@ -193,10 +200,10 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 	}
 	rec.event.Decision = store.AccessAllow
 	rec.event.Reason = string(authz.ReasonAllow)
-	if client.mismatch() {
+	if reason := client.mismatch(); reason != "" {
 		rec.event.Decision = store.AccessDeny
-		rec.event.Reason = reasonSNI
-		h.log.Warn("egress tls sni does not match destination", "agent_id", agent.ID, "destination", dest)
+		rec.event.Reason = reason
+		h.log.Warn("egress tls server name refused", "agent_id", agent.ID, "destination", dest, "reason", reason)
 	}
 	rec.event.BytesIn = up
 	rec.event.BytesOut = down

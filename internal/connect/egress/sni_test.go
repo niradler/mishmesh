@@ -52,13 +52,15 @@ func TestSNIConn(t *testing.T) {
 		host     string
 		payload  []byte
 		wantErr  error
-		mismatch bool
+		mismatch string
 	}{
 		{name: "matching sni replays hello", host: "api.example.com", payload: hello},
 		{name: "matching sni ignores case and trailing dot", host: "api.example.com", payload: clientHelloBytes(t, "API.Example.com.")},
 		{name: "no sni to an ip passes", host: "93.184.216.34", payload: clientHelloBytes(t, "")},
-		{name: "no sni to a hostname is a mismatch", host: "cdn.example.com", payload: clientHelloBytes(t, ""), wantErr: ErrSNIMismatch, mismatch: true},
-		{name: "mismatched sni", host: "93.184.216.34", payload: hello, wantErr: ErrSNIMismatch, mismatch: true},
+		{name: "no sni to a hostname is a mismatch", host: "cdn.example.com", payload: clientHelloBytes(t, ""), wantErr: ErrSNIMismatch, mismatch: reasonSNI},
+		{name: "mismatched sni", host: "93.184.216.34", payload: hello, wantErr: ErrSNIMismatch, mismatch: reasonSNI},
+		{name: "grease ech with a matching outer name passes", host: "api.example.com", payload: withExtension(t, hello, extensionECH, echOuterPayload)},
+		{name: "ech outer name differing from the host", host: "secret.example.org", payload: withExtension(t, hello, extensionECH, echOuterPayload), wantErr: ErrECHOuterMismatch, mismatch: reasonECH},
 		{name: "plain bytes pass through", host: "example.com", payload: []byte("GET / HTTP/1.1\r\n\r\n")},
 		{name: "garbage after handshake byte", host: "example.com", payload: []byte{0x16, 0x03, 0x01, 0x00, 0x02, 0xff, 0xff}, wantErr: ErrMalformedHello},
 	}
@@ -78,8 +80,41 @@ func TestSNIConn(t *testing.T) {
 				}
 			}
 			if c.mismatch() != tt.mismatch {
-				t.Fatalf("mismatch = %v, want %v", c.mismatch(), tt.mismatch)
+				t.Fatalf("mismatch = %q, want %q", c.mismatch(), tt.mismatch)
 			}
 		})
 	}
+}
+
+var echOuterPayload = []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x2a, 0x00, 0x04, 1, 2, 3, 4, 0x00, 0x04, 5, 6, 7, 8}
+
+func withExtension(t *testing.T, record []byte, extType uint16, data []byte) []byte {
+	t.Helper()
+	out := bytes.Clone(record)
+	pos := 5 + 4 + 2 + 32
+	pos += 1 + int(out[pos])
+	pos += 2 + (int(out[pos])<<8 | int(out[pos+1]))
+	pos += 1 + int(out[pos])
+	extLen := int(out[pos])<<8 | int(out[pos+1])
+	if pos+2+extLen != len(out) {
+		t.Fatalf("unexpected client hello layout")
+	}
+	ext := []byte{byte(extType >> 8), byte(extType), byte(len(data) >> 8), byte(len(data))}
+	ext = append(ext, data...)
+	out = append(out, ext...)
+	grow := func(at, width, by int) {
+		n := 0
+		for i := range width {
+			n = n<<8 | int(out[at+i])
+		}
+		n += by
+		for i := width - 1; i >= 0; i-- {
+			out[at+i] = byte(n)
+			n >>= 8
+		}
+	}
+	grow(pos, 2, len(ext))
+	grow(6, 3, len(ext))
+	grow(3, 2, len(ext))
+	return out
 }

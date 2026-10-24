@@ -19,6 +19,7 @@ const (
 	socksMethodUserPass = 0x02
 	socksNoMethods      = 0xff
 	socksCmdConnect     = 0x01
+	socksCmdUDPAssoc    = 0x03
 	socksAddrIPv4       = 0x01
 	socksAddrDomain     = 0x03
 	socksAddrIPv6       = 0x04
@@ -31,7 +32,10 @@ const (
 	socksAddrUnsupported    = 0x08
 )
 
-var errSocksProtocol = errors.New("socks5: protocol error")
+var (
+	errSocksProtocol = errors.New("socks5: protocol error")
+	errUDPEgress     = errors.New("udp egress (QUIC, HTTP/3, DNS over UDP) is not supported; only TCP egress is proxied")
+)
 
 func (a *Agent) serveSocksClient(client net.Conn) {
 	defer client.Close()
@@ -42,6 +46,9 @@ func (a *Agent) serveSocksClient(client net.Conn) {
 		return
 	}
 	dest, code, err := readSocksRequest(br)
+	if errors.Is(err, errUDPEgress) {
+		a.log.Info("egress refused", "proto", "socks5", "err", err)
+	}
 	if err != nil {
 		if code != 0 {
 			writeSocksReply(client, code)
@@ -135,7 +142,11 @@ func readSocksRequest(br *bufio.Reader) (string, byte, error) {
 	if _, err := io.ReadFull(br, head); err != nil || head[0] != socksVersion {
 		return "", 0, errSocksProtocol
 	}
-	if head[1] != socksCmdConnect {
+	switch head[1] {
+	case socksCmdConnect:
+	case socksCmdUDPAssoc:
+		return "", socksNotAllowed, errUDPEgress
+	default:
 		return "", socksCommandUnsupported, errSocksProtocol
 	}
 	var host string

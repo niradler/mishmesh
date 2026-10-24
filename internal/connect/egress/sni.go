@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -15,22 +16,24 @@ import (
 
 const (
 	tlsHandshakeRecord = 0x16
+	extensionECH       = 0xfe0d
 	clientHelloTimeout = 10 * time.Second
 	maxClientHelloSize = 64 << 10
 )
 
 var (
 	ErrSNIMismatch        = errors.New("egress: tls server name does not match the destination host")
+	ErrECHOuterMismatch   = errors.New("egress: tls encrypted client hello hides the server name and its outer name does not match the destination host")
 	ErrMalformedHello     = errors.New("egress: malformed tls client hello")
 	errClientHelloInspect = errors.New("egress: client hello inspected")
 )
 
 type sniConn struct {
 	net.Conn
-	host       string
-	inspected  bool
-	pending    []byte
-	mismatched atomic.Bool
+	host      string
+	inspected bool
+	pending   []byte
+	refusal   atomic.Pointer[string]
 }
 
 func newSNIConn(c net.Conn, host string) *sniConn {
@@ -42,8 +45,11 @@ func (c *sniConn) Read(p []byte) (int, error) {
 		c.inspected = true
 		buf, err := c.inspect()
 		if err != nil {
-			if errors.Is(err, ErrSNIMismatch) {
-				c.mismatched.Store(true)
+			switch {
+			case errors.Is(err, ErrECHOuterMismatch):
+				c.refuse(reasonECH)
+			case errors.Is(err, ErrSNIMismatch):
+				c.refuse(reasonSNI)
 			}
 			return 0, err
 		}
@@ -61,8 +67,15 @@ func (c *sniConn) CloseWrite() error {
 	return tunnel.CloseWrite(c.Conn)
 }
 
-func (c *sniConn) mismatch() bool {
-	return c.mismatched.Load()
+func (c *sniConn) refuse(reason string) {
+	c.refusal.Store(&reason)
+}
+
+func (c *sniConn) mismatch() string {
+	if reason := c.refusal.Load(); reason != nil {
+		return *reason
+	}
+	return ""
 }
 
 func (c *sniConn) inspect() ([]byte, error) {
@@ -78,11 +91,14 @@ func (c *sniConn) inspect() ([]byte, error) {
 	var seen bytes.Buffer
 	seen.Write(first)
 	src := io.TeeReader(io.LimitReader(c.Conn, maxClientHelloSize), &seen)
-	serverName, ok := clientHelloServerName(io.MultiReader(bytes.NewReader(first), src))
+	hello, ok := readClientHello(io.MultiReader(bytes.NewReader(first), src))
 	if !ok {
 		return nil, ErrMalformedHello
 	}
-	if serverName == "" && net.ParseIP(c.host) == nil || serverName != "" && !sameHost(serverName, c.host) {
+	if hello.serverName == "" && net.ParseIP(c.host) == nil || hello.serverName != "" && !sameHost(hello.serverName, c.host) {
+		if hello.ech {
+			return nil, ErrECHOuterMismatch
+		}
 		return nil, ErrSNIMismatch
 	}
 	return seen.Bytes(), nil
@@ -92,18 +108,23 @@ func sameHost(serverName, host string) bool {
 	return strings.TrimSuffix(strings.ToLower(serverName), ".") == host
 }
 
-func clientHelloServerName(r io.Reader) (string, bool) {
-	var serverName string
+type clientHello struct {
+	serverName string
+	ech        bool
+}
+
+func readClientHello(r io.Reader) (clientHello, bool) {
+	var hello clientHello
 	var seen bool
 	cfg := &tls.Config{
-		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-			serverName = hello.ServerName
+		GetConfigForClient: func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+			hello = clientHello{serverName: info.ServerName, ech: slices.Contains(info.Extensions, extensionECH)}
 			seen = true
 			return nil, errClientHelloInspect
 		},
 	}
 	_ = tls.Server(readOnlyConn{r: r}, cfg).Handshake()
-	return serverName, seen
+	return hello, seen
 }
 
 type readOnlyConn struct {

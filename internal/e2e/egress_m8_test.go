@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -191,6 +192,10 @@ func socksConnect(t *testing.T, addr, target, user, pass string) (net.Conn, *buf
 }
 
 func socksDial(addr, target, user, pass string) (net.Conn, *bufio.Reader, byte, error) {
+	return socksDialCommand(addr, target, user, pass, 0x01)
+}
+
+func socksDialCommand(addr, target, user, pass string, command byte) (net.Conn, *bufio.Reader, byte, error) {
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		return nil, nil, 0, err
@@ -227,7 +232,7 @@ func socksDial(addr, target, user, pass string) (net.Conn, *bufio.Reader, byte, 
 	}
 	host, portStr, _ := net.SplitHostPort(target)
 	port, _ := strconv.Atoi(portStr)
-	req := append([]byte{0x05, 0x01, 0x00, 0x03, byte(len(host))}, host...)
+	req := append([]byte{0x05, command, 0x00, 0x03, byte(len(host))}, host...)
 	req = append(req, byte(port>>8), byte(port))
 	if _, err := c.Write(req); err != nil {
 		return c, nil, 0, err
@@ -344,5 +349,51 @@ func TestEgressViaExitRefusesExitBlockedAnswer(t *testing.T) {
 	ev := h.access.waitFor(t, func(e store.AccessEvent) bool { return e.Destination == echo })
 	if ev.Decision != store.AccessDeny || ev.Reason != "exit_blocked_destination" {
 		t.Fatalf("access event = %+v", ev)
+	}
+}
+
+func TestEgressRefusesUDPWithAClearError(t *testing.T) {
+	h := newEgressHarness(t, true)
+	echo := tcpEchoServer(t)
+	orgID := h.orgWithPolicy(`permit (principal, action == Action::"egress:connect", resource);`)
+	socks := h.runNamedAgent(orgID, "socks", agent.EgressSpec{SocksListen: freeAddr(t, "tcp")}, nil)
+	listen := h.runNamedAgent(orgID, "http", agent.EgressSpec{Listen: freeAddr(t, "tcp")}, nil)
+	if _, _, code := socksConnect(t, socks, echo, "", ""); code != 0x00 {
+		t.Fatalf("socks connect reply = %#x, want success", code)
+	}
+
+	t.Run("socks udp associate", func(t *testing.T) {
+		c, _, code, err := socksDialCommand(socks, "0.0.0.0:0", "", "", 0x03)
+		if c != nil {
+			defer c.Close()
+		}
+		if err != nil || code != 0x02 {
+			t.Fatalf("udp associate reply = %#x, err %v, want 0x02 not allowed", code, err)
+		}
+	})
+
+	for _, tc := range []struct{ name, request string }{
+		{"connect-udp upgrade", "GET /.well-known/masque/udp/1.1.1.1/443/ HTTP/1.1\r\nHost: proxy\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\n\r\n"},
+		{"masque path in absolute form", "GET http://proxy/.well-known/masque/udp/1.1.1.1/443/ HTTP/1.1\r\nHost: proxy\r\n\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := net.Dial("tcp", listen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+			if _, err := io.WriteString(c, tc.request); err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "udp egress") {
+				t.Fatalf("status %d body %q, want 403 naming udp egress", resp.StatusCode, body)
+			}
+		})
 	}
 }
