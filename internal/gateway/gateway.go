@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/token"
@@ -407,6 +408,11 @@ func (g *Gateway) acceptControl(ac *agentConn) (*tunnel.Control, error) {
 }
 
 func (g *Gateway) answerDecision(ctx context.Context, agent *store.Agent, ctrl *tunnel.Control, q tunnel.DecisionQuery, slots chan struct{}) {
+	if raw, err := json.Marshal(q); err != nil || len(raw) > authz.MaxDecisionRequestBytes {
+		g.log.Warn("refusing oversize decision request", "agent_id", agent.ID, "bytes", len(raw))
+		_ = ctrl.Send(denyAnswer(q.ID, string(authz.ReasonInvalidRequest)))
+		return
+	}
 	decide := g.decisionFor(q.Action)
 	if decide == nil {
 		_ = ctrl.Send(denyAnswer(q.ID, "unsupported"))

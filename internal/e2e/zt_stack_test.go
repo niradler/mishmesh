@@ -86,6 +86,7 @@ type ztStack struct {
 	identity *identity.Service
 	connect  *ztConnect
 	deciders *ztDeciders
+	egressCA *egressca.Authority
 	api      *httptest.Server
 	ingress  *httptest.Server
 	wsURL    string
@@ -187,7 +188,7 @@ func newZTStackWith(t *testing.T, opts ztOptions) *ztStack {
 
 	return &ztStack{
 		t: t, ctx: ctx, log: log, data: data, conns: conns, identity: idSvc,
-		connect: connect, deciders: deciders, api: api, ingress: ingSrv,
+		connect: connect, deciders: deciders, egressCA: ca, api: api, ingress: ingSrv,
 		wsURL: "ws" + strings.TrimPrefix(api.URL, "http"),
 	}
 }

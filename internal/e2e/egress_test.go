@@ -66,6 +66,7 @@ type egressHarness struct {
 	ctx     context.Context
 	log     *slog.Logger
 	data    store.DataStore
+	conns   store.ConnectionStore
 	access  *accessRecorder
 	ids     *identity.Service
 	gateway string
@@ -107,7 +108,7 @@ func newEgressHarnessWithGuard(t *testing.T, guard *proxy.Guard) *egressHarness 
 	mux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &egressHarness{t: t, ctx: ctx, log: log, data: data, access: access, ids: ids, gateway: "ws" + strings.TrimPrefix(srv.URL, "http")}
+	return &egressHarness{t: t, ctx: ctx, log: log, data: data, conns: conns, access: access, ids: ids, gateway: "ws" + strings.TrimPrefix(srv.URL, "http")}
 }
 
 func (h *egressHarness) orgWithPolicy(cedarSrc string) string {
@@ -153,10 +154,23 @@ func (h *egressHarness) runNamedAgent(orgID, name string, spec agent.EgressSpec,
 		cancel()
 		<-done
 	})
+	h.waitAgentLive(ag.ID)
 	if spec.SocksListen != "" {
 		return spec.SocksListen
 	}
 	return spec.Listen
+}
+
+func (h *egressHarness) waitAgentLive(agentID string) {
+	h.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := h.conns.GetAgent(agentID); ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.t.Fatalf("agent %s never connected", agentID)
 }
 
 func egressPolicyFor(addr string) string {
