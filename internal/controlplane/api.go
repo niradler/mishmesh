@@ -304,6 +304,10 @@ func (a *API) routes() []route {
 		{"GET /api/v1/secrets", a.require(authz.ActionPolicyRead, a.listSecretsHandler)},
 		{"PUT /api/v1/secrets/{name}", a.require(authz.ActionPolicyWrite, a.putSecretHandler)},
 		{"DELETE /api/v1/secrets/{name}", a.require(authz.ActionPolicyWrite, a.deleteSecretHandler)},
+		{"GET /api/v1/egress/credentials", a.require(authz.ActionPolicyRead, a.listEgressCredentialsHandler)},
+		{"GET /api/v1/egress/credentials/{name}", a.require(authz.ActionPolicyRead, a.getEgressCredentialHandler)},
+		{"PUT /api/v1/egress/credentials/{name}", a.require(authz.ActionPolicyWrite, a.putEgressCredentialHandler)},
+		{"DELETE /api/v1/egress/credentials/{name}", a.require(authz.ActionPolicyWrite, a.deleteEgressCredentialHandler)},
 	}
 	if a.domainVerification {
 		routes = append(routes,

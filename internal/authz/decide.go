@@ -140,7 +140,7 @@ func checkFacts(req DecisionRequest, facts Facts) (Reason, bool) {
 	if req.Resource.Type == EntityEndpoint && (facts.Endpoint == nil || facts.Endpoint.ID != req.Resource.ID) {
 		return ReasonUnknownEntity, false
 	}
-	needsAgent := req.Action == ActionAgentConnect || req.Action == ActionEgressConnect
+	needsAgent := req.Action == ActionAgentConnect || req.Action == ActionEgressConnect || req.Action == ActionEgressRequest
 	if needsAgent && facts.Agent == nil {
 		return ReasonUnknownEntity, false
 	}
@@ -304,6 +304,15 @@ func buildContext(req DecisionRequest, facts Facts, clientIP types.IPAddr, authT
 			if ip, err := parseClientIP(c.ResolvedIP); err == nil {
 				m["resolved_ip"] = ip
 			}
+		}
+	case ActionEgressRequest:
+		m["agent"] = types.NewEntityUID(types.EntityType(EntityAgent), types.String(facts.Agent.ID))
+		m["method"] = types.String(c.Method)
+		m["path"] = types.String(c.Path)
+		m["tls"] = types.Boolean(c.TLS)
+		m["decrypted"] = types.Boolean(c.Decrypted)
+		if c.Exit != "" {
+			m["exit"] = types.NewEntityUID(types.EntityType(EntityAgent), types.String(c.Exit))
 		}
 	}
 	return types.NewRecord(m)

@@ -18,3 +18,11 @@ func TestOrgSecrets(t *testing.T) {
 func TestWorkloadIdentities(t *testing.T) {
 	storetest.RunWorkloadIdentities(t, func(t *testing.T) store.DataStore { return newStore(t) })
 }
+
+func TestEgressCredentials(t *testing.T) {
+	storetest.RunEgressCredentials(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}
+
+func TestEgressDecrypt(t *testing.T) {
+	storetest.RunEgressDecrypt(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}

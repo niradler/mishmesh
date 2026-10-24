@@ -27,22 +27,49 @@ const (
 )
 
 const (
-	DecisionActionConnect = "agent:connect"
-	MaxDecisionTTLSeconds = 300
+	DecisionActionConnect       = "agent:connect"
+	DecisionActionEgressRequest = "egress:request"
+	MaxDecisionTTLSeconds       = 300
 )
 
 type DecisionQuery struct {
-	ID      uint64 `json:"id"`
-	Action  string `json:"action"`
-	Connect string `json:"connect,omitempty"`
-	Kind    string `json:"kind,omitempty"`
+	ID      uint64     `json:"id"`
+	Action  string     `json:"action"`
+	Connect string     `json:"connect,omitempty"`
+	Kind    string     `json:"kind,omitempty"`
+	HTTP    *HTTPQuery `json:"http,omitempty"`
+	SealTo  []byte     `json:"seal_to,omitempty"`
+}
+
+type HTTPQuery struct {
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	Method    string `json:"method"`
+	Path      string `json:"path"`
+	TLS       bool   `json:"tls"`
+	Decrypted bool   `json:"decrypted,omitempty"`
+	Auth      string `json:"auth,omitempty"`
+	Exit      string `json:"exit,omitempty"`
+}
+
+type DecisionScope struct {
+	Path   bool `json:"path"`
+	Method bool `json:"method"`
+}
+
+type SealedCredential struct {
+	Name   string `json:"name"`
+	Header string `json:"header"`
+	Sealed []byte `json:"sealed"`
 }
 
 type DecisionAnswer struct {
-	ID         uint64 `json:"id"`
-	Allowed    bool   `json:"allowed"`
-	Reason     string `json:"reason,omitempty"`
-	TTLSeconds int    `json:"ttl_seconds"`
+	ID         uint64            `json:"id"`
+	Allowed    bool              `json:"allowed"`
+	Reason     string            `json:"reason,omitempty"`
+	TTLSeconds int               `json:"ttl_seconds"`
+	Scope      *DecisionScope    `json:"scope,omitempty"`
+	Credential *SealedCredential `json:"credential,omitempty"`
 }
 
 type StreamInit struct {

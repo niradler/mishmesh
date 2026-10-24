@@ -126,6 +126,7 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	f.api.SetHostCommands(true)
 	f.api.SetSecretVault(orgsecret.New(f.api.data, testSecretBox(t)))
 	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/secrets/shared-key", `{"value":"alice-secret-value"}`, http.StatusOK, nil)
+	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/egress/credentials/shared-key", `{"header":"X-Alice-Egress","secret":"shared-key","agent_ids":["`+f.agentA+`"]}`, http.StatusOK, nil)
 	var svc serviceDTO
 	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/services", `{"name":"alice-svc","driver":"docker","config":{"containers":["alice-c"]}}`, http.StatusCreated, &svc)
 	f.service = svc.ID
@@ -230,10 +231,14 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"GET /api/v1/secrets":                                            {"", http.StatusOK},
 		"PUT /api/v1/secrets/{name}":                                     {`{"value":"bob-value"}`, http.StatusOK},
 		"DELETE /api/v1/secrets/{name}":                                  {"", http.StatusNoContent},
+		"GET /api/v1/egress/credentials":                                 {"", http.StatusOK},
+		"GET /api/v1/egress/credentials/{name}":                          {"", notFound},
+		"PUT /api/v1/egress/credentials/{name}":                          {`{"header":"X-Bob","secret":"bob-key","agent_ids":[]}`, http.StatusOK},
+		"DELETE /api/v1/egress/credentials/{name}":                       {"", http.StatusNoContent},
 		"PUT /api/v1/policy":                                             {`{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"],"member":["agent:read"]}}`, http.StatusOK},
 	}
 
-	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, f.group, "alice-credential", f.sa, "alice-robot", "/alice-access-path", "acc_alice", "alice-secret-value", f.wid, "wl-subject-a"}
+	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, f.group, "alice-credential", f.sa, "alice-robot", "/alice-access-path", "acc_alice", "alice-secret-value", "X-Alice-Egress", f.wid, "wl-subject-a"}
 
 	for _, rt := range f.api.routes() {
 		pr, ok := probes[rt.pattern]

@@ -43,6 +43,7 @@ func HasEncryptedConnections(ctx context.Context, dsn string) (bool, error) {
 	for _, probe := range []struct{ table, query string }{
 		{"connections", `SELECT EXISTS(SELECT 1 FROM connections WHERE length(secrets_enc)>0)`},
 		{"org_secrets", `SELECT EXISTS(SELECT 1 FROM org_secrets)`},
+		{"org_cas", `SELECT EXISTS(SELECT 1 FROM org_cas)`},
 	} {
 		var exists bool
 		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)`, probe.table).Scan(&exists); err != nil {

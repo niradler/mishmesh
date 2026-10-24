@@ -36,6 +36,10 @@ type ConnectDecider interface {
 	DecideConnect(ctx context.Context, agent *store.Agent, q tunnel.DecisionQuery) tunnel.DecisionAnswer
 }
 
+type RequestDecider interface {
+	DecideRequest(ctx context.Context, agent *store.Agent, q tunnel.DecisionQuery) tunnel.DecisionAnswer
+}
+
 type UserAuthenticator interface {
 	Authenticate(ctx context.Context, raw string, allowed ...token.Type) (identity.Principal, error)
 	Subscribe(fn func(identity.Revocation)) func()
@@ -361,8 +365,8 @@ func (g *Gateway) acceptControl(ac *agentConn) (*tunnel.Control, error) {
 }
 
 func (g *Gateway) answerDecision(ctx context.Context, agent *store.Agent, ctrl *tunnel.Control, q tunnel.DecisionQuery, slots chan struct{}) {
-	decider, ok := g.connect.(ConnectDecider)
-	if !ok {
+	decide := g.decisionFor(q.Action)
+	if decide == nil {
 		_ = ctrl.Send(denyAnswer(q.ID, "unsupported"))
 		return
 	}
@@ -375,11 +379,25 @@ func (g *Gateway) answerDecision(ctx context.Context, agent *store.Agent, ctrl *
 	go func() {
 		defer func() { <-slots }()
 		defer g.recoverPanic("decision", agent.ID)
-		answer := decider.DecideConnect(ctx, agent, q)
+		answer := decide(ctx, agent, q)
 		answer.ID = q.ID
 		answer.TTLSeconds = min(max(answer.TTLSeconds, 0), tunnel.MaxDecisionTTLSeconds)
 		_ = ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgDecisionResponse, Answer: &answer})
 	}()
+}
+
+func (g *Gateway) decisionFor(action string) func(context.Context, *store.Agent, tunnel.DecisionQuery) tunnel.DecisionAnswer {
+	switch action {
+	case tunnel.DecisionActionConnect:
+		if d, ok := g.connect.(ConnectDecider); ok {
+			return d.DecideConnect
+		}
+	case tunnel.DecisionActionEgressRequest:
+		if d, ok := g.egress.(RequestDecider); ok {
+			return d.DecideRequest
+		}
+	}
+	return nil
 }
 
 func denyAnswer(id uint64, reason string) tunnel.ControlMessage {

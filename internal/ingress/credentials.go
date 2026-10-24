@@ -12,14 +12,12 @@ import (
 )
 
 const (
-	credentialAnnotation                     = "credential"
 	reasonCredentialUnavailable authz.Reason = "credential_unavailable"
 )
 
 var (
-	errCredentialConflict = errors.New("determining policies select different credentials")
-	errCredentialUnknown  = errors.New("selected credential is not defined on the endpoint")
-	errNoSecretStore      = errors.New("secret storage is not configured")
+	errCredentialUnknown = errors.New("selected credential is not defined on the endpoint")
+	errNoSecretStore     = errors.New("secret storage is not configured")
 )
 
 type SecretOpener interface {
@@ -32,25 +30,8 @@ type upstreamCredential struct {
 	value  string
 }
 
-func selectedCredential(d authz.Decision) (string, error) {
-	var names []string
-	for _, p := range d.Policies {
-		if name := p.Annotations[credentialAnnotation]; name != "" && !slices.Contains(names, name) {
-			names = append(names, name)
-		}
-	}
-	switch len(names) {
-	case 0:
-		return "", nil
-	case 1:
-		return names[0], nil
-	}
-	slices.Sort(names)
-	return "", fmt.Errorf("%w: %v", errCredentialConflict, names)
-}
-
 func (i *Ingress) resolveCredential(ctx context.Context, ep *store.Endpoint, d authz.Decision) (*upstreamCredential, error) {
-	name, err := selectedCredential(d)
+	name, err := authz.SelectedCredential(d)
 	if err != nil || name == "" {
 		return nil, err
 	}
