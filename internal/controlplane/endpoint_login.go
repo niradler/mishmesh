@@ -78,7 +78,7 @@ func (a *API) endpointLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	m, err := a.data.GetMembership(r.Context(), ep.OrgID, su.user.ID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && m.DisabledAt != nil) {
-		writeError(w, http.StatusForbidden, "not a member of the endpoint's organization")
+		writeError(w, http.StatusNotFound, "endpoint not found")
 		return
 	}
 	if err != nil {

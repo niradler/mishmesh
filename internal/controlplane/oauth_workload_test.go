@@ -142,6 +142,13 @@ func TestWorkloadIdentityAmbiguousMatchRejected(t *testing.T) {
 	if code != http.StatusUnauthorized {
 		t.Fatalf("ambiguous match: %d %v", code, out)
 	}
+	for _, sa := range []string{one.ServiceAccount.ClientID, two.ServiceAccount.ClientID} {
+		form := assertionForm(iss.Sign(t, iss.Default("repo:shared", workloadAudience)))
+		form.Set("client_id", sa)
+		if code, out, _ := f.tokenRequest(t, form, "", ""); code != http.StatusOK {
+			t.Fatalf("client_id disambiguates %s: %d %v", sa, code, out)
+		}
+	}
 }
 
 func TestWorkloadIdentityDisabledServiceAccount(t *testing.T) {

@@ -56,7 +56,8 @@ func TestSNIConn(t *testing.T) {
 	}{
 		{name: "matching sni replays hello", host: "api.example.com", payload: hello},
 		{name: "matching sni ignores case and trailing dot", host: "api.example.com", payload: clientHelloBytes(t, "API.Example.com.")},
-		{name: "no sni passes", host: "93.184.216.34", payload: clientHelloBytes(t, "")},
+		{name: "no sni to an ip passes", host: "93.184.216.34", payload: clientHelloBytes(t, "")},
+		{name: "no sni to a hostname is a mismatch", host: "cdn.example.com", payload: clientHelloBytes(t, ""), wantErr: ErrSNIMismatch, mismatch: true},
 		{name: "mismatched sni", host: "93.184.216.34", payload: hello, wantErr: ErrSNIMismatch, mismatch: true},
 		{name: "plain bytes pass through", host: "example.com", payload: []byte("GET / HTTP/1.1\r\n\r\n")},
 		{name: "garbage after handshake byte", host: "example.com", payload: []byte{0x16, 0x03, 0x01, 0x00, 0x02, 0xff, 0xff}, wantErr: ErrMalformedHello},

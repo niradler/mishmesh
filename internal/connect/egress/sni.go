@@ -82,7 +82,7 @@ func (c *sniConn) inspect() ([]byte, error) {
 	if !ok {
 		return nil, ErrMalformedHello
 	}
-	if serverName != "" && !sameHost(serverName, c.host) {
+	if serverName == "" && net.ParseIP(c.host) == nil || serverName != "" && !sameHost(serverName, c.host) {
 		return nil, ErrSNIMismatch
 	}
 	return seen.Bytes(), nil

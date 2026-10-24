@@ -115,8 +115,13 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		PrincipalID:   agent.ID,
 		ClientIP:      agentClientIP,
 		Protocol:      "tcp",
-		Destination:   truncate(init.Meta[tunnel.MetaEgress]),
 	}}
+	dest, err := authz.NormalizeDestination(init.Meta[tunnel.MetaEgress])
+	if err != nil {
+		h.refuse(stream, rec, &refusal{tunnel.EgressInvalid, string(authz.ReasonInvalidRequest)})
+		return
+	}
+	rec.event.Destination = dest
 	p, hasPrincipal, refused := h.principal(ctx, agent, init.Meta[tunnel.MetaEgressAuth])
 	if refused != nil {
 		h.refuse(stream, rec, refused)
@@ -127,30 +132,22 @@ func (h *Handler) HandleEgress(ctx context.Context, agent *store.Agent, stream n
 		rec.event.PrincipalID = p.Ref.ID
 		rec.event.SessionID = p.SessionID
 	}
-
-	dest, err := authz.NormalizeDestination(init.Meta[tunnel.MetaEgress])
-	if err != nil {
-		h.refuse(stream, rec, &refusal{tunnel.EgressInvalid, string(authz.ReasonInvalidRequest)})
-		return
-	}
-	rec.event.Destination = dest
 	exit, refused := h.resolveExit(ctx, agent, init.Meta[tunnel.MetaEgressVia])
 	if refused != nil {
 		h.refuse(stream, rec, refused)
 		return
+	}
+	var flow *flows.Flow
+	if hasPrincipal {
+		var untrack func()
+		flow, untrack = h.flows.Track(agent.OrgID, p.SessionID, stream)
+		defer untrack()
 	}
 	decision, status := h.decide(ctx, agent, p, hasPrincipal, dest, exit)
 	rec.event.PolicyIDs = policyIDs(decision)
 	if status != tunnel.EgressOK {
 		h.refuse(stream, rec, &refusal{status, string(decision.Reason)})
 		return
-	}
-
-	var flow *flows.Flow
-	if hasPrincipal {
-		var untrack func()
-		flow, untrack = h.flows.Track(agent.OrgID, p.SessionID, stream)
-		defer untrack()
 	}
 	upstream, refused := h.dial(ctx, agent, exit, dest)
 	if refused != nil {

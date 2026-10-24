@@ -133,7 +133,7 @@ func TestEndpointLoginIssuesCode(t *testing.T) {
 	}{
 		{"unknown endpoint", loginPath("ep_missing", "/", false), http.StatusNotFound},
 		{"endpoint without browser login", loginPath("ep_plain", "/", false), http.StatusNotFound},
-		{"other org endpoint", loginPath("ep_foreign", "/", false), http.StatusForbidden},
+		{"other org endpoint", loginPath("ep_foreign", "/", false), http.StatusNotFound},
 		{"absolute return", loginPath("ep_app", "https://evil.example/", false), http.StatusBadRequest},
 		{"protocol relative return", loginPath("ep_app", "//evil.example/", false), http.StatusBadRequest},
 	}

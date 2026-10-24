@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/connect/flows"
 	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
@@ -65,6 +66,7 @@ type Ingress struct {
 	secure      bool
 	access      AccessRecorder
 	secrets     SecretOpener
+	upgrades    *flows.Tracker
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
@@ -100,6 +102,7 @@ func New(opts Options) *Ingress {
 	if i.limiter == nil {
 		i.limiter = ratelimit.NewMemory()
 	}
+	i.upgrades = newUpgradeTracker(i, opts.Identity)
 	i.proxy = i.newProxy(opts.UpstreamResponseTimeout)
 	if len(opts.OIDCSignKey) > 0 {
 		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.Identity, opts.CookieSecure, false, opts.OIDCAllowPrivate, log)
@@ -306,6 +309,19 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 	defer stream.Close()
 	stop := context.AfterFunc(r.Context(), func() { _ = stream.Close() })
 	defer stop()
+	flow, untrack, err := i.trackUpgrade(r, stream)
+	defer untrack()
+	if errors.Is(err, store.ErrNotFound) {
+		writeIdentityUnauthorized(w)
+		i.recordCode(http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		i.log.Error("upgrade session lookup failed", "endpoint_id", ep.ID, "err", err)
+		writeIdentityUnavailable(w)
+		i.recordCode(http.StatusServiceUnavailable)
+		return
+	}
 
 	outReq := r.Clone(r.Context())
 	outReq.RequestURI = ""
@@ -339,9 +355,31 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 		return
 	}
 	defer client.Close()
+	if flow != nil && !i.upgrades.Attach(flow, client) {
+		return
+	}
 
 	in, out := tunnel.Splice(&bufferedConn{Conn: client, r: clientBuf.Reader}, &bufferedConn{Conn: stream, r: br})
 	accessFrom(r).markUpgraded(in, out)
+}
+
+func newUpgradeTracker(i *Ingress, ids *identity.Service) *flows.Tracker {
+	if ids == nil {
+		return flows.NewTracker(i.log, "ingress upgrade", nil)
+	}
+	return flows.NewTracker(i.log, "ingress upgrade", ids)
+}
+
+func (i *Ingress) trackUpgrade(r *http.Request, stream net.Conn) (*flows.Flow, func(), error) {
+	id := identityFrom(r)
+	if id == nil || id.principal == nil || id.principal.SessionID == "" {
+		return nil, func() {}, nil
+	}
+	flow, untrack := i.upgrades.Track(id.principal.OrgID, id.principal.SessionID, stream)
+	if _, err := i.identity.Sessions().GetTokenSession(r.Context(), id.principal.SessionID); err != nil {
+		return nil, untrack, err
+	}
+	return flow, untrack, nil
 }
 
 type bufferedConn struct {

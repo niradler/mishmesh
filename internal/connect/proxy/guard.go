@@ -30,9 +30,12 @@ var (
 		"240.0.0.0/4",
 		"fc00::/7",
 		"64:ff9b::/96",
+		"64:ff9b:1::/48",
+		"fec0::/10",
 		"2001::/32",
 		"2002::/16",
 	)
+	embeddedIPv4Nets     = mustCIDRs("64:ff9b::/96", "::/96")
 	internalNameSuffixes = []string{".localhost", ".svc", ".cluster.local", ".local", ".internal"}
 )
 
@@ -95,10 +98,20 @@ func (g *Guard) IPAllowed(ip net.IP) bool {
 	if ip.IsLoopback() {
 		return g.allowLoopback
 	}
+	if v4 := embeddedIPv4(ip); v4 != nil && !g.IPAllowed(v4) {
+		return false
+	}
 	if ip.IsPrivate() || inAny(privateNets, ip) {
 		return g.allowPrivate || inAny(g.allowed, ip)
 	}
 	return true
+}
+
+func embeddedIPv4(ip net.IP) net.IP {
+	if len(ip) != net.IPv6len || !inAny(embeddedIPv4Nets, ip) {
+		return nil
+	}
+	return net.IPv4(ip[12], ip[13], ip[14], ip[15]).To4()
 }
 
 func (g *Guard) nameAllowed(host string) bool {

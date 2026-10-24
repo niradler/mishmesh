@@ -94,6 +94,21 @@ func (a *API) workloadAssertionGrant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) matchWorkloadServiceAccount(w http.ResponseWriter, r *http.Request, trusted []*store.WorkloadIdentity, claims workload.Claims) (*store.ServiceAccount, bool) {
+	if clientID := r.PostForm.Get("client_id"); clientID != "" {
+		named, err := a.data.GetServiceAccountByClientID(r.Context(), clientID)
+		if errors.Is(err, store.ErrNotFound) {
+			writeOAuthError(w, http.StatusUnauthorized, oauthInvalidClient, "client authentication failed")
+			return nil, false
+		}
+		if err != nil {
+			a.log.Error("workload service account lookup failed", "err", err)
+			writeOAuthError(w, http.StatusServiceUnavailable, oauthTemporarilyUnavail, "")
+			return nil, false
+		}
+		trusted = slices.DeleteFunc(slices.Clone(trusted), func(t *store.WorkloadIdentity) bool {
+			return t.ServiceAccountID != named.ID || t.OrgID != named.OrgID
+		})
+	}
 	var match *store.WorkloadIdentity
 	for _, t := range trusted {
 		if subtle.ConstantTimeCompare([]byte(t.Subject), []byte(claims.Subject)) != 1 || !slices.Contains(claims.Audience, t.Audience) {
@@ -117,10 +132,6 @@ func (a *API) matchWorkloadServiceAccount(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		a.log.Error("workload service account lookup failed", "err", err)
 		writeOAuthError(w, http.StatusServiceUnavailable, oauthTemporarilyUnavail, "")
-		return nil, false
-	}
-	if clientID := r.PostForm.Get("client_id"); clientID != "" && clientID != sa.ClientID {
-		writeOAuthError(w, http.StatusUnauthorized, oauthInvalidClient, "client authentication failed")
 		return nil, false
 	}
 	return sa, true
