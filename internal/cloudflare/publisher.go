@@ -590,7 +590,7 @@ func (z *zoneResolver) find(ctx context.Context, host string) (Zone, error) {
 		}
 	}
 	if best.ID == "" {
-		return Zone{}, fmt.Errorf("no zone in the account matches %s", host)
+		return Zone{}, fmt.Errorf("%w %s", errNoZone, host)
 	}
 	return best, nil
 }

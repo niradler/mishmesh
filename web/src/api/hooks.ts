@@ -530,6 +530,38 @@ export function useSyncConnection(orgId?: string) {
   });
 }
 
+export function useAddConnectionHostname(orgId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      hostname,
+      service,
+    }: {
+      id: string;
+      hostname: string;
+      service: string;
+    }) =>
+      apiRequest<TypedConnection>(
+        `/connections/${encodeURIComponent(id)}/hostnames`,
+        { method: "POST", body: { hostname, service }, query: { org_id: orgId } },
+      ),
+    onSettled: () => invalidateNetwork(qc),
+  });
+}
+
+export function useRemoveConnectionHostname(orgId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, hostname }: { id: string; hostname: string }) =>
+      apiRequest<TypedConnection>(
+        `/connections/${encodeURIComponent(id)}/hostnames/${encodeURIComponent(hostname)}`,
+        { method: "DELETE", query: { org_id: orgId } },
+      ),
+    onSettled: () => invalidateNetwork(qc),
+  });
+}
+
 export function useDetectConnection(orgId?: string) {
   return useMutation({
     mutationKey: ["connection-detect", orgId],

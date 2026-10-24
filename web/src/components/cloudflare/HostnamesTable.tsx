@@ -1,42 +1,75 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { HelpedStateBadge } from "@/components/common/TermBadges";
+import {
+  AddHostnameDialog,
+  RemoveHostnameDialog,
+} from "@/components/cloudflare/HostnameDialogs";
 import { useEndpoints, useServices } from "@/api/hooks";
 import { useSession } from "@/context/SessionContext";
 import { endpointHealthState, formatLatency } from "@/lib/health";
 import { newEndpointLink } from "@/lib/endpoints";
 import type { ConnectionStatus } from "@/api/types";
 
+type HostRow = NonNullable<ConnectionStatus["hostnames"]>[number];
+
 export function HostnamesTable({
   hostnames,
   connectionId,
   canWrite,
+  manage,
 }: {
   hostnames: NonNullable<ConnectionStatus["hostnames"]>;
   connectionId: string;
   canWrite: boolean;
+  manage?: "enabled" | "needs-token";
 }): React.JSX.Element {
   const { currentOrgId } = useSession();
   const endpoints = useEndpoints(currentOrgId);
   const services = useServices(currentOrgId);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<HostRow>();
   const endpointsById = new Map(
     (endpoints.data ?? []).map((endpoint) => [endpoint.id, endpoint]),
   );
   const servicesById = new Map(
     (services.data ?? []).map((service) => [service.id, service]),
   );
+  const canManage = canWrite && manage === "enabled";
   return (
     <Card>
       <CardHeader>
-        <CardTitle>
-          Hostnames{" "}
-          <span className="text-sm font-normal text-muted-foreground">
-            ({hostnames.length})
-          </span>
-        </CardTitle>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <CardTitle>
+            Hostnames{" "}
+            <span className="text-sm font-normal text-muted-foreground">
+              ({hostnames.length})
+            </span>
+          </CardTitle>
+          {canWrite && manage && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!canManage}
+              title={
+                canManage
+                  ? undefined
+                  : "Add an API token to this connection to manage hostnames from mishmesh"
+              }
+              onClick={() => setAdding(true)}
+            >
+              + Add hostname
+            </Button>
+          )}
+        </div>
         <p className="text-xs text-muted-foreground">
           Publication shows the tunnel route. Endpoint health shows whether its
           backend is available.
+          {canWrite &&
+            manage === "needs-token" &&
+            " Add an API token (Edit connection) to add and delete hostnames here."}
         </p>
       </CardHeader>
       <CardContent>
@@ -158,6 +191,16 @@ export function HostnamesTable({
                           Reserve endpoint
                         </Link>
                       )}
+                      {canManage && (
+                        <button
+                          type="button"
+                          className="ml-3 text-destructive underline"
+                          aria-label={`Delete hostname ${host.host}`}
+                          onClick={() => setRemoving(host)}
+                        >
+                          Delete
+                        </button>
+                      )}
                     </div>
                     {(host.detail || host.fix) && (
                       <p className="col-span-2 break-words text-xs text-muted-foreground lg:col-span-4">
@@ -173,6 +216,22 @@ export function HostnamesTable({
           </div>
         )}
       </CardContent>
+      {canManage && (
+        <>
+          <AddHostnameDialog
+            open={adding}
+            onOpenChange={setAdding}
+            connectionId={connectionId}
+            endpoints={endpoints.data ?? []}
+          />
+          <RemoveHostnameDialog
+            host={removing}
+            onClose={() => setRemoving(undefined)}
+            connectionId={connectionId}
+            endpoints={endpoints.data ?? []}
+          />
+        </>
+      )}
     </Card>
   );
 }
