@@ -70,7 +70,11 @@ func (a *API) putSecretHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) deleteSecretHandler(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if a.handleErr(w, a.data.DeleteOrgSecret(r.Context(), a.orgScope(r), name)) {
+	remove := a.data.DeleteOrgSecret
+	if a.vault != nil {
+		remove = a.vault.Delete
+	}
+	if a.handleErr(w, remove(r.Context(), a.orgScope(r), name)) {
 		return
 	}
 	a.audit(r, "secret.delete", name, "")

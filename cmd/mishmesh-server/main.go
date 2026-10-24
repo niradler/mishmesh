@@ -218,7 +218,12 @@ func serve() error {
 			return err
 		}
 		defer stopBus()
-		log.Info("revocations and decision flushes shared across nodes")
+		stopSecretBus, err := vault.AttachBus(bus, log)
+		if err != nil {
+			return err
+		}
+		defer stopSecretBus()
+		log.Info("revocations, decision flushes and secret invalidations shared across nodes")
 	}
 	if swept, err := gw.SweepOrphanedEphemeral(context.Background()); err != nil {
 		log.Warn("sweep of orphaned ephemeral endpoints failed", "err", err)
