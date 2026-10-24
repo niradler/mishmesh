@@ -52,6 +52,7 @@ type UserAuthenticator interface {
 
 const (
 	maxPendingDecisions = 16
+	maxPendingCerts     = 2
 	maxPendingInits     = 64
 	firstControlTimeout = 30 * time.Second
 )
@@ -338,6 +339,7 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 	ac.setControl(ctrl)
 	go g.acceptConnects(ctx, agent, ac)
 	decisions := make(chan struct{}, maxPendingDecisions)
+	certs := make(chan struct{}, maxPendingCerts)
 	for {
 		msg, err := ctrl.Recv()
 		if err != nil {
@@ -350,7 +352,7 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 			}
 		case tunnel.MsgCertRequest:
 			if msg.CertRequest != nil {
-				g.answerCert(ctx, agent, ctrl, *msg.CertRequest, decisions)
+				g.answerCert(ctx, agent, ctrl, *msg.CertRequest, certs)
 			}
 		case tunnel.MsgRegister:
 			ack := g.handleRegister(ctx, agent, msg.Register)
@@ -428,7 +430,7 @@ func (g *Gateway) answerDecision(ctx context.Context, agent *store.Agent, ctrl *
 
 func (g *Gateway) answerCert(ctx context.Context, agent *store.Agent, ctrl *tunnel.Control, req tunnel.CertRequest, slots chan struct{}) {
 	if g.certs == nil {
-		_ = ctrl.Send(certError(req.ID, "egress decryption is not available on this server"))
+		_ = ctrl.Send(certError(req.ID, tunnel.CertErrorDecryptDisabled))
 		return
 	}
 	select {

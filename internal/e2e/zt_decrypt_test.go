@@ -204,7 +204,7 @@ permit (principal, action == Action::"egress:request", resource) when { (resourc
 `, decryptAPIHost, decryptWSHost, decryptBadHost))
 	owner.putSecret("api-secret", "s1")
 	owner.mustJSON(http.MethodPut, "/api/v1/egress/credentials/api-key", map[string]any{
-		"header": "Authorization", "prefix": "Bearer ", "secret": "api-secret", "agent_ids": []string{agentID},
+		"header": "Authorization", "prefix": "Bearer ", "secret": "api-secret", "agent_ids": []string{agentID}, "destinations": []string{decryptAPIHost},
 	}, http.StatusOK, nil)
 	owner.mustJSON(http.MethodPut, "/api/v1/egress/decrypt", map[string]any{
 		"allow": []string{"*.decrypt.test"}, "bypass": []string{decryptBankHost},
@@ -368,6 +368,49 @@ func TestDecryptBypassedAndUnlistedHostsPassThrough(t *testing.T) {
 				t.Fatalf("%s verified against the org root, so it was decrypted", host)
 			}
 		})
+	}
+}
+
+func (f *decryptFixture) raw(host, requestLine string) (int, string) {
+	f.t.Helper()
+	c, _, status := proxyConnect(f.t, f.proxyAddr, net.JoinHostPort(host, f.upstream.port()))
+	if status != http.StatusOK {
+		f.t.Fatalf("CONNECT = %d", status)
+	}
+	tc := tls.Client(c, &tls.Config{ServerName: host, RootCAs: f.orgRoots, Time: f.clock.Now, NextProtos: []string{"http/1.1"}})
+	defer tc.Close()
+	_ = tc.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(tc, "%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", requestLine, host)
+	resp, err := http.ReadResponse(bufio.NewReader(tc), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}
+
+func TestDecryptRefusesNonCanonicalRequests(t *testing.T) {
+	f := newDecryptFixture(t)
+	f.mustDecrypted(decryptAPIHost, "/v1/ready", false, nil)
+	before := f.upstream.hits.Load()
+	for _, tc := range []struct {
+		line string
+		want int
+	}{
+		{"get /v1/items", http.StatusBadRequest},
+		{"GET //v1/items", http.StatusBadRequest},
+		{"GET /v1//items", http.StatusBadRequest},
+		{"GET /v1/items;x=1", http.StatusBadRequest},
+		{"GET /v1/%2e%2e/admin", http.StatusBadRequest},
+		{"TRACE /inject/x", http.StatusForbidden},
+	} {
+		if status, body := f.raw(decryptAPIHost, tc.line); status != tc.want {
+			t.Errorf("%q = %d %q, want %d", tc.line, status, body, tc.want)
+		}
+	}
+	if f.upstream.hits.Load() != before {
+		t.Fatal("a non-canonical or TRACE request reached the upstream")
 	}
 }
 

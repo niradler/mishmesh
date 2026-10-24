@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS egress_credentials (
   prefix     TEXT NOT NULL,
   secret     TEXT NOT NULL,
   agent_ids  TEXT NOT NULL,
+  destinations TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (org_id, name)
@@ -33,19 +34,23 @@ CREATE TABLE IF NOT EXISTS org_decrypt (
 );
 `
 
-const egressCredentialCols = `org_id, name, header, prefix, secret, agent_ids, created_at, updated_at`
+const egressCredentialCols = `org_id, name, header, prefix, secret, agent_ids, destinations, created_at, updated_at`
 
 func (s *Store) PutEgressCredential(ctx context.Context, c *store.EgressCredential) error {
 	agents, err := json.Marshal(nonNil(c.AgentIDs))
 	if err != nil {
 		return wrap("put egress credential", err)
 	}
+	destinations, err := json.Marshal(nonNil(c.Destinations))
+	if err != nil {
+		return wrap("put egress credential", err)
+	}
 	row := s.db.QueryRowContext(ctx,
-		`INSERT INTO egress_credentials (`+egressCredentialCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO egress_credentials (`+egressCredentialCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(org_id, name) DO UPDATE SET header = excluded.header, prefix = excluded.prefix, secret = excluded.secret,
-		   agent_ids = excluded.agent_ids, updated_at = excluded.updated_at
+		   agent_ids = excluded.agent_ids, destinations = excluded.destinations, updated_at = excluded.updated_at
 		 RETURNING created_at`,
-		c.OrgID, c.Name, c.Header, c.Prefix, c.Secret, string(agents), ns(c.UpdatedAt), ns(c.UpdatedAt))
+		c.OrgID, c.Name, c.Header, c.Prefix, c.Secret, string(agents), string(destinations), ns(c.UpdatedAt), ns(c.UpdatedAt))
 	var created int64
 	if err := row.Scan(&created); err != nil {
 		return wrap("put egress credential", err)
@@ -85,13 +90,16 @@ func (s *Store) DeleteEgressCredential(ctx context.Context, orgID, name string) 
 
 func scanEgressCredential(scan func(...any) error) (*store.EgressCredential, error) {
 	var c store.EgressCredential
-	var agents string
+	var agents, destinations string
 	var created, updated int64
-	if err := scan(&c.OrgID, &c.Name, &c.Header, &c.Prefix, &c.Secret, &agents, &created, &updated); err != nil {
+	if err := scan(&c.OrgID, &c.Name, &c.Header, &c.Prefix, &c.Secret, &agents, &destinations, &created, &updated); err != nil {
 		return nil, scanErr("scan egress credential", err)
 	}
 	if err := json.Unmarshal([]byte(agents), &c.AgentIDs); err != nil {
 		return nil, wrap("decode egress credential agents", err)
+	}
+	if err := json.Unmarshal([]byte(destinations), &c.Destinations); err != nil {
+		return nil, wrap("decode egress credential destinations", err)
 	}
 	c.CreatedAt = fromNS(created)
 	c.UpdatedAt = fromNS(updated)

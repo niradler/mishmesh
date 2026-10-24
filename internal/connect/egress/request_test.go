@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"testing"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
@@ -74,8 +75,9 @@ func TestDecideRequestReleasesScopedSealedCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &store.Agent{ID: "ag_1", OrgID: "org_1"}
-	scoped := &store.EgressCredential{OrgID: "org_1", Name: "billing", Header: "Authorization", Prefix: "Bearer ", Secret: "billing-key", AgentIDs: []string{"ag_1"}}
-	elsewhere := &store.EgressCredential{OrgID: "org_1", Name: "billing", Header: "Authorization", Secret: "billing-key", AgentIDs: []string{"ag_2"}}
+	scoped := &store.EgressCredential{OrgID: "org_1", Name: "billing", Header: "Authorization", Prefix: "Bearer ", Secret: "billing-key", AgentIDs: []string{"ag_1"}, Destinations: []string{"api.example.com"}}
+	elsewhere := &store.EgressCredential{OrgID: "org_1", Name: "billing", Header: "Authorization", Secret: "billing-key", AgentIDs: []string{"ag_2"}, Destinations: []string{"api.example.com"}}
+	elsewhereHost := &store.EgressCredential{OrgID: "org_1", Name: "billing", Header: "Authorization", Secret: "billing-key", AgentIDs: []string{"ag_1"}, Destinations: []string{"*.billing.example"}}
 	secrets := secretTable{"org_1/billing-key": "sk_live_1"}
 
 	cases := []struct {
@@ -98,8 +100,9 @@ func TestDecideRequestReleasesScopedSealedCredential(t *testing.T) {
 		{"missing credential", credentialDecision("billing"), nil, credentialTable{}, secrets, key.PublicKey(), true, false, ReasonCredentialUnavailable, false},
 		{"missing secret", credentialDecision("billing"), nil, credentialTable{"org_1/billing": scoped}, secretTable{}, key.PublicKey(), true, false, ReasonCredentialUnavailable, false},
 		{"no seal key", credentialDecision("billing"), nil, credentialTable{"org_1/billing": scoped}, secrets, nil, true, false, ReasonCredentialUnavailable, false},
+		{"destination outside credential scope", credentialDecision("billing"), nil, credentialTable{"org_1/billing": elsewhereHost}, secrets, key.PublicKey(), true, false, ReasonCredentialDestination, false},
 		{"plaintext upstream", credentialDecision("billing"), nil, credentialTable{"org_1/billing": scoped}, secrets, key.PublicKey(), false, false, ReasonCredentialRequiresTLS, false},
-		{"foreign org credential row", credentialDecision("billing"), nil, credentialTable{"org_1/billing": {OrgID: "org_2", Name: "billing", Header: "Authorization", Secret: "billing-key", AgentIDs: []string{"ag_1"}}}, secrets, key.PublicKey(), true, false, ReasonCredentialUnavailable, false},
+		{"foreign org credential row", credentialDecision("billing"), nil, credentialTable{"org_1/billing": {OrgID: "org_2", Name: "billing", Header: "Authorization", Secret: "billing-key", AgentIDs: []string{"ag_1"}, Destinations: []string{"api.example.com"}}}, secrets, key.PublicKey(), true, false, ReasonCredentialUnavailable, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -157,6 +160,27 @@ func TestDecideRequestRefusesBadProxyCredentials(t *testing.T) {
 	q := requestQuery(nil, true)
 	q.HTTP.Auth = "not-a-token"
 	if answer := h.DecideRequest(context.Background(), &store.Agent{ID: "ag_1", OrgID: "org_1"}, q); answer.Allowed || answer.Reason != reasonNoAuth {
+		t.Fatalf("answer = %+v", answer)
+	}
+}
+
+func TestDecideRequestNeverInjectsIntoTrace(t *testing.T) {
+	key, err := credseal.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped := &store.EgressCredential{OrgID: "org_1", Name: "billing", Header: "Authorization", Secret: "billing-key", AgentIDs: []string{"ag_1"}, Destinations: []string{"api.example.com"}}
+	h := New(Options{
+		Conns:       memory.NewConnStore(),
+		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Deciders:    &fixedDecider{decision: credentialDecision("billing"), got: new(authz.DecisionRequest), scope: new(identity.Scope)},
+		Credentials: credentialTable{"org_1/billing": scoped},
+		Secrets:     secretTable{"org_1/billing-key": "sk_live_1"},
+	})
+	q := requestQuery(key.PublicKey(), true)
+	q.HTTP.Method = http.MethodTrace
+	answer := h.DecideRequest(context.Background(), &store.Agent{ID: "ag_1", OrgID: "org_1"}, q)
+	if answer.Allowed || answer.Reason != ReasonCredentialMethod || answer.Credential != nil {
 		t.Fatalf("answer = %+v", answer)
 	}
 }

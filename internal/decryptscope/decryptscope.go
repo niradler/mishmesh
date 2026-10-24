@@ -82,8 +82,17 @@ func Decrypts(allow, bypass []string, host string) bool {
 			return false
 		}
 	}
-	for _, p := range allow {
-		if allowMatches(p, h) {
+	return matchesCanonical(allow, h)
+}
+
+func Matches(patterns []string, host string) bool {
+	h, ok := CanonicalHost(host)
+	return ok && matchesCanonical(patterns, h)
+}
+
+func matchesCanonical(patterns []string, host string) bool {
+	for _, p := range patterns {
+		if allowMatches(p, host) {
 			return true
 		}
 	}

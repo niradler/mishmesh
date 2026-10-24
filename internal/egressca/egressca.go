@@ -23,11 +23,12 @@ import (
 )
 
 const (
-	RootValidity         = 10 * 365 * 24 * time.Hour
-	IntermediateValidity = 24 * time.Hour
-	Backdate             = 5 * time.Minute
-	maxCSRBytes          = 4 << 10
-	serialBits           = 128
+	RootValidity              = 10 * 365 * 24 * time.Hour
+	IntermediateValidity      = 4 * time.Hour
+	unreachableNameConstraint = "invalid"
+	Backdate                  = 5 * time.Minute
+	maxCSRBytes               = 4 << 10
+	serialBits                = 128
 )
 
 var (
@@ -202,6 +203,8 @@ func (a *Authority) Issue(ctx context.Context, orgID, agentID string, csrDER []b
 		PermittedDNSDomains:         permitted,
 		ExcludedDNSDomains:          excluded,
 		ExcludedIPRanges:            allAddresses(),
+		PermittedEmailAddresses:     []string{unreachableNameConstraint},
+		PermittedURIDomains:         []string{unreachableNameConstraint},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, root, pub, rootKey)
 	if err != nil {

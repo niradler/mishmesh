@@ -165,7 +165,11 @@ func (o *originator) serve(w http.ResponseWriter, r *http.Request, target origin
 		path = "/"
 	}
 	if !policyPath(path) {
-		http.Error(w, "egress refused: request path must be absolute with no dot segments", http.StatusBadRequest)
+		http.Error(w, "egress refused: request path must be absolute with no dot, empty or ';' segments", http.StatusBadRequest)
+		return
+	}
+	if r.Method != strings.ToUpper(r.Method) {
+		http.Error(w, "egress refused: request method must be uppercase", http.StatusBadRequest)
 		return
 	}
 	if creds.exit == "" && o.a.opts.Egress != nil {
@@ -177,6 +181,10 @@ func (o *originator) serve(w http.ResponseWriter, r *http.Request, target origin
 	})
 	if err != nil {
 		o.refuse(w, target, err)
+		return
+	}
+	if inject != nil && r.Method == http.MethodTrace {
+		http.Error(w, "egress refused: credentials are never injected into TRACE", http.StatusForbidden)
 		return
 	}
 	proxy := &httputil.ReverseProxy{
@@ -239,7 +247,7 @@ func isCertificateError(err error) bool {
 }
 
 func policyPath(path string) bool {
-	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "\\\x00") {
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "\\\x00;") || strings.Contains(path, "//") {
 		return false
 	}
 	for seg := range strings.SplitSeq(path, "/") {

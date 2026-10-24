@@ -31,7 +31,7 @@ import (
 
 const (
 	maxDecryptLeaves      = 1024
-	decryptRetryAfter     = 30 * time.Second
+	decryptRetryAfter     = 5 * time.Second
 	decryptExpiryMargin   = time.Minute
 	decryptLeafBackdate   = 5 * time.Minute
 	decryptSerialBits     = 128
@@ -42,10 +42,11 @@ const (
 )
 
 var (
-	errDecryptChain    = errors.New("decrypt intermediate: server returned an unusable certificate chain")
-	errDecryptLeaf     = errors.New("decrypt leaf: minted certificate does not verify against the org root")
-	errDecryptSNI      = errors.New("decrypt: tls server name does not match the CONNECT host")
-	errEgressCAInvalid = errors.New("egress ca: server returned an invalid certificate")
+	errDecryptChain       = errors.New("decrypt intermediate: server returned an unusable certificate chain")
+	errDecryptLeaf        = errors.New("decrypt leaf: minted certificate does not verify against the org root")
+	errDecryptUnavailable = errors.New("egress decryption unavailable")
+	errDecryptSNI         = errors.New("decrypt: tls server name does not match the CONNECT host")
+	errEgressCAInvalid    = errors.New("egress ca: server returned an invalid certificate")
 )
 
 type decryptState struct {
@@ -221,7 +222,7 @@ func (d *decryptor) run(gen uint64, done chan struct{}) {
 	case !current:
 	case err != nil:
 		d.retryAt = d.now().Add(decryptRetryAfter)
-		d.log.Warn("egress decrypt intermediate unavailable; CONNECT stays passthrough", "err", err)
+		d.log.Warn("egress decrypt intermediate unavailable; CONNECT refused until it is issued", "err", err)
 	case refusal != "":
 		d.disabled = true
 		d.log.Debug("egress decrypt off for this org", "reason", printable(refusal, "refused"))
@@ -252,7 +253,7 @@ func (d *decryptor) scheduleLocked(gen uint64, st *decryptState) {
 	})
 }
 
-func (d *decryptor) current(ctx context.Context) *decryptState {
+func (d *decryptor) current(ctx context.Context) (*decryptState, bool) {
 	deadline := time.NewTimer(decisionTimeout)
 	defer deadline.Stop()
 	for {
@@ -260,13 +261,17 @@ func (d *decryptor) current(ctx context.Context) *decryptState {
 		if st := d.state; st != nil {
 			if st.usable(d.now()) {
 				d.mu.Unlock()
-				return st
+				return st, true
 			}
 			d.state = nil
 		}
-		if !d.bound || d.disabled || (d.inflight == nil && d.now().Before(d.retryAt)) {
+		if d.disabled {
 			d.mu.Unlock()
-			return nil
+			return nil, true
+		}
+		if !d.bound || (d.inflight == nil && d.now().Before(d.retryAt)) {
+			d.mu.Unlock()
+			return nil, false
 		}
 		if d.inflight == nil {
 			d.beginLocked()
@@ -276,31 +281,49 @@ func (d *decryptor) current(ctx context.Context) *decryptState {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return nil
+			return nil, false
 		case <-deadline.C:
-			return nil
+			return nil, false
 		}
 	}
 }
 
-func (d *decryptor) certFor(ctx context.Context, host string) (*tls.Certificate, string) {
+type decryptVerdict int
+
+const (
+	decryptPassthrough decryptVerdict = iota
+	decryptTerminate
+	decryptRefuse
+)
+
+type decryptPlan struct {
+	verdict   decryptVerdict
+	cert      *tls.Certificate
+	canonical string
+}
+
+func (d *decryptor) classify(ctx context.Context, host string) decryptPlan {
 	if d == nil {
-		return nil, ""
+		return decryptPlan{verdict: decryptPassthrough}
 	}
 	canonical, ok := decryptscope.CanonicalHost(host)
 	if !ok {
-		return nil, ""
+		return decryptPlan{verdict: decryptPassthrough}
 	}
-	st := d.current(ctx)
-	if st == nil || !decryptscope.Decrypts(st.allow, st.bypass, canonical) {
-		return nil, ""
+	st, known := d.current(ctx)
+	switch {
+	case !known:
+		d.log.Warn("egress decrypt scope unknown; CONNECT refused", "host", truncateLog(canonical))
+		return decryptPlan{verdict: decryptRefuse}
+	case st == nil || !decryptscope.Decrypts(st.allow, st.bypass, canonical):
+		return decryptPlan{verdict: decryptPassthrough}
 	}
 	cert, err := st.leaf(canonical, d.now())
 	if err != nil {
-		d.log.Warn("egress decrypt leaf refused; CONNECT stays passthrough", "host", truncateLog(canonical), "err", err)
-		return nil, ""
+		d.log.Warn("egress decrypt leaf unavailable; CONNECT refused", "host", truncateLog(canonical), "err", err)
+		return decryptPlan{verdict: decryptRefuse}
 	}
-	return cert, canonical
+	return decryptPlan{verdict: decryptTerminate, cert: cert, canonical: canonical}
 }
 
 func (d *decryptor) issue(gen uint64) (*decryptState, string, error) {
@@ -380,11 +403,16 @@ func (a *Agent) serveDecrypted(client net.Conn, br *bufio.Reader, dest string, c
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), egressHandshakeTimeout)
-	cert, canonical := a.decrypt.certFor(ctx, host)
+	plan := a.decrypt.classify(ctx, host)
 	cancel()
-	if cert == nil {
+	switch plan.verdict {
+	case decryptPassthrough:
 		return false
+	case decryptRefuse:
+		writeProxyError(client, http.StatusServiceUnavailable, errDecryptUnavailable.Error())
+		return true
 	}
+	cert, canonical := plan.cert, plan.canonical
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		return true
 	}
@@ -396,7 +424,7 @@ func (a *Agent) serveDecrypted(client net.Conn, br *bufio.Reader, dest string, c
 	}
 	raw := &bufferedConn{Conn: client, r: br}
 	if first[0] != tlsRecordHandshake {
-		a.passthroughAfterConnect(raw, clientIP, dest, creds)
+		a.log.Info("egress refused: decrypt-scoped CONNECT did not start with tls", "destination", truncateLog(dest))
 		return true
 	}
 	ln := &oneConnListener{done: make(chan struct{})}
@@ -411,17 +439,6 @@ func (a *Agent) serveDecrypted(client net.Conn, br *bufio.Reader, dest string, c
 	srv := a.origin.server(a.origin.decryptedHandler(target, creds, clientIP))
 	_ = srv.Serve(ln)
 	return true
-}
-
-func (a *Agent) passthroughAfterConnect(client net.Conn, clientIP, dest string, creds egressCreds) {
-	stream, err := a.openEgress(clientIP, dest, creds)
-	if err != nil {
-		a.log.Info("egress refused", "destination", truncateLog(dest), "err", err)
-		return
-	}
-	defer stream.Close()
-	_ = client.SetDeadline(time.Time{})
-	tunnel.Splice(client, stream)
 }
 
 func (o *originator) decryptedHandler(target originTarget, creds egressCreds, clientIP string) http.Handler {

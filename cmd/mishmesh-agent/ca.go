@@ -34,7 +34,7 @@ func caCmd(args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprint(out, ca.PEM)
-	fmt.Fprintf(os.Stderr, "sha256 fingerprint: %s\n", ca.SHA256)
+	fmt.Fprintf(os.Stderr, "sha256 fingerprint: %s\nbefore trusting it, compare with the sha256 from the admin API: GET /api/v1/egress/ca\n", ca.SHA256)
 	return nil
 }
 

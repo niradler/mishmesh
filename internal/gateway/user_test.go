@@ -318,7 +318,7 @@ func TestCertRequestAnswered(t *testing.T) {
 		wantError string
 		wantChain bool
 	}{
-		{"no issuer", nil, "egress decryption is not available on this server", false},
+		{"no issuer means decryption is off", nil, tunnel.CertErrorDecryptDisabled, false},
 		{"issuer error is generic", failing, "certificate issuance unavailable", false},
 		{"issued", ok, "", true},
 	}

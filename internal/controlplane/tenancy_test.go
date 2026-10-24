@@ -131,7 +131,7 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	var aliceCA egressCADTO
 	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/egress/ca", "", http.StatusOK, &aliceCA)
 	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/secrets/shared-key", `{"value":"alice-secret-value"}`, http.StatusOK, nil)
-	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/egress/credentials/shared-key", `{"header":"X-Alice-Egress","secret":"shared-key","agent_ids":["`+f.agentA+`"]}`, http.StatusOK, nil)
+	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/egress/credentials/shared-key", `{"header":"X-Alice-Egress","secret":"shared-key","agent_ids":["`+f.agentA+`"],"destinations":["api.alice.test"]}`, http.StatusOK, nil)
 	var svc serviceDTO
 	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/services", `{"name":"alice-svc","driver":"docker","config":{"containers":["alice-c"]}}`, http.StatusCreated, &svc)
 	f.service = svc.ID
@@ -238,7 +238,7 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 		"DELETE /api/v1/secrets/{name}":                                  {"", http.StatusNoContent},
 		"GET /api/v1/egress/credentials":                                 {"", http.StatusOK},
 		"GET /api/v1/egress/credentials/{name}":                          {"", notFound},
-		"PUT /api/v1/egress/credentials/{name}":                          {`{"header":"X-Bob","secret":"bob-key","agent_ids":[]}`, http.StatusOK},
+		"PUT /api/v1/egress/credentials/{name}":                          {`{"header":"X-Bob","secret":"bob-key","agent_ids":[],"destinations":["api.bob.test"]}`, http.StatusOK},
 		"DELETE /api/v1/egress/credentials/{name}":                       {"", http.StatusNoContent},
 		"GET /api/v1/egress/ca":                                          {"", http.StatusOK},
 		"GET /api/v1/egress/decrypt":                                     {"", http.StatusOK},

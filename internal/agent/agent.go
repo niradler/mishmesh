@@ -90,7 +90,7 @@ func New(opts Options) *Agent {
 	}
 	a := &Agent{opts: opts, log: log, out: out, allow: NewAllowlist(opts.Allowlist), targets: make(map[string]localTarget), dec: newRemoteDecider(clock)}
 	a.origin = newOriginator(a, opts.UpstreamRoots)
-	if opts.Egress != nil && opts.Egress.Listen != "" {
+	if opts.Egress != nil && (opts.Egress.Listen != "" || opts.Egress.SocksListen != "") {
 		a.decrypt = newDecryptor(a.dec, log, clock)
 	}
 	a.dec.onFlush = func() {
