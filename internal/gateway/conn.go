@@ -2,8 +2,10 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
@@ -13,7 +15,13 @@ type agentConn struct {
 	agentID string
 	sess    *tunnel.Session
 	metrics Metrics
+	ctrl    atomic.Pointer[tunnel.Control]
+
+	boundOrg     string
+	boundSession string
 }
+
+var errNoControl = errors.New("gateway: agent control stream not open")
 
 var _ store.AgentConn = (*agentConn)(nil)
 
@@ -22,6 +30,16 @@ func newAgentConn(agentID string, sess *tunnel.Session, metrics Metrics) *agentC
 }
 
 func (a *agentConn) AgentID() string { return a.agentID }
+
+func (a *agentConn) setControl(ctrl *tunnel.Control) { a.ctrl.Store(ctrl) }
+
+func (a *agentConn) Flush() error {
+	ctrl := a.ctrl.Load()
+	if ctrl == nil {
+		return errNoControl
+	}
+	return ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgFlush})
+}
 
 func (a *agentConn) OpenStream(_ context.Context, endpointID, kind string, meta map[string]string) (net.Conn, error) {
 	conn, err := a.sess.OpenData(tunnel.StreamInit{EndpointID: endpointID, Kind: kind, Meta: meta})

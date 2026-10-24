@@ -4,6 +4,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/yamux"
 )
@@ -64,17 +65,33 @@ func (s *Session) OpenData(init StreamInit) (net.Conn, error) {
 	return stream, nil
 }
 
+const InitReadTimeout = 10 * time.Second
+
 func (s *Session) AcceptData() (net.Conn, StreamInit, error) {
-	stream, err := s.ymx.AcceptStream()
+	stream, err := s.AcceptStream()
 	if err != nil {
 		return nil, StreamInit{}, err
 	}
-	var init StreamInit
-	if err := readJSON(stream, &init); err != nil {
-		_ = stream.Close()
+	init, err := ReadStreamInit(stream)
+	if err != nil {
 		return nil, StreamInit{}, err
 	}
 	return stream, init, nil
+}
+
+func (s *Session) AcceptStream() (net.Conn, error) {
+	return s.ymx.AcceptStream()
+}
+
+func ReadStreamInit(stream net.Conn) (StreamInit, error) {
+	_ = stream.SetReadDeadline(time.Now().Add(InitReadTimeout))
+	var init StreamInit
+	if err := readJSON(stream, &init); err != nil {
+		_ = stream.Close()
+		return StreamInit{}, err
+	}
+	_ = stream.SetReadDeadline(time.Time{})
+	return init, nil
 }
 
 func (s *Session) CloseChan() <-chan struct{} { return s.ymx.CloseChan() }
@@ -101,5 +118,7 @@ func (c *Control) Recv() (ControlMessage, error) {
 	}
 	return msg, nil
 }
+
+func (c *Control) SetReadDeadline(t time.Time) error { return c.conn.SetReadDeadline(t) }
 
 func (c *Control) Close() error { return c.conn.Close() }

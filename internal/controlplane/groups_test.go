@@ -72,7 +72,7 @@ func TestGroupsRejectInvalidInput(t *testing.T) {
 		{"duplicate name", http.MethodPost, "/api/v1/groups", `{"name":"ops"}`, http.StatusConflict},
 		{"rename invalid", http.MethodPatch, "/api/v1/groups/" + g.ID, `{"name":"a/b"}`, http.StatusBadRequest},
 		{"unknown member type", http.MethodPost, members, `{"type":"robot","id":"x"}`, http.StatusBadRequest},
-		{"service account not supported", http.MethodPost, members, `{"type":"service_account","id":"sa_1"}`, http.StatusBadRequest},
+		{"unknown service account", http.MethodPost, members, `{"type":"service_account","id":"sa_1"}`, http.StatusNotFound},
 		{"non member user", http.MethodPost, members, `{"type":"user","id":"usr_nope"}`, http.StatusNotFound},
 		{"unknown group", http.MethodPost, "/api/v1/groups/grp_nope/members", `{"type":"user","id":"` + f.memberID + `"}`, http.StatusNotFound},
 	}

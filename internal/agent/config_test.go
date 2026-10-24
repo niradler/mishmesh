@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -399,5 +400,63 @@ func TestFindConfig(t *testing.T) {
 	}
 	if _, err := FindConfig([]string{first}); err == nil || !strings.Contains(err.Error(), "no config file found") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestParseConfigEgress(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want *EgressSpec
+	}{
+		{name: "absent", yaml: "gateway: ws://x:1", want: nil},
+		{name: "null", yaml: "egress:", want: nil},
+		{name: "defaults", yaml: "egress: {}", want: &EgressSpec{Listen: DefaultEgressListen}},
+		{name: "port only", yaml: "egress: {listen: 8080}", want: &EgressSpec{Listen: "127.0.0.1:8080"}},
+		{name: "host port", yaml: "egress: {listen: \"127.0.0.2:3129\"}", want: &EgressSpec{Listen: "127.0.0.2:3129"}},
+		{name: "socks only", yaml: "egress: {socks_listen: 1080}", want: &EgressSpec{SocksListen: "127.0.0.1:1080"}},
+		{name: "http and socks", yaml: "egress: {listen: 3128, socks_listen: 1080}", want: &EgressSpec{Listen: "127.0.0.1:3128", SocksListen: "127.0.0.1:1080"}},
+		{name: "shared gateway", yaml: "egress: {listen: 3128, require_auth: true}", want: &EgressSpec{Listen: "127.0.0.1:3128", RequireAuth: true}},
+		{name: "via exit", yaml: "egress: {exit: \" office-exit \"}", want: &EgressSpec{Listen: DefaultEgressListen, Exit: "office-exit"}},
+		{name: "exit only", yaml: "egress: {serve_exit: true}", want: &EgressSpec{ServeExit: true}},
+		{name: "exit with lan allowance", yaml: "egress: {serve_exit: true, exit_allow: [\" 10.20.0.0/16 \", \"fd00::/8\"]}", want: &EgressSpec{ServeExit: true, ExitAllow: []string{"10.20.0.0/16", "fd00::/8"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseConfig("t.yml", []byte(tt.yaml), mapLookup(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (cfg.Egress == nil) != (tt.want == nil) || (tt.want != nil && !reflect.DeepEqual(cfg.Egress, tt.want)) {
+				t.Fatalf("egress = %+v, want %+v", cfg.Egress, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseConfigEgressValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "list", yaml: "egress: [a]", want: "egress must be a mapping"},
+		{name: "unknown key", yaml: "egress: {listen: 1, upstream: x}", want: `unknown field "upstream"`},
+		{name: "bad listen", yaml: "egress: {listen: nope}", want: `listen "nope" must be a port or host:port`},
+		{name: "clashes with connect", yaml: "connects:\n  pg: {proto: tcp, listen: 3128}\negress: {}", want: `already used by connect "pg"`},
+		{name: "socks clashes with listen", yaml: "egress: {listen: 3128, socks_listen: 3128}", want: "socks_listen 127.0.0.1:3128 is already used by egress listen"},
+		{name: "bad socks listen", yaml: "egress: {socks_listen: nope}", want: `socks_listen "nope" must be a port or host:port`},
+		{name: "require auth without listener", yaml: "egress: {serve_exit: true, require_auth: true}", want: "require_auth needs listen"},
+		{name: "require auth with socks", yaml: "egress: {listen: 3128, socks_listen: 1080, require_auth: true}", want: "require_auth cannot cover socks_listen"},
+		{name: "exit allow without serve exit", yaml: "egress: {exit_allow: [10.0.0.0/8]}", want: "exit_allow needs serve_exit"},
+		{name: "exit allow not a cidr", yaml: "egress: {serve_exit: true, exit_allow: [10.0.0.1]}", want: `exit_allow "10.0.0.1" is not a CIDR`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseConfig("t.yml", []byte(tt.yaml), mapLookup(nil))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want containing %q", err, tt.want)
+			}
+		})
 	}
 }

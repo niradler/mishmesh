@@ -20,7 +20,30 @@ const (
 	MsgPing        MsgType = "ping"
 	MsgPong        MsgType = "pong"
 	MsgError       MsgType = "error"
+
+	MsgDecisionRequest  MsgType = "decision_request"
+	MsgDecisionResponse MsgType = "decision_response"
+	MsgFlush            MsgType = "flush"
 )
+
+const (
+	DecisionActionConnect = "agent:connect"
+	MaxDecisionTTLSeconds = 300
+)
+
+type DecisionQuery struct {
+	ID      uint64 `json:"id"`
+	Action  string `json:"action"`
+	Connect string `json:"connect,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+}
+
+type DecisionAnswer struct {
+	ID         uint64 `json:"id"`
+	Allowed    bool   `json:"allowed"`
+	Reason     string `json:"reason,omitempty"`
+	TTLSeconds int    `json:"ttl_seconds"`
+}
 
 type StreamInit struct {
 	EndpointID string            `json:"endpoint_id"`
@@ -67,6 +90,8 @@ type ControlMessage struct {
 	Type        MsgType             `json:"type"`
 	Register    *RegisterPayload    `json:"register,omitempty"`
 	RegisterAck *RegisterAckPayload `json:"register_ack,omitempty"`
+	Decision    *DecisionQuery      `json:"decision,omitempty"`
+	Answer      *DecisionAnswer     `json:"answer,omitempty"`
 	Error       string              `json:"error,omitempty"`
 }
 

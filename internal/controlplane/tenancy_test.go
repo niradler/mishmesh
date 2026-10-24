@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,9 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mishmesh/mishmesh/internal/orgsecret"
+	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
+	"github.com/mishmesh/mishmesh/internal/workload"
 )
 
 type tenantFixture struct {
@@ -30,6 +35,8 @@ type tenantFixture struct {
 	service    string
 	connection string
 	group      string
+	sa         string
+	wid        string
 }
 
 func newTenantFixture(t *testing.T) *tenantFixture {
@@ -80,8 +87,11 @@ func (f *tenantFixture) fill(pattern string) (string, string) {
 		"/services/{id}", "/services/"+f.service,
 		"/connections/{id}", "/connections/"+f.connection,
 		"/groups/{id}", "/groups/"+f.group,
+		"/service-accounts/{id}", "/service-accounts/"+f.sa,
+		"{wid}", f.wid,
 		"{type}", "user",
 		"{member_id}", f.userA,
+		"{name}", "shared-key",
 	)
 	return method, r.Replace(path)
 }
@@ -113,6 +123,8 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	f.api.SetServices(newFakeServices())
 	f.api.SetConnections(newFakeConnectionControl(), testConnectionRegistry(t), testSecretBox(t))
 	f.api.SetHostCommands(true)
+	f.api.SetSecretVault(orgsecret.New(f.api.data, testSecretBox(t)))
+	doc(t, f.alice, f.srv, http.MethodPut, "/api/v1/secrets/shared-key", `{"value":"alice-secret-value"}`, http.StatusOK, nil)
 	var svc serviceDTO
 	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/services", `{"name":"alice-svc","driver":"docker","config":{"containers":["alice-c"]}}`, http.StatusCreated, &svc)
 	f.service = svc.ID
@@ -125,6 +137,21 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/groups", `{"name":"alice-grp"}`, http.StatusCreated, &grp)
 	f.group = grp.ID
 	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/groups/"+f.group+"/members", `{"type":"user","id":"`+f.userA+`"}`, http.StatusNoContent, nil)
+	var sa struct {
+		ServiceAccount serviceAccountDTO `json:"service_account"`
+	}
+	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/service-accounts", `{"name":"alice-robot"}`, http.StatusCreated, &sa)
+	f.sa = sa.ServiceAccount.ID
+	f.api.SetWorkloadVerifier(workload.NewVerifier(workload.Options{}))
+	var wid workloadIdentityDTO
+	doc(t, f.alice, f.srv, http.MethodPost, "/api/v1/service-accounts/"+f.sa+"/workload-identities", `{"issuer":"https://issuer.example","audience":"mm","subject":"repo:wl-subject-a"}`, http.StatusCreated, &wid)
+	f.wid = wid.ID
+	if err := f.api.data.AppendAccessEvents(context.Background(), []*store.AccessEvent{{
+		ID: "acc_alice", OrgID: f.orgA, At: time.Now().UTC(), Source: store.AccessSourceIngress, Decision: store.AccessAllow,
+		PrincipalType: "User", PrincipalID: f.userA, EndpointID: f.endpoint, Path: "/alice-access-path",
+	}}); err != nil {
+		t.Fatal(err)
+	}
 
 	type probe struct {
 		body string
@@ -132,65 +159,78 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	}
 	notFound := http.StatusNotFound
 	probes := map[string]probe{
-		"GET /api/v1/orgs/{id}":                                 {"", notFound},
-		"PATCH /api/v1/members/{user_id}":                       {`{"role":"admin"}`, notFound},
-		"DELETE /api/v1/members/{user_id}":                      {"", notFound},
-		"POST /api/v1/agents":                                   {`{"name":"x","org_id":"` + f.orgA + `"}`, notFound},
-		"GET /api/v1/agents/{id}":                               {"", notFound},
-		"PATCH /api/v1/agents/{id}":                             {`{"name":"hijacked"}`, notFound},
-		"DELETE /api/v1/agents/{id}":                            {"", notFound},
-		"POST /api/v1/agents/{id}/rotate":                       {"", notFound},
-		"POST /api/v1/agents/{id}/revoke":                       {"", notFound},
-		"GET /api/v1/agents/{id}/endpoints":                     {"", notFound},
-		"GET /api/v1/agents/{id}/tokens":                        {"", notFound},
-		"POST /api/v1/endpoints":                                {`{"agent_id":"` + f.agentA + `","subdomain":"bob-sub"}`, notFound},
-		"GET /api/v1/endpoints/{id}":                            {"", notFound},
-		"PATCH /api/v1/endpoints/{id}":                          {`{"subdomain":"pwned"}`, notFound},
-		"DELETE /api/v1/endpoints/{id}":                         {"", notFound},
-		"POST /api/v1/reach/{agent_id}/http":                    {`{"target":"127.0.0.1:1"}`, notFound},
-		"GET /api/v1/reach/{agent_id}/stream":                   {"", notFound},
-		"GET /api/v1/invites":                                   {"", http.StatusOK},
-		"DELETE /api/v1/invites/{id}":                           {"", notFound},
-		"GET /api/v1/agents":                                    {"", http.StatusOK},
-		"GET /api/v1/endpoints":                                 {"", http.StatusOK},
-		"GET /api/v1/members":                                   {"", http.StatusOK},
-		"GET /api/v1/groups":                                    {"", http.StatusOK},
-		"POST /api/v1/groups":                                   {`{"name":"bob-grp"}`, http.StatusCreated},
-		"GET /api/v1/groups/{id}":                               {"", notFound},
-		"PATCH /api/v1/groups/{id}":                             {`{"name":"pwned"}`, notFound},
-		"DELETE /api/v1/groups/{id}":                            {"", notFound},
-		"POST /api/v1/groups/{id}/members":                      {`{"type":"user","id":"` + f.userA + `"}`, notFound},
-		"DELETE /api/v1/groups/{id}/members/{type}/{member_id}": {"", notFound},
-		"POST /api/v1/members":                                  {`{"email":"carol@example.com","role":"member"}`, http.StatusCreated},
-		"GET /api/v1/orgs":                                      {"", http.StatusOK},
-		"POST /api/v1/orgs":                                     {`{"name":"bobs-second"}`, http.StatusCreated},
-		"GET /api/v1/quota":                                     {"", http.StatusOK},
-		"PUT /api/v1/quota":                                     {`{"max_agents":1,"max_endpoints":1,"max_bandwidth_bytes":1}`, http.StatusForbidden},
-		"GET /api/v1/audit":                                     {"", http.StatusOK},
-		"GET /api/v1/status":                                    {"", http.StatusOK},
-		"GET /api/v1/policy":                                    {"", http.StatusOK},
-		"GET /api/v1/services":                                  {"", http.StatusOK},
-		"GET /api/v1/service-drivers":                           {"", http.StatusOK},
-		"POST /api/v1/services":                                 {`{"name":"bob-svc","driver":"docker","config":{"containers":["bob"]}}`, http.StatusCreated},
-		"GET /api/v1/services/{id}":                             {"", notFound},
-		"PUT /api/v1/services/{id}":                             {`{"name":"pwned","driver":"docker","config":{"containers":["x"]}}`, notFound},
-		"DELETE /api/v1/services/{id}":                          {"", notFound},
-		"POST /api/v1/services/{id}/start":                      {"", notFound},
-		"POST /api/v1/services/{id}/stop":                       {"", notFound},
-		"GET /api/v1/capabilities":                              {"", http.StatusOK},
-		"GET /api/v1/connection-types":                          {"", http.StatusOK},
-		"GET /api/v1/connections":                               {"", http.StatusOK},
-		"POST /api/v1/connections":                              {`{"type":"third","name":"bob-connection","config":{},"secrets":{}}`, http.StatusCreated},
-		"GET /api/v1/connections/{id}":                          {"", notFound},
-		"PUT /api/v1/connections/{id}":                          {`{"name":"pwned","config":{}}`, notFound},
-		"DELETE /api/v1/connections/{id}":                       {"", notFound},
-		"POST /api/v1/connections/{id}/sync":                    {"", notFound},
-		"POST /api/v1/connections/detect":                       {`{"type":"third","input":{}}`, http.StatusOK},
-		"GET /api/v1/topology":                                  {"", http.StatusOK},
-		"PUT /api/v1/policy":                                    {`{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"],"member":["agent:read"]}}`, http.StatusOK},
+		"GET /api/v1/orgs/{id}":                                          {"", notFound},
+		"PATCH /api/v1/members/{user_id}":                                {`{"role":"admin"}`, notFound},
+		"DELETE /api/v1/members/{user_id}":                               {"", notFound},
+		"POST /api/v1/agents":                                            {`{"name":"x","org_id":"` + f.orgA + `"}`, notFound},
+		"GET /api/v1/agents/{id}":                                        {"", notFound},
+		"PATCH /api/v1/agents/{id}":                                      {`{"name":"hijacked"}`, notFound},
+		"DELETE /api/v1/agents/{id}":                                     {"", notFound},
+		"POST /api/v1/agents/{id}/rotate":                                {"", notFound},
+		"POST /api/v1/agents/{id}/revoke":                                {"", notFound},
+		"GET /api/v1/agents/{id}/endpoints":                              {"", notFound},
+		"GET /api/v1/agents/{id}/tokens":                                 {"", notFound},
+		"POST /api/v1/endpoints":                                         {`{"agent_id":"` + f.agentA + `","subdomain":"bob-sub"}`, notFound},
+		"GET /api/v1/endpoints/{id}":                                     {"", notFound},
+		"PATCH /api/v1/endpoints/{id}":                                   {`{"subdomain":"pwned"}`, notFound},
+		"DELETE /api/v1/endpoints/{id}":                                  {"", notFound},
+		"POST /api/v1/reach/{agent_id}/http":                             {`{"target":"127.0.0.1:1"}`, notFound},
+		"GET /api/v1/reach/{agent_id}/stream":                            {"", notFound},
+		"GET /api/v1/invites":                                            {"", http.StatusOK},
+		"DELETE /api/v1/invites/{id}":                                    {"", notFound},
+		"GET /api/v1/agents":                                             {"", http.StatusOK},
+		"GET /api/v1/endpoints":                                          {"", http.StatusOK},
+		"GET /api/v1/members":                                            {"", http.StatusOK},
+		"GET /api/v1/groups":                                             {"", http.StatusOK},
+		"POST /api/v1/groups":                                            {`{"name":"bob-grp"}`, http.StatusCreated},
+		"GET /api/v1/groups/{id}":                                        {"", notFound},
+		"PATCH /api/v1/groups/{id}":                                      {`{"name":"pwned"}`, notFound},
+		"DELETE /api/v1/groups/{id}":                                     {"", notFound},
+		"POST /api/v1/groups/{id}/members":                               {`{"type":"user","id":"` + f.userA + `"}`, notFound},
+		"DELETE /api/v1/groups/{id}/members/{type}/{member_id}":          {"", notFound},
+		"GET /api/v1/service-accounts":                                   {"", http.StatusOK},
+		"POST /api/v1/service-accounts":                                  {`{"name":"bob-robot"}`, http.StatusCreated},
+		"GET /api/v1/service-accounts/{id}":                              {"", notFound},
+		"PATCH /api/v1/service-accounts/{id}":                            {`{"disabled":true}`, notFound},
+		"DELETE /api/v1/service-accounts/{id}":                           {"", notFound},
+		"POST /api/v1/service-accounts/{id}/rotate":                      {"", notFound},
+		"GET /api/v1/service-accounts/{id}/workload-identities":          {"", notFound},
+		"POST /api/v1/service-accounts/{id}/workload-identities":         {`{"issuer":"https://issuer.example","audience":"mm","subject":"repo:bob"}`, notFound},
+		"DELETE /api/v1/service-accounts/{id}/workload-identities/{wid}": {"", notFound},
+		"POST /api/v1/members":                                           {`{"email":"carol@example.com","role":"member"}`, http.StatusCreated},
+		"GET /api/v1/orgs":                                               {"", http.StatusOK},
+		"POST /api/v1/orgs":                                              {`{"name":"bobs-second"}`, http.StatusCreated},
+		"GET /api/v1/quota":                                              {"", http.StatusOK},
+		"PUT /api/v1/quota":                                              {`{"max_agents":1,"max_endpoints":1,"max_bandwidth_bytes":1}`, http.StatusForbidden},
+		"GET /api/v1/audit":                                              {"", http.StatusOK},
+		"GET /api/v1/access-log":                                         {"", http.StatusOK},
+		"GET /api/v1/status":                                             {"", http.StatusOK},
+		"GET /api/v1/policy":                                             {"", http.StatusOK},
+		"GET /api/v1/services":                                           {"", http.StatusOK},
+		"GET /api/v1/service-drivers":                                    {"", http.StatusOK},
+		"POST /api/v1/services":                                          {`{"name":"bob-svc","driver":"docker","config":{"containers":["bob"]}}`, http.StatusCreated},
+		"GET /api/v1/services/{id}":                                      {"", notFound},
+		"PUT /api/v1/services/{id}":                                      {`{"name":"pwned","driver":"docker","config":{"containers":["x"]}}`, notFound},
+		"DELETE /api/v1/services/{id}":                                   {"", notFound},
+		"POST /api/v1/services/{id}/start":                               {"", notFound},
+		"POST /api/v1/services/{id}/stop":                                {"", notFound},
+		"GET /api/v1/capabilities":                                       {"", http.StatusOK},
+		"GET /api/v1/connection-types":                                   {"", http.StatusOK},
+		"GET /api/v1/connections":                                        {"", http.StatusOK},
+		"POST /api/v1/connections":                                       {`{"type":"third","name":"bob-connection","config":{},"secrets":{}}`, http.StatusCreated},
+		"GET /api/v1/connections/{id}":                                   {"", notFound},
+		"PUT /api/v1/connections/{id}":                                   {`{"name":"pwned","config":{}}`, notFound},
+		"DELETE /api/v1/connections/{id}":                                {"", notFound},
+		"POST /api/v1/connections/{id}/sync":                             {"", notFound},
+		"POST /api/v1/connections/detect":                                {`{"type":"third","input":{}}`, http.StatusOK},
+		"GET /api/v1/topology":                                           {"", http.StatusOK},
+		"GET /api/v1/secrets":                                            {"", http.StatusOK},
+		"PUT /api/v1/secrets/{name}":                                     {`{"value":"bob-value"}`, http.StatusOK},
+		"DELETE /api/v1/secrets/{name}":                                  {"", http.StatusNoContent},
+		"PUT /api/v1/policy":                                             {`{"matrix":{"owner":["agent:read","agent:write","endpoint:read","endpoint:write","quota:read","quota:write","member:read","member:manage","audit:read","status:read","policy:read","policy:write"],"member":["agent:read"]}}`, http.StatusOK},
 	}
 
-	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, f.group, "alice-credential"}
+	leaks := []string{f.agentA, f.endpoint, f.orgA, f.userA, f.tokenA, f.inviteA, f.inviteTk, "dave@example.com", "alice", "alice-sub", "alice-agent", "alice-svc", "alice-lab", "alicetun", "aliceacct", f.service, f.connection, f.group, "alice-credential", f.sa, "alice-robot", "/alice-access-path", "acc_alice", "alice-secret-value", f.wid, "wl-subject-a"}
 
 	for _, rt := range f.api.routes() {
 		pr, ok := probes[rt.pattern]
@@ -245,6 +285,20 @@ func TestCrossTenantEveryRoute(t *testing.T) {
 	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/invites", "", http.StatusOK, &invites)
 	if len(invites) != 1 || invites[0].ID != f.inviteA {
 		t.Fatalf("alice invites tampered: %+v", invites)
+	}
+	var secretList []orgSecretDTO
+	status, body := f.do(t, f.alice, http.MethodGet, "/api/v1/secrets", "")
+	if status != http.StatusOK || strings.Contains(body, "alice-secret-value") {
+		t.Fatalf("alice secrets list: %d %s", status, body)
+	}
+	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/secrets", "", http.StatusOK, &secretList)
+	if len(secretList) != 1 || secretList[0].Name != "shared-key" || secretList[0].Version != 1 || !secretList[0].HasValue {
+		t.Fatalf("alice secrets tampered: %+v", secretList)
+	}
+	var wids []workloadIdentityDTO
+	doc(t, f.alice, f.srv, http.MethodGet, "/api/v1/service-accounts/"+f.sa+"/workload-identities", "", http.StatusOK, &wids)
+	if len(wids) != 1 || wids[0].ID != f.wid || wids[0].Subject != "repo:wl-subject-a" {
+		t.Fatalf("alice workload identities tampered: %+v", wids)
 	}
 }
 

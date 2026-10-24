@@ -114,6 +114,7 @@ func (a *API) deleteGroupHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, a.data.DeleteGroup(r.Context(), a.orgScope(r), id)) {
 		return
 	}
+	a.flushDecisions()
 	a.audit(r, "group.delete", id, "")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -126,19 +127,26 @@ func (a *API) addGroupMemberHandler(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Type != store.GroupMemberUser {
-		writeError(w, http.StatusBadRequest, "only user members are supported")
-		return
-	}
 	org := a.orgScope(r)
 	groupID := r.PathValue("id")
-	if _, err := a.data.GetMembership(r.Context(), org, req.ID); a.handleErr(w, err) {
+	switch req.Type {
+	case store.GroupMemberUser:
+		if _, err := a.data.GetMembership(r.Context(), org, req.ID); a.handleErr(w, err) {
+			return
+		}
+	case store.GroupMemberServiceAccount:
+		if _, err := a.data.GetServiceAccount(r.Context(), org, req.ID); a.handleErr(w, err) {
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "member type must be user or service_account")
 		return
 	}
 	m := &store.GroupMember{OrgID: org, GroupID: groupID, MemberType: req.Type, MemberID: req.ID, CreatedAt: time.Now()}
 	if a.handleErr(w, a.data.AddGroupMember(r.Context(), m)) {
 		return
 	}
+	a.flushDecisions()
 	a.audit(r, "group.member.add", groupID, req.Type+":"+req.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -150,6 +158,7 @@ func (a *API) removeGroupMemberHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, a.data.RemoveGroupMember(r.Context(), a.orgScope(r), groupID, memberType, memberID)) {
 		return
 	}
+	a.flushDecisions()
 	a.audit(r, "group.member.remove", groupID, memberType+":"+memberID)
 	w.WriteHeader(http.StatusNoContent)
 }

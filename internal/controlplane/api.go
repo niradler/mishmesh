@@ -16,10 +16,13 @@ import (
 	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connections"
+	"github.com/mishmesh/mishmesh/internal/identity"
+	"github.com/mishmesh/mishmesh/internal/orgsecret"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
 	"github.com/mishmesh/mishmesh/internal/secrets"
 	"github.com/mishmesh/mishmesh/internal/services"
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/workload"
 )
 
 type API struct {
@@ -46,11 +49,16 @@ type API struct {
 	servicesMu         sync.Mutex
 	serviceRegistry    *services.Registry
 	invalidateIngress  func()
+	decisionFlush      func()
 	endpointHealth     HealthSource
 	connections        ConnectionControl
 	connectionRegistry *connections.Registry
 	secretBox          *secrets.Box
+	vault              *orgsecret.Vault
+	workload           *workload.Verifier
 	hostCommands       bool
+	identity           *identity.Service
+	apiPublicURL       string
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
@@ -137,10 +145,25 @@ type authzEntry struct {
 	expires time.Time
 }
 
+func (a *API) ClearAuthzCache() {
+	a.authzMu.Lock()
+	clear(a.authzCache)
+	a.authzMu.Unlock()
+}
+
 func (a *API) invalidateAuthz(orgID string) {
 	a.authzMu.Lock()
 	delete(a.authzCache, orgID)
 	a.authzMu.Unlock()
+	a.flushDecisions()
+}
+
+func (a *API) SetDecisionFlusher(flush func()) { a.decisionFlush = flush }
+
+func (a *API) flushDecisions() {
+	if a.decisionFlush != nil {
+		a.decisionFlush()
+	}
 }
 
 type ctxKey int
@@ -150,6 +173,7 @@ const (
 	ctxActor
 	ctxRole
 	ctxAdmin
+	ctxPrincipalType
 )
 
 func (a *API) orgScope(r *http.Request) string {
@@ -256,10 +280,24 @@ func (a *API) routes() []route {
 		{"PUT /api/v1/quota", a.require(authz.ActionQuotaWrite, a.putQuotaHandler)},
 
 		{"GET /api/v1/audit", a.require(authz.ActionAuditRead, a.listAuditHandler)},
+		{"GET /api/v1/access-log", a.require(authz.ActionAuditRead, a.listAccessLogHandler)},
 		{"GET /api/v1/status", a.require(authz.ActionStatusRead, a.statusHandler)},
+
+		{"GET /api/v1/service-accounts", a.require(authz.ActionMemberRead, a.listServiceAccountsHandler)},
+		{"POST /api/v1/service-accounts", a.require(authz.ActionMemberManage, a.createServiceAccountHandler)},
+		{"GET /api/v1/service-accounts/{id}", a.require(authz.ActionMemberRead, a.getServiceAccountHandler)},
+		{"PATCH /api/v1/service-accounts/{id}", a.require(authz.ActionMemberManage, a.patchServiceAccountHandler)},
+		{"DELETE /api/v1/service-accounts/{id}", a.require(authz.ActionMemberManage, a.deleteServiceAccountHandler)},
+		{"POST /api/v1/service-accounts/{id}/rotate", a.require(authz.ActionMemberManage, a.rotateServiceAccountHandler)},
+		{"GET /api/v1/service-accounts/{id}/workload-identities", a.require(authz.ActionMemberRead, a.listWorkloadIdentitiesHandler)},
+		{"POST /api/v1/service-accounts/{id}/workload-identities", a.require(authz.ActionMemberManage, a.createWorkloadIdentityHandler)},
+		{"DELETE /api/v1/service-accounts/{id}/workload-identities/{wid}", a.require(authz.ActionMemberManage, a.deleteWorkloadIdentityHandler)},
 
 		{"GET /api/v1/policy", a.require(authz.ActionPolicyRead, a.getPolicyHandler)},
 		{"PUT /api/v1/policy", a.require(authz.ActionPolicyWrite, a.putPolicyHandler)},
+		{"GET /api/v1/secrets", a.require(authz.ActionPolicyRead, a.listSecretsHandler)},
+		{"PUT /api/v1/secrets/{name}", a.require(authz.ActionPolicyWrite, a.putSecretHandler)},
+		{"DELETE /api/v1/secrets/{name}", a.require(authz.ActionPolicyWrite, a.deleteSecretHandler)},
 	}
 	if a.domainVerification {
 		routes = append(routes,
@@ -271,8 +309,8 @@ func (a *API) routes() []route {
 	}
 	if a.reachInEnabled {
 		routes = append(routes,
-			route{"POST /api/v1/reach/{agent_id}/http", a.require(authz.ActionAgentWrite, a.reachInHTTPHandler)},
-			route{"GET /api/v1/reach/{agent_id}/stream", a.require(authz.ActionAgentWrite, a.reachInStreamHandler)},
+			route{"POST /api/v1/reach/{agent_id}/http", a.requireMachine(authz.ActionAgentWrite, a.reachInHTTPHandler)},
+			route{"GET /api/v1/reach/{agent_id}/stream", a.requireMachine(authz.ActionAgentWrite, a.reachInStreamHandler)},
 		)
 	}
 	return routes
@@ -283,6 +321,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /readyz", a.ready)
 
 	a.registerAuthRoutes(mux)
+	a.registerOAuthRoutes(mux)
 
 	for _, rt := range a.routes() {
 		mux.HandleFunc(rt.pattern, rt.handler)
@@ -326,8 +365,9 @@ func (a *API) permitted(r *http.Request, action authz.Action) bool {
 		return false
 	}
 	role, _ := r.Context().Value(ctxRole).(string)
+	principalType, _ := r.Context().Value(ctxPrincipalType).(authz.EntityType)
 	org := a.orgScope(r)
-	return a.authorizerFor(r.Context(), org).Authorize(authz.Principal{ID: a.actor(r), Role: role, Org: org}, action)
+	return a.authorizerFor(r.Context(), org).Authorize(authz.Principal{ID: a.actor(r), Type: principalType, Role: role, Org: org}, action)
 }
 
 func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context, bool) {

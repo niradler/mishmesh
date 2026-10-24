@@ -17,20 +17,25 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/accesslog"
 	"github.com/mishmesh/mishmesh/internal/cluster"
 	"github.com/mishmesh/mishmesh/internal/config"
 	"github.com/mishmesh/mishmesh/internal/connect/bridge"
+	"github.com/mishmesh/mishmesh/internal/connect/egress"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/connect/sshfwd"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
 	"github.com/mishmesh/mishmesh/internal/gateway"
 	"github.com/mishmesh/mishmesh/internal/ingress"
 	"github.com/mishmesh/mishmesh/internal/metrics"
+	"github.com/mishmesh/mishmesh/internal/orgsecret"
 	"github.com/mishmesh/mishmesh/internal/ratelimit"
+	"github.com/mishmesh/mishmesh/internal/safehttp"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/redis"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
+	"github.com/mishmesh/mishmesh/internal/workload"
 )
 
 var version = "dev"
@@ -188,9 +193,33 @@ func serve() error {
 	if udpIngress != nil {
 		gwOpts.UDPPorts = udpIngress
 	}
-	gwOpts.Connect = bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Meter: mx})
+	vault := orgsecret.New(data, box)
+	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
+	cp.SetSecretVault(vault)
+	idSvc, err := newIdentityService(cfg, conns)
+	if err != nil {
+		return err
+	}
+	cp.SetIdentity(idSvc)
+	cp.SetWorkloadVerifier(workload.NewVerifier(workload.Options{Client: safehttp.Client(false, cfg.OIDCAllowPrivate)}))
+	gwOpts.Users = idSvc
+	accessLog := accesslog.New(data, accesslog.Options{Retention: cfg.AccessLogRetention, Log: log})
+	mx.RegisterAccessLog(accessLog)
+	gwOpts.Connect = bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Meter: mx, Deciders: cp, Revocations: idSvc})
+	gwOpts.Egress = egress.New(egress.Options{Conns: conns, Log: log, Meter: mx, Deciders: cp, Dialer: proxyGuard, Access: accessLog, Revocations: idSvc, Auth: idSvc, Agents: data})
 	gwOpts.KindUnavailable = unavailableKinds(cfg, tcpIngress != nil, udpIngress != nil)
 	gw := gateway.New(gwOpts)
+	idSvc.OnFlush(cp.ClearAuthzCache)
+	idSvc.OnFlush(gw.FlushAll)
+	cp.SetDecisionFlusher(idSvc.FlushAll)
+	if bus, ok := conns.(store.EventBus); ok {
+		stopBus, err := idSvc.AttachBus(bus, log)
+		if err != nil {
+			return err
+		}
+		defer stopBus()
+		log.Info("revocations and decision flushes shared across nodes")
+	}
 	if swept, err := gw.SweepOrphanedEphemeral(context.Background()); err != nil {
 		log.Warn("sweep of orphaned ephemeral endpoints failed", "err", err)
 	} else if swept > 0 {
@@ -199,7 +228,6 @@ func serve() error {
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
-	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
 	cp.SetPublicConfig(cfg.BaseDomain, cfg.PublicScheme)
 	cp.SetPathRouting(cfg.PathRouting)
 	cp.SetTLSPublicPort(cfg.TLSPassthroughPublicPort)
@@ -214,6 +242,7 @@ func serve() error {
 		MaxBandwidthBytes: cfg.QuotaMaxBandwidthBytes,
 	})
 	cp.SetReachInEnabled(cfg.ReachInEnabled)
+	cp.SetAPIPublicURL(cfg.APIPublicURL)
 	cp.SetDomainVerification(cfg.DomainVerification, nil)
 	cp.ConfigureAuth(controlplane.AuthOptions{
 		Enabled:            cfg.AuthEnabled,
@@ -250,6 +279,14 @@ func serve() error {
 	servers := []*http.Server{newHTTPServer(cfg.APIAddr, apiMux, nil)}
 	log.Info("api listener", "addr", cfg.APIAddr)
 
+	accessCtx, stopAccessLog := context.WithCancel(context.Background())
+	accessDone := make(chan struct{})
+	go func() {
+		defer close(accessDone)
+		accessLog.Run(accessCtx)
+	}()
+	defer stopAccessLog()
+
 	if cfg.IngressEnabled {
 		ing := ingress.New(ingress.Options{
 			Data:                    data,
@@ -266,6 +303,11 @@ func serve() error {
 			DisablePathRouting:      !cfg.PathRouting,
 			UpstreamResponseTimeout: cfg.UpstreamResponseTimeout,
 			Services:                network.ingressWaker(),
+			Identity:                idSvc,
+			Deciders:                cp,
+			APIPublicURL:            cfg.APIPublicURL,
+			AccessLog:               accessLog,
+			Secrets:                 vault,
 		})
 		cp.SetIngressInvalidator(ing.InvalidateCaches)
 		network.invalidateIngress = ing.InvalidateCaches
@@ -342,6 +384,11 @@ func serve() error {
 		onServersStopped: func(ctx context.Context) {
 			network.stop(ctx, log)
 			clusterRT.drain(ctx)
+			stopAccessLog()
+			select {
+			case <-accessDone:
+			case <-ctx.Done():
+			}
 		},
 	}
 	if err := network.start(); err != nil {

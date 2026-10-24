@@ -56,6 +56,7 @@ type Facts struct {
 	Subject    *Subject
 	Endpoint   *EndpointEntity
 	Agent      *AgentEntity
+	Exit       *AgentEntity
 	Session    *SessionFacts
 	MaxAuthAge time.Duration
 }
@@ -146,6 +147,12 @@ func checkFacts(req DecisionRequest, facts Facts) (Reason, bool) {
 	if req.Principal.Type == EntityAgent && (facts.Agent == nil || facts.Agent.ID != req.Principal.ID) {
 		return ReasonUnknownEntity, false
 	}
+	if req.Context.Exit != "" && (facts.Exit == nil || facts.Exit.ID != req.Context.Exit) {
+		return ReasonUnknownEntity, false
+	}
+	if facts.Exit != nil && facts.Exit.Disabled {
+		return ReasonAgentDisabled, false
+	}
 	if facts.Agent != nil && facts.Agent.Disabled {
 		return ReasonAgentDisabled, false
 	}
@@ -189,14 +196,15 @@ func parseClientIP(s string) (types.IPAddr, error) {
 }
 
 func destinationEntity(id string) (types.Entity, error) {
-	host, portStr, err := net.SplitHostPort(id)
+	normalized, err := NormalizeDestination(id)
 	if err != nil {
 		return types.Entity{}, err
 	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port < 1 || port > 65535 || host == "" {
-		return types.Entity{}, invalid("destination %q must be host:port", truncate(id))
+	if normalized != id {
+		return types.Entity{}, invalid("destination %q is not normalized", truncate(id))
 	}
+	host, portStr, _ := net.SplitHostPort(id)
+	port, _ := strconv.Atoi(portStr)
 	uid := types.NewEntityUID(types.EntityType(EntityDestination), types.String(id))
 	return types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
 		"host": types.String(host),
@@ -236,6 +244,12 @@ func buildEntities(req DecisionRequest, facts Facts, destination types.Entity) t
 		agent := types.NewEntityUID(types.EntityType(EntityAgent), types.String(facts.Agent.ID))
 		if _, exists := entities[agent]; !exists {
 			entities[agent] = types.Entity{UID: agent, Attributes: types.NewRecord(types.RecordMap{"name": types.String(facts.Agent.Name)})}
+		}
+	}
+	if facts.Exit != nil && req.Context.Exit != "" {
+		exit := types.NewEntityUID(types.EntityType(EntityAgent), types.String(facts.Exit.ID))
+		if _, exists := entities[exit]; !exists {
+			entities[exit] = types.Entity{UID: exit, Attributes: types.NewRecord(types.RecordMap{"name": types.String(facts.Exit.Name)})}
 		}
 	}
 	if req.Resource.Type == EntityEndpoint && facts.Endpoint != nil {
@@ -280,8 +294,16 @@ func buildContext(req DecisionRequest, facts Facts, clientIP types.IPAddr, authT
 		m["agent"] = types.NewEntityUID(types.EntityType(EntityAgent), types.String(facts.Agent.ID))
 		if req.Action == ActionAgentConnect {
 			m["protocol"] = types.String(c.Protocol)
-		} else if c.SNI != "" {
-			m["sni"] = types.String(c.SNI)
+		} else {
+			if c.SNI != "" {
+				m["sni"] = types.String(c.SNI)
+			}
+			if c.Exit != "" {
+				m["exit"] = types.NewEntityUID(types.EntityType(EntityAgent), types.String(c.Exit))
+			}
+			if ip, err := parseClientIP(c.ResolvedIP); err == nil {
+				m["resolved_ip"] = ip
+			}
 		}
 	}
 	return types.NewRecord(m)

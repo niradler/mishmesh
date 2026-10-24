@@ -396,6 +396,9 @@ func buildPolicy(in *policyInput, existing *store.EndpointPolicy) (*store.Endpoi
 			return nil, err
 		}
 	}
+	if err := p.Identity.Validate(); err != nil {
+		return nil, err
+	}
 	switch {
 	case in.BasicAuthPassword != "":
 		h, err := bcrypt.GenerateFromPassword([]byte(in.BasicAuthPassword), bcrypt.DefaultCost)

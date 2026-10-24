@@ -91,6 +91,10 @@ func stripGateCredentials(h http.Header, ep *store.Endpoint) {
 }
 
 func stripCookies(h http.Header, names ...string) {
+	stripCookiesMatching(h, func(name string) bool { return slices.Contains(names, name) })
+}
+
+func stripCookiesMatching(h http.Header, drop func(name string) bool) {
 	values := h.Values("Cookie")
 	if len(values) == 0 {
 		return
@@ -103,7 +107,7 @@ func stripCookies(h http.Header, names ...string) {
 				continue
 			}
 			name, _, _ := strings.Cut(part, "=")
-			if slices.Contains(names, strings.TrimSpace(name)) {
+			if drop(strings.TrimSpace(name)) {
 				continue
 			}
 			kept = append(kept, part)

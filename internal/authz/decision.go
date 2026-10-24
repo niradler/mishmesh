@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"time"
 )
 
@@ -47,11 +48,12 @@ const (
 	AuthMethodMTLS              AuthMethod = "mtls"
 	AuthMethodClientCredentials AuthMethod = "client_credentials"
 	AuthMethodAgentToken        AuthMethod = "agent_token"
+	AuthMethodWorkloadIdentity  AuthMethod = "workload_identity"
 )
 
 var knownAuthMethods = map[AuthMethod]bool{
 	AuthMethodNone: true, AuthMethodPassword: true, AuthMethodOIDC: true, AuthMethodBasic: true,
-	AuthMethodMTLS: true, AuthMethodClientCredentials: true, AuthMethodAgentToken: true,
+	AuthMethodMTLS: true, AuthMethodClientCredentials: true, AuthMethodAgentToken: true, AuthMethodWorkloadIdentity: true,
 }
 
 type Reason string
@@ -93,6 +95,8 @@ type RequestContext struct {
 	Path       string     `json:"path,omitempty"`
 	Protocol   string     `json:"protocol,omitempty"`
 	SNI        string     `json:"sni,omitempty"`
+	Exit       string     `json:"exit,omitempty"`
+	ResolvedIP string     `json:"resolved_ip,omitempty"`
 	AuthMethod AuthMethod `json:"auth_method"`
 	AuthTime   *time.Time `json:"auth_time,omitempty"`
 }
@@ -183,6 +187,8 @@ func (r DecisionRequest) Validate() error {
 		{"method", r.Context.Method, maxFieldLength},
 		{"protocol", r.Context.Protocol, maxFieldLength},
 		{"sni", r.Context.SNI, maxHostLength},
+		{"exit", r.Context.Exit, maxFieldLength},
+		{"resolved_ip", r.Context.ResolvedIP, maxFieldLength},
 	} {
 		if len(f.value) > f.max {
 			return invalid("%s exceeds %d bytes", f.name, f.max)
@@ -193,6 +199,17 @@ func (r DecisionRequest) Validate() error {
 	}
 	if shape.needsProto && r.Context.Protocol == "" {
 		return invalid("protocol is required for %s", r.Action)
+	}
+	if r.Context.Exit != "" && r.Action != ActionEgressConnect {
+		return invalid("exit only applies to %s", ActionEgressConnect)
+	}
+	if r.Context.ResolvedIP != "" {
+		if r.Action != ActionEgressConnect {
+			return invalid("resolved_ip only applies to %s", ActionEgressConnect)
+		}
+		if _, err := netip.ParseAddr(r.Context.ResolvedIP); err != nil {
+			return invalid("resolved_ip is not an ip address")
+		}
 	}
 	if !knownAuthMethods[r.Context.AuthMethod] {
 		return invalid("unknown auth_method %q", truncate(string(r.Context.AuthMethod)))
@@ -230,4 +247,21 @@ func truncate(s string) string {
 		return s[:64] + "..."
 	}
 	return s
+}
+
+const ReauthRequiredReason = "reauth_required"
+
+func (d Decision) NeedsReauth() bool {
+	if d.Allowed {
+		return false
+	}
+	if d.Reason == ReasonAuthStale {
+		return true
+	}
+	for _, p := range d.Policies {
+		if p.Annotations["reason"] == ReauthRequiredReason {
+			return true
+		}
+	}
+	return false
 }

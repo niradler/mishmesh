@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -37,6 +38,14 @@ func TestGuardValidateTarget(t *testing.T) {
 		{"ipv6 loopback", mustGuard(t, false, false), "[::1]:80", false},
 		{"metadata", mustGuard(t, true, true), "169.254.169.254:80", false},
 		{"metadata ipv6", mustGuard(t, true, true), "[fd00:ec2::254]:80", false},
+		{"nat64 metadata", mustGuard(t, true, true), "[64:ff9b::a9fe:a9fe]:80", false},
+		{"nat64 loopback", mustGuard(t, false, true), "[64:ff9b::7f00:1]:80", false},
+		{"nat64 private by default", mustGuard(t, false, false), "[64:ff9b::a00:1]:80", false},
+		{"nat64 public with private allowed", mustGuard(t, false, true), "[64:ff9b::808:808]:80", true},
+		{"ipv4 compatible metadata", mustGuard(t, false, false), "[::a9fe:a9fe]:80", false},
+		{"ipv4 compatible loopback", mustGuard(t, false, false), "[::7f00:1]:80", false},
+		{"local nat64", mustGuard(t, false, false), "[64:ff9b:1::1]:80", false},
+		{"site local", mustGuard(t, false, false), "[fec0::1]:80", false},
 		{"link local", mustGuard(t, true, true), "169.254.10.10:80", false},
 		{"unspecified", mustGuard(t, true, true), "0.0.0.0:80", false},
 		{"multicast", mustGuard(t, true, true), "224.0.0.1:80", false},
@@ -115,4 +124,84 @@ func TestNewGuardRejectsBadCIDR(t *testing.T) {
 	if _, err := NewGuard(false, false, []string{"not-a-cidr"}); err == nil {
 		t.Fatal("expected error for invalid cidr")
 	}
+}
+
+func answers(ips ...string) func(context.Context, string) ([]net.IPAddr, error) {
+	return func(context.Context, string) ([]net.IPAddr, error) {
+		out := make([]net.IPAddr, len(ips))
+		for i, ip := range ips {
+			out[i] = net.IPAddr{IP: net.ParseIP(ip)}
+		}
+		return out, nil
+	}
+}
+
+func TestGuardResolveRejectsAnyBlockedAnswer(t *testing.T) {
+	tests := []struct {
+		name    string
+		answers []string
+		ok      bool
+	}{
+		{"public only", []string{"93.184.216.34"}, true},
+		{"unspecified v4", []string{"0.0.0.0"}, false},
+		{"unspecified v6", []string{"::"}, false},
+		{"zero network", []string{"0.1.2.3"}, false},
+		{"public then unspecified", []string{"93.184.216.34", "0.0.0.0"}, false},
+		{"public then loopback", []string{"93.184.216.34", "127.0.0.1"}, false},
+		{"metadata", []string{"169.254.169.254"}, false},
+		{"mapped loopback", []string{"::ffff:127.0.0.1"}, false},
+		{"private", []string{"10.0.0.5"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := DefaultGuard()
+			g.lookup = answers(tt.answers...)
+			addr, err := g.Resolve(context.Background(), "api.example.com:443")
+			if (err == nil) != tt.ok {
+				t.Fatalf("Resolve = %q, %v; want ok=%v", addr, err, tt.ok)
+			}
+			if err != nil && !errors.Is(err, ErrBlocked) {
+				t.Fatalf("err = %v, want ErrBlocked", err)
+			}
+			if tt.ok && addr != "93.184.216.34:443" {
+				t.Fatalf("addr = %q, want the checked answer", addr)
+			}
+		})
+	}
+}
+
+func TestResolveAllReturnsEveryCheckedAnswer(t *testing.T) {
+	g := DefaultGuard()
+	g.lookup = answers("2606:2800:220:1::1", "93.184.216.34", "93.184.216.34", "1.1.1.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "1.0.0.1", "208.67.222.222", "208.67.220.220")
+	addrs, err := g.ResolveAll(context.Background(), "api.example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(addrs) != maxResolvedAddrs || addrs[0] != "[2606:2800:220:1::1]:443" || addrs[1] != "93.184.216.34:443" || addrs[2] != "1.1.1.1:443" {
+		t.Fatalf("addrs = %v", addrs)
+	}
+}
+
+func TestDialFallsBackToNextAnswer(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			_ = c.Close()
+		}
+	}()
+	dead, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := dead.Addr().String()
+	_ = dead.Close()
+	c, err := dialFirst(context.Background(), "tcp", []string{deadAddr, ln.Addr().String()})
+	if err != nil {
+		t.Fatalf("dial did not fall back: %v", err)
+	}
+	_ = c.Close()
 }

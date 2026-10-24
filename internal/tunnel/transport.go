@@ -12,10 +12,14 @@ import (
 	"github.com/coder/websocket"
 )
 
-const AgentConnectPath = "/_mishmesh/agent/connect"
+const (
+	AgentConnectPath = "/_mishmesh/agent/connect"
+	UserTokenHeader  = "X-Mishmesh-User"
+)
 
 type DialOptions struct {
 	Token      string
+	UserToken  string
 	HTTPClient *http.Client
 }
 
@@ -24,11 +28,14 @@ func Dial(ctx context.Context, rawURL string, opts DialOptions) (net.Conn, error
 	if opts.HTTPClient != nil {
 		wsOpts.HTTPClient = opts.HTTPClient
 	}
+	h := http.Header{}
 	if opts.Token != "" {
-		h := http.Header{}
 		h.Set("Authorization", "Bearer "+opts.Token)
-		wsOpts.HTTPHeader = h
 	}
+	if opts.UserToken != "" {
+		h.Set(UserTokenHeader, opts.UserToken)
+	}
+	wsOpts.HTTPHeader = h
 	c, resp, err := websocket.Dial(ctx, rawURL, wsOpts)
 	if err != nil {
 		if resp != nil {

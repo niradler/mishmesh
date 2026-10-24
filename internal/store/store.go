@@ -106,6 +106,7 @@ type EndpointPolicy struct {
 	ServiceID             string            `json:"service_id,omitempty"`
 	Connect               *ConnectPolicy    `json:"connect,omitempty"`
 	Access                []AccessRef       `json:"access,omitempty"`
+	Identity              *EndpointIdentity `json:"identity,omitempty"`
 }
 
 type AccessRef struct {
@@ -231,10 +232,11 @@ type User struct {
 }
 
 type Membership struct {
-	OrgID     string
-	UserID    string
-	Role      string
-	CreatedAt time.Time
+	OrgID      string
+	UserID     string
+	Role       string
+	CreatedAt  time.Time
+	DisabledAt *time.Time
 }
 
 const (
@@ -257,6 +259,18 @@ type GroupMember struct {
 	CreatedAt  time.Time
 }
 
+type ServiceAccount struct {
+	ID         string
+	OrgID      string
+	Name       string
+	Role       string
+	ClientID   string
+	SecretHash string
+	Disabled   bool
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type Invite struct {
 	ID        string
 	TokenHash string
@@ -269,11 +283,12 @@ type Invite struct {
 }
 
 type Session struct {
-	IDHash    string
-	UserID    string
-	OrgID     string
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	IDHash     string
+	UserID     string
+	OrgID      string
+	AuthMethod string
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
 }
 
 type OrgPolicy struct {
@@ -403,6 +418,18 @@ type DataStore interface {
 	ListGroupMembers(ctx context.Context, orgID, groupID string) ([]*GroupMember, error)
 	ListMemberGroups(ctx context.Context, orgID, memberType, memberID string) ([]*Group, error)
 
+	CreateServiceAccount(ctx context.Context, sa *ServiceAccount) error
+	GetServiceAccount(ctx context.Context, orgID, id string) (*ServiceAccount, error)
+	GetServiceAccountByClientID(ctx context.Context, clientID string) (*ServiceAccount, error)
+	ListServiceAccounts(ctx context.Context, orgID string) ([]*ServiceAccount, error)
+	UpdateServiceAccount(ctx context.Context, sa *ServiceAccount) error
+	DeleteServiceAccount(ctx context.Context, orgID, id string) error
+
+	CreateWorkloadIdentity(ctx context.Context, w *WorkloadIdentity) error
+	ListWorkloadIdentities(ctx context.Context, orgID, serviceAccountID string) ([]*WorkloadIdentity, error)
+	ListWorkloadIdentitiesByIssuer(ctx context.Context, issuer string) ([]*WorkloadIdentity, error)
+	DeleteWorkloadIdentity(ctx context.Context, orgID, serviceAccountID, id string) error
+
 	CreateInvite(ctx context.Context, i *Invite) error
 	GetInviteByTokenHash(ctx context.Context, tokenHash string) (*Invite, error)
 	ListInvitesByOrg(ctx context.Context, orgID string) ([]*Invite, error)
@@ -413,9 +440,16 @@ type DataStore interface {
 	GetSession(ctx context.Context, idHash string) (*Session, error)
 	DeleteSession(ctx context.Context, idHash string) error
 	DeleteExpiredSessions(ctx context.Context, now time.Time) error
+	DeleteUserSessions(ctx context.Context, orgID, userID string) error
+	SetMembershipDisabled(ctx context.Context, orgID, userID string, at *time.Time) error
 
 	GetOrgPolicy(ctx context.Context, orgID string) (*OrgPolicy, error)
 	SetOrgPolicy(ctx context.Context, p *OrgPolicy) error
+
+	PutOrgSecret(ctx context.Context, s *OrgSecret) error
+	GetOrgSecret(ctx context.Context, orgID, name string) (*OrgSecret, error)
+	ListOrgSecrets(ctx context.Context, orgID string) ([]*OrgSecret, error)
+	DeleteOrgSecret(ctx context.Context, orgID, name string) error
 
 	CreateService(ctx context.Context, svc *Service) error
 	GetService(ctx context.Context, id string) (*Service, error)
@@ -438,6 +472,10 @@ type DataStore interface {
 	AppendAudit(ctx context.Context, e *AuditEvent) error
 	ListAudit(ctx context.Context, orgID string, limit int) ([]*AuditEvent, error)
 
+	AppendAccessEvents(ctx context.Context, events []*AccessEvent) error
+	ListAccessEvents(ctx context.Context, orgID string, q AccessLogQuery) ([]*AccessEvent, error)
+	PruneAccessEvents(ctx context.Context, before time.Time) (int64, error)
+
 	Close() error
 }
 
@@ -449,6 +487,61 @@ type AuditEvent struct {
 	Target    string
 	Detail    string
 	CreatedAt time.Time
+}
+
+const (
+	AccessSourceIngress = "ingress"
+	AccessSourceConnect = "connect"
+	AccessSourceEgress  = "egress"
+
+	AccessAllow = "allow"
+	AccessDeny  = "deny"
+
+	MaxAccessLogLimit     = 1000
+	DefaultAccessLogLimit = 200
+)
+
+type AccessEvent struct {
+	ID            string
+	OrgID         string
+	At            time.Time
+	Source        string
+	Decision      string
+	Reason        string
+	PrincipalType string
+	PrincipalID   string
+	SessionID     string
+	AgentID       string
+	ExitAgentID   string
+	EndpointID    string
+	Destination   string
+	PolicyIDs     []string
+	ClientIP      string
+	Method        string
+	Path          string
+	Status        int
+	Protocol      string
+	BytesIn       int64
+	BytesOut      int64
+	DurationMs    int64
+	LatencyMs     int64
+}
+
+type AccessLogQuery struct {
+	Decision    string
+	Source      string
+	PrincipalID string
+	EndpointID  string
+	Since       time.Time
+	Until       time.Time
+	Limit       int
+}
+
+func (q AccessLogQuery) EffectiveLimit() int {
+	if q.Limit <= 0 {
+		return DefaultAccessLogLimit
+	}
+	return min(q.Limit, MaxAccessLogLimit)
 }
 
 type AgentConn interface {

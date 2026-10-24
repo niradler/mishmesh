@@ -17,6 +17,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/mishmesh/mishmesh/internal/authz"
+	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -24,7 +26,10 @@ const (
 	sessionCookie    = "mm_session"
 	oauthNonceCookie = "mm_oauth_nonce"
 )
-const oauthStateCookie = "mm_oauth_state"
+const (
+	oauthStateCookie = "mm_oauth_state"
+	oauthNextCookie  = "mm_oauth_next"
+)
 
 const (
 	SignupModeOrg    = "org"
@@ -101,6 +106,7 @@ func (a *API) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/register", a.csrfGuarded(a.registerHandler))
 	mux.HandleFunc("GET /api/v1/auth/google/start", a.googleStartHandler)
 	mux.HandleFunc("GET /api/v1/auth/google/callback", a.googleCallbackHandler)
+	mux.HandleFunc("GET "+identity.EndpointLoginPath, a.endpointLoginHandler)
 }
 
 func (a *API) authConfigHandler(w http.ResponseWriter, r *http.Request) {
@@ -129,9 +135,12 @@ func (a *API) authConfigHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type sessionUser struct {
-	user  *store.User
-	orgID string
-	role  string
+	user       *store.User
+	orgID      string
+	role       string
+	idHash     string
+	authMethod authz.AuthMethod
+	authTime   time.Time
 }
 
 var errNoSession = errors.New("no valid session")
@@ -162,7 +171,10 @@ func (a *API) lookupSession(r *http.Request) (*sessionUser, error) {
 	if err != nil {
 		return nil, sessionLookupErr(err)
 	}
-	return &sessionUser{user: user, orgID: sess.OrgID, role: m.Role}, nil
+	if m.DisabledAt != nil {
+		return nil, errNoSession
+	}
+	return &sessionUser{user: user, orgID: sess.OrgID, role: m.Role, idHash: sess.IDHash, authMethod: authz.AuthMethod(sess.AuthMethod), authTime: sess.CreatedAt}, nil
 }
 
 func sessionLookupErr(err error) error {
@@ -177,18 +189,22 @@ func writeStoreUnavailable(w http.ResponseWriter) {
 	writeError(w, http.StatusServiceUnavailable, "temporarily unavailable, retry shortly")
 }
 
-func (a *API) issueSession(ctx context.Context, w http.ResponseWriter, userID, orgID string) error {
+func (a *API) issueSession(ctx context.Context, w http.ResponseWriter, userID, orgID string, method authz.AuthMethod, authTime time.Time) error {
 	raw, err := randomToken()
 	if err != nil {
 		return err
 	}
 	now := time.Now()
+	if authTime.IsZero() || authTime.After(now) {
+		authTime = now
+	}
 	sess := &store.Session{
-		IDHash:    store.HashToken(raw),
-		UserID:    userID,
-		OrgID:     orgID,
-		CreatedAt: now,
-		ExpiresAt: now.Add(a.auth.sessionTTL),
+		IDHash:     store.HashToken(raw),
+		UserID:     userID,
+		OrgID:      orgID,
+		AuthMethod: string(method),
+		CreatedAt:  authTime,
+		ExpiresAt:  now.Add(a.auth.sessionTTL),
 	}
 	if err := a.data.CreateSession(ctx, sess); err != nil {
 		return err
@@ -248,7 +264,7 @@ func (a *API) loginHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "no organization membership")
 		return
 	}
-	if err := a.issueSession(r.Context(), w, user.ID, orgID); err != nil {
+	if err := a.issueSession(r.Context(), w, user.ID, orgID, authz.AuthMethodPassword, time.Time{}); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		return
 	}
@@ -308,7 +324,7 @@ func (a *API) registerHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "no organization membership")
 		return
 	}
-	if err := a.issueSession(r.Context(), w, user.ID, orgID); err != nil {
+	if err := a.issueSession(r.Context(), w, user.ID, orgID, authz.AuthMethodPassword, time.Time{}); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		return
 	}
@@ -379,14 +395,14 @@ func (a *API) switchOrgHandler(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if _, err := a.data.GetMembership(r.Context(), req.OrgID, su.user.ID); err != nil {
+	if m, err := a.data.GetMembership(r.Context(), req.OrgID, su.user.ID); err != nil || m.DisabledAt != nil {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = a.data.DeleteSession(r.Context(), store.HashToken(c.Value))
 	}
-	if err := a.issueSession(r.Context(), w, su.user.ID, req.OrgID); err != nil {
+	if err := a.issueSession(r.Context(), w, su.user.ID, req.OrgID, su.authMethod, su.authTime); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		return
 	}
@@ -395,10 +411,15 @@ func (a *API) switchOrgHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) primaryOrg(ctx context.Context, userID string) (string, bool) {
 	memberships, err := a.data.ListMembershipsByUser(ctx, userID)
-	if err != nil || len(memberships) == 0 {
+	if err != nil {
 		return "", false
 	}
-	return memberships[0].OrgID, true
+	for _, m := range memberships {
+		if m.DisabledAt == nil {
+			return m.OrgID, true
+		}
+	}
+	return "", false
 }
 
 var (
@@ -529,6 +550,9 @@ func (a *API) googleStartHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: oauthStateCookie, Value: state, Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: 600})
 	http.SetCookie(w, &http.Cookie{Name: oauthNonceCookie, Value: nonce, Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: 600})
+	if next := r.URL.Query().Get("next"); localNext(next) {
+		http.SetCookie(w, &http.Cookie{Name: oauthNextCookie, Value: next, Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: 600})
+	}
 	q := url.Values{}
 	q.Set("nonce", nonce)
 	q.Set("client_id", a.auth.googleClientID)
@@ -589,11 +613,11 @@ func (a *API) googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "no organization membership")
 		return
 	}
-	if err := a.issueSession(r.Context(), w, user.ID, orgID); err != nil {
+	if err := a.issueSession(r.Context(), w, user.ID, orgID, authz.AuthMethodOIDC, time.Time{}); err != nil {
 		writeError(w, http.StatusInternalServerError, "session failed")
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusFound)
+	http.Redirect(w, r, a.takeLoginNext(r), http.StatusFound)
 }
 
 type oidcProfile struct {
@@ -680,7 +704,7 @@ func (c *authConfig) discover(ctx context.Context) (*oidcDiscovery, error) {
 }
 
 func (a *API) clearOAuthCookies(w http.ResponseWriter) {
-	for _, name := range []string{oauthStateCookie, oauthNonceCookie} {
+	for _, name := range []string{oauthStateCookie, oauthNonceCookie, oauthNextCookie} {
 		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	}
 }
