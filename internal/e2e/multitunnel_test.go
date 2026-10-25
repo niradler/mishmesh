@@ -148,7 +148,7 @@ func TestMultipleTunnelsOverOneSession(t *testing.T) {
 		t.Fatalf("http tunnel body = %q", body)
 	}
 
-	port := pollTCPPort(t, ctx, data, agentID)
+	port := pollTCPPort(t, ctx, data, conns, agentID)
 	echoOver(t, fmt.Sprintf("127.0.0.1:%d", port))
 
 	eps, err := data.ListEndpointsByAgent(ctx, agentID)
