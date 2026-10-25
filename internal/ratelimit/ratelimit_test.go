@@ -32,7 +32,15 @@ func newRedisHarness(t *testing.T) harness {
 	mr.SetTime(now)
 	rdb := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
-	return harness{"redis", NewRedis(rdb, nil), func(d time.Duration) {
+	var warnings bytes.Buffer
+	l := NewRedis(rdb, slog.New(slog.NewTextHandler(&warnings, nil)))
+	l.opTimeout = 10 * time.Second
+	t.Cleanup(func() {
+		if warnings.Len() > 0 {
+			t.Errorf("redis limiter failed open, results are not meaningful: %s", warnings.String())
+		}
+	})
+	return harness{"redis", l, func(d time.Duration) {
 		now = now.Add(d)
 		mr.SetTime(now)
 	}}

@@ -47,9 +47,10 @@ return {allowed, retry}
 `)
 
 type Redis struct {
-	rdb      *goredis.Client
-	log      *slog.Logger
-	lastWarn atomic.Int64
+	rdb       *goredis.Client
+	log       *slog.Logger
+	opTimeout time.Duration
+	lastWarn  atomic.Int64
 }
 
 var _ Limiter = (*Redis)(nil)
@@ -58,7 +59,7 @@ func NewRedis(rdb *goredis.Client, log *slog.Logger) *Redis {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Redis{rdb: rdb, log: log}
+	return &Redis{rdb: rdb, log: log, opTimeout: redisOpTimeout}
 }
 
 func (r *Redis) Allow(ctx context.Context, key string, limit Limit) Decision {
@@ -69,7 +70,7 @@ func (r *Redis) Allow(ctx context.Context, key string, limit Limit) Decision {
 	if perTokenMs < 1 {
 		perTokenMs = 1
 	}
-	ctx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	ctx, cancel := context.WithTimeout(ctx, r.opTimeout)
 	defer cancel()
 	res, err := bucketScript.Run(ctx, r.rdb, []string{keyPrefix + key}, limit.Capacity(), perTokenMs).Int64Slice()
 	if err == nil && len(res) != 2 {
