@@ -50,7 +50,18 @@ func DefaultCredentialsPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("locate home directory: %w", err)
 	}
-	return filepath.Join(home, ".config", "mishmesh", credentialsFile), nil
+	return credentialsPathIn(home), nil
+}
+
+func credentialsPathIn(home string) string {
+	current := filepath.Join(home, ".mishmesh", credentialsFile)
+	legacy := filepath.Join(home, ".config", "mishmesh", credentialsFile)
+	if _, err := os.Stat(current); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy
+		}
+	}
+	return current
 }
 
 func NewCredentialStore(path string, client *http.Client) *CredentialStore {

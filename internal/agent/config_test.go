@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -400,6 +401,21 @@ func TestFindConfig(t *testing.T) {
 	}
 	if _, err := FindConfig([]string{first}); err == nil || !strings.Contains(err.Error(), "no config file found") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDefaultConfigPathsPreferMishmeshHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	want := []string{
+		"mishmesh.yml",
+		filepath.Join(home, ".mishmesh", "config.yaml"),
+		filepath.Join(home, ".config", "mishmesh", "agent.yml"),
+		"/etc/mishmesh/agent.yml",
+	}
+	if got := DefaultConfigPaths(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }
 

@@ -199,3 +199,36 @@ func TestRemoveDeletesCredentials(t *testing.T) {
 		t.Fatalf("second remove: %v", err)
 	}
 }
+
+func TestCredentialsPathIn(t *testing.T) {
+	tests := []struct {
+		name    string
+		current bool
+		legacy  bool
+		want    string
+	}{
+		{name: "fresh install uses mishmesh home", want: ".mishmesh"},
+		{name: "legacy only keeps the existing login", legacy: true, want: filepath.Join(".config", "mishmesh")},
+		{name: "both prefer mishmesh home", current: true, legacy: true, want: ".mishmesh"},
+		{name: "current only", current: true, want: ".mishmesh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			for dir, present := range map[string]bool{".mishmesh": tt.current, filepath.Join(".config", "mishmesh"): tt.legacy} {
+				if !present {
+					continue
+				}
+				if err := os.MkdirAll(filepath.Join(home, dir), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(home, dir, credentialsFile), []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got, want := credentialsPathIn(home), filepath.Join(home, tt.want, credentialsFile); got != want {
+				t.Fatalf("got %q, want %q", got, want)
+			}
+		})
+	}
+}

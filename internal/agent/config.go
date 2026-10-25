@@ -83,7 +83,7 @@ var (
 func DefaultConfigPaths() []string {
 	paths := []string{"mishmesh.yml"}
 	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, ".config", "mishmesh", "agent.yml"))
+		paths = append(paths, filepath.Join(home, ".mishmesh", "config.yaml"), filepath.Join(home, ".config", "mishmesh", "agent.yml"))
 	}
 	return append(paths, "/etc/mishmesh/agent.yml")
 }
