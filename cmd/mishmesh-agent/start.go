@@ -38,14 +38,15 @@ func buildStartOptions(configPath, gateway, token, allow string, names []string)
 	}
 	env := config.LoadAgent()
 	opts := agent.Options{
-		GatewayURL: firstNonEmpty(gateway, file.Gateway, env.GatewayURL),
-		Token:      firstNonEmpty(token, file.Token, env.Token),
-		Log:        newLogger(firstNonEmpty(file.LogLevel, env.LogLevel)),
-		Out:        os.Stdout,
-		Endpoints:  specs,
-		Connects:   file.Connects,
-		Egress:     file.Egress,
-		Allowlist:  file.Allow,
+		GatewayURL:     firstNonEmpty(gateway, file.Gateway, env.GatewayURL),
+		Token:          firstNonEmpty(token, file.Token, env.Token),
+		GatewayHeaders: file.GatewayHeaders,
+		Log:            newLogger(firstNonEmpty(file.LogLevel, env.LogLevel)),
+		Out:            os.Stdout,
+		Endpoints:      specs,
+		Connects:       file.Connects,
+		Egress:         file.Egress,
+		Allowlist:      file.Allow,
 	}
 	if allow != "" {
 		opts.Allowlist = splitCSV(allow)

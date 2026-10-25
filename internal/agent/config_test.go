@@ -473,3 +473,41 @@ func TestParseConfigEgressValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestParseConfigGatewayHeaders(t *testing.T) {
+	yml := "gateway: wss://connect.example.com\ngateway_headers:\n  cf-access-client-id: ${CF_ID}\n  CF-Access-Client-Secret: ${CF_SECRET}\ntunnels:\n  a: {proto: tcp, addr: 1}\n"
+	cfg, err := ParseConfig("t.yml", []byte(yml), mapLookup(map[string]string{"CF_ID": "id.access", "CF_SECRET": "s3cret"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.GatewayHeaders.Get("Cf-Access-Client-Id"); got != "id.access" {
+		t.Fatalf("client id header = %q", got)
+	}
+	if got := cfg.GatewayHeaders.Get("Cf-Access-Client-Secret"); got != "s3cret" {
+		t.Fatalf("client secret header = %q", got)
+	}
+}
+
+func TestParseConfigGatewayHeadersValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "authorization reserved", yaml: "gateway_headers: {Authorization: x}", want: "Authorization is set by the agent"},
+		{name: "user token reserved", yaml: "gateway_headers: {x-mishmesh-user: x}", want: "X-Mishmesh-User is set by the agent"},
+		{name: "websocket header reserved", yaml: "gateway_headers: {Sec-WebSocket-Key: x}", want: "Sec-Websocket-Key is set by the agent"},
+		{name: "bad name", yaml: "gateway_headers: {\"bad name\": x}", want: `"bad name" is not a valid header name`},
+		{name: "empty value", yaml: "gateway_headers: {X-Thing: \"\"}", want: "X-Thing has an empty value"},
+		{name: "line break", yaml: "gateway_headers: {X-Thing: \"a\\nb\"}", want: "X-Thing value contains a line break"},
+		{name: "not a mapping", yaml: "gateway_headers: [a]", want: "cannot unmarshal !!seq into map[string]string"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseConfig("t.yml", []byte(tt.yaml+"\ntunnels:\n  a: {proto: tcp, addr: 1}\n"), mapLookup(nil))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}

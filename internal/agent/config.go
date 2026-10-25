@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,13 +22,14 @@ import (
 )
 
 type FileConfig struct {
-	Gateway  string
-	Token    string
-	Allow    []string
-	LogLevel string
-	Tunnels  []NamedTunnel
-	Connects []ConnectSpec
-	Egress   *EgressSpec
+	Gateway        string
+	GatewayHeaders http.Header
+	Token          string
+	Allow          []string
+	LogLevel       string
+	Tunnels        []NamedTunnel
+	Connects       []ConnectSpec
+	Egress         *EgressSpec
 }
 
 type NamedTunnel struct {
@@ -65,15 +67,17 @@ func (e *ConfigError) Error() string {
 }
 
 var (
-	envRef        = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
-	tunnelName    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
-	rootKeys      = []string{"gateway", "token", "allow", "log_level", "tunnels", "connects", "egress"}
-	tunnelKeys    = []string{"proto", "addr", "subdomain", "domain", "port", "reserved", "private", "target_https", "insecure", "policy"}
-	connectKeys   = []string{"endpoint", "proto", "listen", "idle_timeout"}
-	egressKeys    = []string{"listen", "socks_listen", "require_auth", "exit", "serve_exit", "exit_allow", "originate"}
-	originateKeys = []string{"listen", "upstream", "token"}
-	validProtos   = []string{store.KindHTTP, store.KindTCP, store.KindTLS, store.KindUDP}
-	validProtoMsg = strings.Join(validProtos, ", ")
+	envRef          = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
+	tunnelName      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+	headerName      = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+	reservedHeaders = []string{"Authorization", "Connection", "Content-Length", "Host", "Transfer-Encoding", "Upgrade", "X-Mishmesh-User"}
+	rootKeys        = []string{"gateway", "gateway_headers", "token", "allow", "log_level", "tunnels", "connects", "egress"}
+	tunnelKeys      = []string{"proto", "addr", "subdomain", "domain", "port", "reserved", "private", "target_https", "insecure", "policy"}
+	connectKeys     = []string{"endpoint", "proto", "listen", "idle_timeout"}
+	egressKeys      = []string{"listen", "socks_listen", "require_auth", "exit", "serve_exit", "exit_allow", "originate"}
+	originateKeys   = []string{"listen", "upstream", "token"}
+	validProtos     = []string{store.KindHTTP, store.KindTCP, store.KindTLS, store.KindUDP}
+	validProtoMsg   = strings.Join(validProtos, ", ")
 )
 
 func DefaultConfigPaths() []string {
@@ -177,19 +181,21 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 	p.checkKeys(root, rootKeys, "config")
 	p.expand(root)
 	var raw struct {
-		Gateway  string    `yaml:"gateway"`
-		Token    string    `yaml:"token"`
-		Allow    []string  `yaml:"allow"`
-		LogLevel string    `yaml:"log_level"`
-		Tunnels  yaml.Node `yaml:"tunnels"`
-		Connects yaml.Node `yaml:"connects"`
-		Egress   yaml.Node `yaml:"egress"`
+		Gateway        string            `yaml:"gateway"`
+		GatewayHeaders map[string]string `yaml:"gateway_headers"`
+		Token          string            `yaml:"token"`
+		Allow          []string          `yaml:"allow"`
+		LogLevel       string            `yaml:"log_level"`
+		Tunnels        yaml.Node         `yaml:"tunnels"`
+		Connects       yaml.Node         `yaml:"connects"`
+		Egress         yaml.Node         `yaml:"egress"`
 	}
 	if err := root.Decode(&raw); err != nil {
 		p.addf(root.Line, "%s", strings.ReplaceAll(strings.TrimPrefix(err.Error(), "yaml: "), "\n", "; "))
 		return nil
 	}
 	cfg := &FileConfig{Gateway: raw.Gateway, Token: raw.Token, Allow: raw.Allow, LogLevel: raw.LogLevel}
+	cfg.GatewayHeaders = p.parseGatewayHeaders(root.Line, raw.GatewayHeaders)
 	if cfg.Gateway != "" {
 		if _, err := NormalizeGatewayURL(cfg.Gateway); err != nil {
 			p.addf(root.Line, "gateway: %v", err)
@@ -222,6 +228,29 @@ func (p *configParser) parseRoot(root *yaml.Node) *FileConfig {
 		cfg.Egress = p.parseEgress(&raw.Egress, cfg.Connects)
 	}
 	return cfg
+}
+
+func (p *configParser) parseGatewayHeaders(line int, raw map[string]string) http.Header {
+	if len(raw) == 0 {
+		return nil
+	}
+	h := http.Header{}
+	for name, value := range raw {
+		canonical := http.CanonicalHeaderKey(strings.TrimSpace(name))
+		switch {
+		case !headerName.MatchString(canonical):
+			p.addf(line, "gateway_headers: %q is not a valid header name", name)
+		case slices.Contains(reservedHeaders, canonical) || strings.HasPrefix(canonical, "Sec-Websocket-"):
+			p.addf(line, "gateway_headers: %s is set by the agent and cannot be overridden", canonical)
+		case strings.TrimSpace(value) == "":
+			p.addf(line, "gateway_headers: %s has an empty value", canonical)
+		case strings.ContainsAny(value, "\r\n"):
+			p.addf(line, "gateway_headers: %s value contains a line break", canonical)
+		default:
+			h.Set(canonical, strings.TrimSpace(value))
+		}
+	}
+	return h
 }
 
 type egressConfig struct {
