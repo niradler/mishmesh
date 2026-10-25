@@ -112,6 +112,17 @@ export interface Token {
   revoked_at?: string | null;
 }
 
+export interface EndpointSession {
+  id: string;
+  subject_type: "user" | "guest";
+  subject_id: string;
+  email?: string;
+  auth_method: string;
+  auth_time: string;
+  created_at: string;
+  expires_at: string;
+}
+
 export interface OriginTLS {
   server_name?: string;
   ca_pem?: string;

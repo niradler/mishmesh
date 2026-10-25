@@ -33,6 +33,8 @@ type SessionStore interface {
 	GetTokenSession(ctx context.Context, id string) (*TokenSession, error)
 	DeleteTokenSession(ctx context.Context, id string) error
 	DeleteSubjectSessions(ctx context.Context, orgID, subjectType, subjectID string) ([]string, error)
+	ListEndpointSessions(ctx context.Context, orgID, endpointID string) ([]TokenSession, error)
+	DeleteEndpointSessions(ctx context.Context, orgID, endpointID string) ([]TokenSession, error)
 	ClaimOnce(ctx context.Context, key string, ttl time.Duration) (bool, error)
 	PutOnce(ctx context.Context, key string, value []byte, ttl time.Duration) error
 	TakeOnce(ctx context.Context, key string) ([]byte, error)
@@ -41,4 +43,8 @@ type SessionStore interface {
 
 func SubjectKey(orgID, subjectType, subjectID string) string {
 	return orgID + "\x00" + subjectType + "\x00" + subjectID
+}
+
+func EndpointKey(orgID, endpointID string) string {
+	return orgID + "\x00" + endpointID
 }

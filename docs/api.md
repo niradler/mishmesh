@@ -46,8 +46,8 @@ Roles: `owner`, `admin`, `member`. Each route requires one action. A caller with
 | --- | --- | --- |
 | `agent:read` | `GET /agents`, `/agents/{id}`, `/agents/{id}/tokens` | owner, admin, member |
 | `agent:write` | agent create/patch/delete/rotate/revoke, reach-in | owner, admin |
-| `endpoint:read` | `GET /endpoints`, `/endpoints/{id}`, `/agents/{id}/endpoints`, `GET /domains`, `GET /connections`, `GET /connection-types`, `GET /topology` | owner, admin, member |
-| `endpoint:write` | endpoint create/patch/delete, domain create/verify/delete | owner, admin |
+| `endpoint:read` | `GET /endpoints`, `/endpoints/{id}`, `/endpoints/{id}/sessions`, `/agents/{id}/endpoints`, `GET /domains`, `GET /connections`, `GET /connection-types`, `GET /topology` | owner, admin, member |
+| `endpoint:write` | endpoint create/patch/delete, browser session revoke, domain create/verify/delete | owner, admin |
 | `service:read` | `GET /services`, `/services/{id}` | owner, admin, member |
 | `service:write` | service create/update/delete/start/stop | owner, admin |
 | `connection:manage` | connection create/update/delete/detect/sync | owner, admin |
@@ -115,6 +115,11 @@ Each org can replace the default matrix (compiled to Cedar):
 | GET | `/endpoints/{id}` | endpointDTO |
 | PATCH | `/endpoints/{id}` | `{subdomain?, domain?, port?, policy?}` |
 | DELETE | `/endpoints/{id}` | 204 |
+| GET | `/endpoints/{id}/sessions` | active browser sessions → `[{id, subject_type, subject_id, email?, auth_method, auth_time, created_at, expires_at}]`, oldest first |
+| DELETE | `/endpoints/{id}/sessions/{session_id}` | revoke one browser session → 204; 404 if it does not belong to this endpoint |
+| DELETE | `/endpoints/{id}/sessions` | revoke every browser session of the endpoint → `{revoked}` |
+
+Browser sessions are the cookies the ingress issues after endpoint sign-in. `subject_type` is `user` for org members who signed in with mishmesh and `guest` for people who signed in through the endpoint's `oidc` provider; for guests `subject_id` is their email. Every request checks the session store, so a revoked session is refused on its next request. Revoking does not change access: the person can sign in again if the endpoint still allows them. Sessions issued before this API existed are not listed and expire on their own within 12 hours.
 
 `endpointDTO`: `{id, agent_id, org_id, kind, method, lifecycle, subdomain, domain, port, public_url, online, policy, health}`
 

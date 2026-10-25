@@ -22,6 +22,7 @@ import { useSession } from "@/context/SessionContext";
 import { toast } from "@/hooks/use-toast";
 import { endpointDisplayName } from "@/lib/health";
 import { AccessSection } from "@/components/endpoints/AccessSection";
+import { BrowserSessionsSection } from "@/components/endpoints/BrowserSessionsSection";
 
 export function EndpointDetail() {
   const { id = "" } = useParams();
@@ -92,6 +93,7 @@ export function EndpointDetail() {
       </Pipeline>
 
       <AccessSection endpoint={ep} canWrite={canWrite} />
+      <BrowserSessionsSection endpoint={ep} canWrite={canWrite} />
       <EndpointPolicyForm endpoint={ep} canWrite={canWrite} />
 
       <EditAddressDialog
