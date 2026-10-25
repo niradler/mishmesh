@@ -77,7 +77,7 @@ func firstNonEmpty(values ...string) string {
 
 func startCmd(args []string) error {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
-	configPath := fs.String("config", "", "config file (default: search ./mishmesh.yml, ~/.mishmesh/config.yaml, ~/.config/mishmesh/agent.yml, /etc/mishmesh/agent.yml)")
+	configPath := fs.String("config", "", "config file (default: search ./mishmesh.yml, ~/.mishmesh/config.yaml, /etc/mishmesh/agent.yml)")
 	gateway := fs.String("gateway", "", "gateway URL, overrides the config file")
 	token := fs.String("token", "", "agent authtoken, overrides the config file")
 	allow := fs.String("allow", "", "reach-in allowlist rules, overrides the config file")

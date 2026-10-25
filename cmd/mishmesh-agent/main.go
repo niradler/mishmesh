@@ -122,7 +122,7 @@ func usage(w io.Writer) {
   mishmesh-agent ca [--config path] [--gateway url] [--token t]   print the org egress CA to trust for decryption
   mishmesh-agent version
 
-config search order: ./mishmesh.yml, ~/.mishmesh/config.yaml, ~/.config/mishmesh/agent.yml, /etc/mishmesh/agent.yml
+config search order: ./mishmesh.yml, ~/.mishmesh/config.yaml, /etc/mishmesh/agent.yml
 environment: MISHMESH_GATEWAY_URL, MISHMESH_TOKEN, MISHMESH_LOG_LEVEL, MISHMESH_ALLOW
 `)
 }

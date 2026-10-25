@@ -411,7 +411,6 @@ func TestDefaultConfigPathsPreferMishmeshHome(t *testing.T) {
 	want := []string{
 		"mishmesh.yml",
 		filepath.Join(home, ".mishmesh", "config.yaml"),
-		filepath.Join(home, ".config", "mishmesh", "agent.yml"),
 		"/etc/mishmesh/agent.yml",
 	}
 	if got := DefaultConfigPaths(); !reflect.DeepEqual(got, want) {
