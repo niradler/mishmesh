@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -44,18 +45,19 @@ type localTarget struct {
 }
 
 type Options struct {
-	GatewayURL    string
-	Token         string
-	Log           *slog.Logger
-	Endpoints     []EndpointSpec
-	Allowlist     []string
-	Connects      []ConnectSpec
-	Egress        *EgressSpec
-	ExitDialer    ExitDialer
-	UpstreamRoots *x509.CertPool
-	Clock         func() time.Time
-	Out           io.Writer
-	UserToken     func(ctx context.Context) (string, error)
+	GatewayURL     string
+	Token          string
+	GatewayHeaders http.Header
+	Log            *slog.Logger
+	Endpoints      []EndpointSpec
+	Allowlist      []string
+	Connects       []ConnectSpec
+	Egress         *EgressSpec
+	ExitDialer     ExitDialer
+	UpstreamRoots  *x509.CertPool
+	Clock          func() time.Time
+	Out            io.Writer
+	UserToken      func(ctx context.Context) (string, error)
 }
 
 type Agent struct {
@@ -161,7 +163,7 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	dialOpts := tunnel.DialOptions{Token: a.opts.Token}
+	dialOpts := tunnel.DialOptions{Token: a.opts.Token, Header: a.opts.GatewayHeaders}
 	if a.opts.UserToken != nil {
 		userToken, err := a.opts.UserToken(ctx)
 		if err != nil {

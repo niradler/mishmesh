@@ -21,6 +21,7 @@ const (
 type DialOptions struct {
 	Token      string
 	UserToken  string
+	Header     http.Header
 	HTTPClient *http.Client
 }
 
@@ -29,7 +30,10 @@ func Dial(ctx context.Context, rawURL string, opts DialOptions) (net.Conn, error
 	if opts.HTTPClient != nil {
 		wsOpts.HTTPClient = opts.HTTPClient
 	}
-	h := http.Header{}
+	h := opts.Header.Clone()
+	if h == nil {
+		h = http.Header{}
+	}
 	if opts.Token != "" {
 		h.Set("Authorization", "Bearer "+opts.Token)
 	}

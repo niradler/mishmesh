@@ -249,6 +249,16 @@ Tunnel keys: `proto` (`http`, `tcp`, `tls`, `udp`), `addr`, `subdomain`, `domain
 
 `tunnels:` is optional. A config with `gateway`, `token` and `allow` only starts a reach-in-only agent.
 
+`gateway_headers` adds headers to the agent's connection request. Use it when the gateway sits behind an access proxy, for example a Cloudflare Access service token:
+
+```yaml
+gateway_headers:
+  CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}
+  CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}
+```
+
+The agent sets `Authorization`, `X-Mishmesh-User`, `Host`, `Upgrade`, `Connection` and the `Sec-WebSocket-*` headers itself, so those names are rejected.
+
 On connect the agent prints each tunnel's public URL and endpoint id. If the gateway refuses a tunnel (subdomain taken, quota exceeded, port in use, kind disabled on the server), the agent prints the reason and exits non-zero. A rejected token exits immediately with `token invalid or revoked` (401) or `agent disabled` (403). Any other connection failure is retried with jittered exponential backoff.
 
 ### UDP and agent-to-agent connects
