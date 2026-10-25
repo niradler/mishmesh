@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
 
 func TestAllowlistDenyFirst(t *testing.T) {
 	a := NewAllowlist(nil)
@@ -51,5 +54,39 @@ func TestAllowlistHardDenyOverridesBroadRule(t *testing.T) {
 	}
 	if !a.Allowed("8.8.8.8:53") {
 		t.Fatal("public IP under 0.0.0.0/0 should be allowed")
+	}
+}
+
+func TestAllowlistSkipsLookupForUnmatchableHost(t *testing.T) {
+	cases := []struct {
+		name       string
+		specs      []string
+		target     string
+		wantLookup bool
+		wantOK     bool
+	}{
+		{"no rules", nil, "secret.internal.example:80", false, false},
+		{"host rule for other name", []string{"api.example.com"}, "secret.internal.example:80", false, false},
+		{"host rule other port", []string{"api.example.com:443"}, "api.example.com:80", false, false},
+		{"cidr rule other port", []string{"10.0.0.0/8:443"}, "secret.internal.example:80", false, false},
+		{"host rule matches", []string{"api.example.com:443"}, "API.example.com:443", true, true},
+		{"cidr rule could match", []string{"10.0.0.0/8"}, "db.internal.example:5432", true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := NewAllowlist(c.specs)
+			looked := false
+			a.lookupIP = func(string) ([]net.IP, error) {
+				looked = true
+				return []net.IP{net.ParseIP("10.1.2.3")}, nil
+			}
+			_, _, ok := a.Resolve(c.target)
+			if looked != c.wantLookup {
+				t.Fatalf("lookup performed=%v want %v", looked, c.wantLookup)
+			}
+			if ok != c.wantOK {
+				t.Fatalf("Resolve ok=%v want %v", ok, c.wantOK)
+			}
+		})
 	}
 }
