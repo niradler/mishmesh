@@ -14,11 +14,12 @@ type allowRule struct {
 }
 
 type Allowlist struct {
-	rules []allowRule
+	rules    []allowRule
+	lookupIP func(host string) ([]net.IP, error)
 }
 
 func NewAllowlist(specs []string) *Allowlist {
-	a := &Allowlist{}
+	a := &Allowlist{lookupIP: net.LookupIP}
 	for _, spec := range specs {
 		spec = strings.TrimSpace(spec)
 		if spec == "" {
@@ -81,7 +82,10 @@ func (a *Allowlist) Resolve(target string) (dialAddr, serverName string, ok bool
 	if err != nil {
 		return "", "", false
 	}
-	ips := resolveIPs(host)
+	if net.ParseIP(host) == nil && !a.couldAdmitHost(host, port) {
+		return "", "", false
+	}
+	ips := a.resolveIPs(host)
 	if len(ips) == 0 {
 		return "", "", false
 	}
@@ -96,6 +100,19 @@ func (a *Allowlist) Resolve(target string) (dialAddr, serverName string, ok bool
 		}
 	}
 	return "", "", false
+}
+
+func (a *Allowlist) couldAdmitHost(host string, port int) bool {
+	host = strings.ToLower(host)
+	for _, rule := range a.rules {
+		if !rule.anyPort && !rule.ports[port] {
+			continue
+		}
+		if rule.cidr != nil || rule.host == host {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Allowlist) allowsIP(ip net.IP, host string, port int) bool {
@@ -116,11 +133,11 @@ func (a *Allowlist) allowsIP(ip net.IP, host string, port int) bool {
 	return false
 }
 
-func resolveIPs(host string) []net.IP {
+func (a *Allowlist) resolveIPs(host string) []net.IP {
 	if ip := net.ParseIP(host); ip != nil {
 		return []net.IP{ip}
 	}
-	addrs, err := net.LookupIP(host)
+	addrs, err := a.lookupIP(host)
 	if err != nil {
 		return nil
 	}
