@@ -225,7 +225,8 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 	}
 
 	a.sess.Store(sess)
-	go a.readControl(ctx, ctrl, gen, refTarget, refSpec, fail)
+	registered := make(chan struct{})
+	go a.readControl(ctx, ctrl, gen, refTarget, refSpec, fail, registered)
 	go a.pingLoop(ctx, ctrl, cancel)
 
 	a.log.Info("tunnel connected", "gateway", a.opts.GatewayURL)
@@ -234,11 +235,12 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 		if err != nil {
 			return fmt.Errorf("accept stream: %w", err)
 		}
-		go a.handleStream(stream, init)
+		go a.handleStream(stream, init, registered)
 	}
 }
 
-func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, gen uint64, refTarget map[string]localTarget, refSpec map[string]EndpointSpec, fail context.CancelCauseFunc) {
+func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, gen uint64, refTarget map[string]localTarget, refSpec map[string]EndpointSpec, fail context.CancelCauseFunc, registered chan struct{}) {
+	var markRegistered sync.Once
 	for ctx.Err() == nil {
 		msg, err := ctrl.Recv()
 		if err != nil {
@@ -249,6 +251,7 @@ func (a *Agent) readControl(ctx context.Context, ctrl *tunnel.Control, gen uint6
 			a.dec.bind(gen, msg.RegisterAck.OrgID, msg.RegisterAck.AgentID)
 			a.decrypt.bind(gen)
 			a.handleAck(msg.RegisterAck, refTarget, refSpec, fail)
+			markRegistered.Do(func() { close(registered) })
 		case msg.Type == tunnel.MsgDecisionResponse && msg.Answer != nil:
 			a.dec.deliver(gen, *msg.Answer)
 		case msg.Type == tunnel.MsgCertResponse && msg.Cert != nil:
@@ -282,6 +285,7 @@ func (a *Agent) handleAck(ack *tunnel.RegisterAckPayload, refTarget map[string]l
 }
 
 const (
+	registrationWait = 10 * time.Second
 	pingInterval     = 30 * time.Second
 	suspendThreshold = 3 * pingInterval
 )
@@ -309,11 +313,17 @@ func (a *Agent) pingLoop(ctx context.Context, ctrl *tunnel.Control, reconnect co
 	}
 }
 
-func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit) {
+func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit, registered <-chan struct{}) {
 	defer stream.Close()
 	if dest, ok := init.Meta[tunnel.MetaEgressExit]; ok && init.EndpointID == "" {
 		a.serveExit(stream, dest, init.Meta[tunnel.MetaExitResolve] == "1")
 		return
+	}
+	if init.EndpointID != "" {
+		select {
+		case <-registered:
+		case <-time.After(registrationWait):
+		}
 	}
 	tgt, ok := a.resolveStreamTarget(init)
 	if !ok {
