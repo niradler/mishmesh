@@ -76,7 +76,7 @@ func TestTCPHalfCloseDeliversResponseAndMetersBothDirections(t *testing.T) {
 	t.Cleanup(cancel)
 	go func() { _ = cli.Run(runCtx) }()
 
-	port := pollTCPPort(t, ctx, data, agentID)
+	port := pollTCPPort(t, ctx, data, conns, agentID)
 	var conn *net.TCPConn
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {

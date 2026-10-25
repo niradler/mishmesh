@@ -68,7 +68,7 @@ func TestEndToEndTCPTunnel(t *testing.T) {
 	t.Cleanup(cancel)
 	go func() { _ = cli.Run(runCtx) }()
 
-	port := pollTCPPort(t, ctx, data, agentID)
+	port := pollTCPPort(t, ctx, data, conns, agentID)
 
 	var conn net.Conn
 	deadline := time.Now().Add(3 * time.Second)
@@ -97,13 +97,16 @@ func TestEndToEndTCPTunnel(t *testing.T) {
 	}
 }
 
-func pollTCPPort(t *testing.T, ctx context.Context, data store.DataStore, agentID string) int {
+func pollTCPPort(t *testing.T, ctx context.Context, data store.DataStore, conns store.ConnectionStore, agentID string) int {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		eps, _ := data.ListEndpointsByAgent(ctx, agentID)
 		for _, ep := range eps {
-			if ep.Kind == store.KindTCP && ep.Port > 0 {
+			if ep.Kind != store.KindTCP || ep.Port == 0 {
+				continue
+			}
+			if _, live := conns.ResolveEndpoint(ep.ID); live {
 				return ep.Port
 			}
 		}

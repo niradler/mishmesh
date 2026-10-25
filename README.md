@@ -219,7 +219,7 @@ The target is a port (meaning `127.0.0.1:<port>`) or `host:port`. Flags: `--subd
 
 ### Config file (many tunnels, one session)
 
-`mishmesh-agent start [name ...] [--config path]` runs every tunnel in the file, or only the named ones, over a single connection. Without `--config` the agent looks for `./mishmesh.yml`, then `~/.config/mishmesh/agent.yml`, then `/etc/mishmesh/agent.yml`. A full example is in [deploy/examples/agent.yml](deploy/examples/agent.yml).
+`mishmesh-agent start [name ...] [--config path]` runs every tunnel in the file, or only the named ones, over a single connection. Without `--config` the agent looks for `./mishmesh.yml`, then `~/.mishmesh/config.yaml`, then `~/.config/mishmesh/agent.yml` (older installs), then `/etc/mishmesh/agent.yml`. `login` keeps its credentials in `~/.mishmesh/credentials.json`; an existing `~/.config/mishmesh/credentials.json` is still used until you `logout`. A full example is in [deploy/examples/agent.yml](deploy/examples/agent.yml).
 
 ```yaml
 gateway: wss://connect.example.com

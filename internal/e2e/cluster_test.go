@@ -277,7 +277,7 @@ func TestClusterTwoNodes(t *testing.T) {
 
 	var tcpPort int
 	t.Run("tcp via both nodes", func(t *testing.T) {
-		tcpPort = pollTCPPort(t, ctx, data, agentID)
+		tcpPort = pollTCPPort(t, ctx, data, nodeA.conns, agentID)
 		echoOver(t, net.JoinHostPort(nodeB.tcpHost, strconv.Itoa(tcpPort)))
 		echoOver(t, net.JoinHostPort(nodeA.tcpHost, strconv.Itoa(tcpPort)))
 	})
