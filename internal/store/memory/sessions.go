@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -18,11 +19,12 @@ type onceValue struct {
 type SessionStore struct {
 	now func() time.Time
 
-	mu        sync.Mutex
-	sessions  map[string]store.TokenSession
-	bySubject map[string]map[string]struct{}
-	once      map[string]onceValue
-	writes    int
+	mu         sync.Mutex
+	sessions   map[string]store.TokenSession
+	bySubject  map[string]map[string]struct{}
+	byEndpoint map[string]map[string]struct{}
+	once       map[string]onceValue
+	writes     int
 }
 
 var _ store.SessionStore = (*SessionStore)(nil)
@@ -37,10 +39,11 @@ func NewSessionStoreWithClock(now func() time.Time) *SessionStore {
 
 func newSessionStore(now func() time.Time) *SessionStore {
 	return &SessionStore{
-		now:       now,
-		sessions:  make(map[string]store.TokenSession),
-		bySubject: make(map[string]map[string]struct{}),
-		once:      make(map[string]onceValue),
+		now:        now,
+		sessions:   make(map[string]store.TokenSession),
+		bySubject:  make(map[string]map[string]struct{}),
+		byEndpoint: make(map[string]map[string]struct{}),
+		once:       make(map[string]onceValue),
 	}
 }
 
@@ -49,13 +52,10 @@ func (s *SessionStore) PutTokenSession(_ context.Context, ts *store.TokenSession
 	defer s.mu.Unlock()
 	s.pruneLocked()
 	s.sessions[ts.ID] = *ts
-	key := store.SubjectKey(ts.OrgID, ts.SubjectType, ts.SubjectID)
-	set := s.bySubject[key]
-	if set == nil {
-		set = make(map[string]struct{})
-		s.bySubject[key] = set
+	addToIndex(s.bySubject, store.SubjectKey(ts.OrgID, ts.SubjectType, ts.SubjectID), ts.ID)
+	if ts.EndpointID != "" {
+		addToIndex(s.byEndpoint, store.EndpointKey(ts.OrgID, ts.EndpointID), ts.ID)
 	}
-	set[ts.ID] = struct{}{}
 	return nil
 }
 
@@ -94,14 +94,40 @@ func (s *SessionStore) DeleteTokenSession(_ context.Context, id string) error {
 func (s *SessionStore) DeleteSubjectSessions(_ context.Context, orgID, subjectType, subjectID string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := store.SubjectKey(orgID, subjectType, subjectID)
 	var ids []string
-	for id := range s.bySubject[key] {
+	for id := range s.bySubject[store.SubjectKey(orgID, subjectType, subjectID)] {
 		ids = append(ids, id)
-		delete(s.sessions, id)
+		s.deleteLocked(id)
 	}
-	delete(s.bySubject, key)
 	return ids, nil
+}
+
+func (s *SessionStore) ListEndpointSessions(_ context.Context, orgID, endpointID string) ([]store.TokenSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.endpointSessionsLocked(orgID, endpointID), nil
+}
+
+func (s *SessionStore) DeleteEndpointSessions(_ context.Context, orgID, endpointID string) ([]store.TokenSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	live := s.endpointSessionsLocked(orgID, endpointID)
+	for id := range s.byEndpoint[store.EndpointKey(orgID, endpointID)] {
+		s.deleteLocked(id)
+	}
+	return live, nil
+}
+
+func (s *SessionStore) endpointSessionsLocked(orgID, endpointID string) []store.TokenSession {
+	now := s.now()
+	var out []store.TokenSession
+	for id := range s.byEndpoint[store.EndpointKey(orgID, endpointID)] {
+		if ts := s.sessions[id]; now.Before(ts.ExpiresAt) {
+			out = append(out, ts)
+		}
+	}
+	slices.SortFunc(out, func(a, b store.TokenSession) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	return out
 }
 
 func (s *SessionStore) ClaimOnce(_ context.Context, key string, ttl time.Duration) (bool, error) {
@@ -151,11 +177,26 @@ func (s *SessionStore) deleteLocked(id string) {
 		return
 	}
 	delete(s.sessions, id)
-	key := store.SubjectKey(ts.OrgID, ts.SubjectType, ts.SubjectID)
-	if set := s.bySubject[key]; set != nil {
+	removeFromIndex(s.bySubject, store.SubjectKey(ts.OrgID, ts.SubjectType, ts.SubjectID), id)
+	if ts.EndpointID != "" {
+		removeFromIndex(s.byEndpoint, store.EndpointKey(ts.OrgID, ts.EndpointID), id)
+	}
+}
+
+func addToIndex(index map[string]map[string]struct{}, key, id string) {
+	set := index[key]
+	if set == nil {
+		set = make(map[string]struct{})
+		index[key] = set
+	}
+	set[id] = struct{}{}
+}
+
+func removeFromIndex(index map[string]map[string]struct{}, key, id string) {
+	if set := index[key]; set != nil {
 		delete(set, id)
 		if len(set) == 0 {
-			delete(s.bySubject, key)
+			delete(index, key)
 		}
 	}
 }

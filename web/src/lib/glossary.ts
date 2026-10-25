@@ -211,6 +211,10 @@ export const DRIVER_HELP: Record<ServiceDriver, GlossaryEntry> = {
 };
 
 export const HELP = {
+  browserSessions: {
+    title: "Browser sessions",
+    body: "People signed in to this endpoint in a browser. Member: an org user who signed in with mishmesh. Guest: someone who signed in through this endpoint's OIDC provider. Revoking ends the session on its next request; they can sign in again if access still allows.",
+  },
   connection: {
     title: "Connection",
     body: "A saved integration with an existing network or workload platform. Each connection has its own credentials, health and supported capabilities.",

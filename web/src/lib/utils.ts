@@ -29,6 +29,18 @@ export function formatRelativeTime(iso?: string | null): string {
   return `${day}d ago`;
 }
 
+export function formatTimeUntil(iso?: string | null): string {
+  if (!iso) return "never";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "never";
+  const min = Math.round((then - Date.now()) / 60000);
+  if (min <= 0) return "now";
+  if (min < 60) return `in ${min}m`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `in ${hr}h`;
+  return `in ${Math.round(hr / 24)}d`;
+}
+
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);

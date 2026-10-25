@@ -260,6 +260,9 @@ func (a *API) routes() []route {
 		{"GET /api/v1/endpoints/{id}", a.require(authz.ActionEndpointRead, a.getEndpointHandler)},
 		{"PATCH /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.patchEndpointHandler)},
 		{"DELETE /api/v1/endpoints/{id}", a.require(authz.ActionEndpointWrite, a.deleteEndpointHandler)},
+		{"GET /api/v1/endpoints/{id}/sessions", a.require(authz.ActionEndpointRead, a.listEndpointSessionsHandler)},
+		{"DELETE /api/v1/endpoints/{id}/sessions", a.require(authz.ActionEndpointWrite, a.revokeEndpointSessionsHandler)},
+		{"DELETE /api/v1/endpoints/{id}/sessions/{session_id}", a.require(authz.ActionEndpointWrite, a.revokeEndpointSessionHandler)},
 
 		{"GET /api/v1/capabilities", a.guard(a.capabilitiesHandler)},
 

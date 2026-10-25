@@ -306,6 +306,45 @@ func (s *Service) RevokeSubject(ctx context.Context, orgID string, subject authz
 	return nil
 }
 
+func (s *Service) EndpointSessions(ctx context.Context, orgID, endpointID string) ([]store.TokenSession, error) {
+	sessions, err := s.sessions.ListEndpointSessions(ctx, orgID, endpointID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return sessions, nil
+}
+
+func (s *Service) RevokeEndpointSession(ctx context.Context, orgID, endpointID, id string) error {
+	ts, err := s.sessions.GetTokenSession(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	if ts.OrgID != orgID || ts.EndpointID != endpointID {
+		return store.ErrNotFound
+	}
+	return s.RevokeSession(ctx, id)
+}
+
+func (s *Service) RevokeEndpointSessions(ctx context.Context, orgID, endpointID string) (int, error) {
+	revoked, err := s.sessions.DeleteEndpointSessions(ctx, orgID, endpointID)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	bySubject := make(map[authz.EntityRef][]string)
+	for _, ts := range revoked {
+		entity, _ := EntityType(ts.SubjectType)
+		subject := authz.EntityRef{Type: entity, ID: ts.SubjectID}
+		bySubject[subject] = append(bySubject[subject], ts.ID)
+	}
+	for subject, ids := range bySubject {
+		s.publish(Revocation{OrgID: orgID, Subject: subject, SessionIDs: ids})
+	}
+	return len(revoked), nil
+}
+
 func (s *Service) Subscribe(fn func(Revocation)) func() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

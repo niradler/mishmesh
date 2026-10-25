@@ -14,6 +14,7 @@ import type {
   CreateAgentResponse,
   CreateEndpointRequest,
   Endpoint,
+  EndpointSession,
   Me,
   Invite,
   Member,
@@ -46,6 +47,7 @@ export const qk = {
   agentTokens: (id: string) => ["agents", id, "tokens"] as const,
   endpoints: (orgId?: string) => ["endpoints", orgId] as const,
   endpoint: (id: string) => ["endpoints", "detail", id] as const,
+  endpointSessions: (id: string) => ["endpoints", "detail", id, "sessions"] as const,
   members: (orgId?: string) => ["members", orgId] as const,
   quota: (orgId?: string) => ["quota", orgId] as const,
   audit: (orgId?: string) => ["audit", orgId] as const,
@@ -278,6 +280,34 @@ export function useDeleteEndpoint() {
       qc.removeQueries({ queryKey: qk.endpoint(id) });
       invalidateNetwork(qc);
     },
+  });
+}
+
+export function useEndpointSessions(id: string) {
+  return useQuery({
+    queryKey: qk.endpointSessions(id),
+    queryFn: () => api.get<EndpointSession[]>(`/endpoints/${id}/sessions`),
+    enabled: !!id,
+  });
+}
+
+export function useRevokeEndpointSession(endpointId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      api.del<void>(`/endpoints/${endpointId}/sessions/${sessionId}`),
+    onSettled: () =>
+      qc.invalidateQueries({ queryKey: qk.endpointSessions(endpointId) }),
+  });
+}
+
+export function useRevokeEndpointSessions(endpointId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.del<{ revoked: number }>(`/endpoints/${endpointId}/sessions`),
+    onSettled: () =>
+      qc.invalidateQueries({ queryKey: qk.endpointSessions(endpointId) }),
   });
 }
 

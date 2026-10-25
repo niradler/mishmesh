@@ -115,6 +115,62 @@ func RunSessionStore(t *testing.T, open func(t *testing.T) store.SessionStore) {
 		}
 	})
 
+	t.Run("endpoint sessions are indexed and scoped", func(t *testing.T) {
+		s := open(t)
+		ctx := context.Background()
+		first := endpointSession("tsn_e1", "org_1", "ep_1", "usr_1", 0)
+		second := endpointSession("tsn_e2", "org_1", "ep_1", "usr_2", time.Second)
+		dropped := endpointSession("tsn_e3", "org_1", "ep_1", "usr_3", 2*time.Second)
+		subjectRevoked := endpointSession("tsn_e4", "org_1", "ep_1", "usr_4", 3*time.Second)
+		otherEndpoint := endpointSession("tsn_e5", "org_1", "ep_2", "usr_1", 0)
+		otherOrg := endpointSession("tsn_e6", "org_2", "ep_1", "usr_1", 0)
+		plain := sampleSession("tsn_e7", "org_1", "sa_1")
+		for _, ts := range []*store.TokenSession{first, second, dropped, subjectRevoked, otherEndpoint, otherOrg, plain} {
+			if err := s.PutTokenSession(ctx, ts); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.DeleteTokenSession(ctx, dropped.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.DeleteSubjectSessions(ctx, "org_1", store.SubjectUser, "usr_4"); err != nil {
+			t.Fatal(err)
+		}
+		listed, err := s.ListEndpointSessions(ctx, "org_1", "ep_1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := sessionIDs(listed); !slices.Equal(got, []string{"tsn_e1", "tsn_e2"}) {
+			t.Fatalf("listed %v, want the live ep_1 sessions oldest first", got)
+		}
+		if listed[0].SubjectID != "usr_1" || !listed[0].ExpiresAt.Equal(first.ExpiresAt) {
+			t.Fatalf("listed session %+v lost its fields", listed[0])
+		}
+		deleted, err := s.DeleteEndpointSessions(ctx, "org_1", "ep_1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := sessionIDs(deleted); !slices.Equal(got, []string{"tsn_e1", "tsn_e2"}) {
+			t.Fatalf("deleted %v", got)
+		}
+		for _, id := range []string{"tsn_e1", "tsn_e2"} {
+			if _, err := s.GetTokenSession(ctx, id); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("%s survived: %v", id, err)
+			}
+		}
+		for _, id := range []string{"tsn_e5", "tsn_e6", "tsn_e7"} {
+			if _, err := s.GetTokenSession(ctx, id); err != nil {
+				t.Fatalf("%s wrongly deleted: %v", id, err)
+			}
+		}
+		if left, err := s.ListEndpointSessions(ctx, "org_1", "ep_1"); err != nil || len(left) != 0 {
+			t.Fatalf("after delete listed %v, err %v", sessionIDs(left), err)
+		}
+		if ids, err := s.DeleteSubjectSessions(ctx, "org_1", store.SubjectUser, "usr_1"); err != nil || !slices.Equal(ids, []string{"tsn_e5"}) {
+			t.Fatalf("subject sessions after endpoint delete = %v, %v", ids, err)
+		}
+	})
+
 	t.Run("claim once", func(t *testing.T) {
 		s := open(t)
 		ctx := context.Background()
@@ -181,4 +237,21 @@ func sampleSession(id, org, subject string) *store.TokenSession {
 		CreatedAt:   now,
 		ExpiresAt:   now.Add(time.Hour),
 	}
+}
+
+func endpointSession(id, org, endpoint, user string, age time.Duration) *store.TokenSession {
+	ts := sampleSession(id, org, user)
+	ts.SubjectType = store.SubjectUser
+	ts.EndpointID = endpoint
+	ts.AuthMethod = "oidc"
+	ts.CreatedAt = ts.CreatedAt.Add(age)
+	return ts
+}
+
+func sessionIDs(sessions []store.TokenSession) []string {
+	ids := make([]string, len(sessions))
+	for i, ts := range sessions {
+		ids[i] = ts.ID
+	}
+	return ids
 }

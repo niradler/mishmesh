@@ -128,3 +128,82 @@ func TestIssueRejectsBadSubjects(t *testing.T) {
 		}
 	}
 }
+
+func issueEndpointSession(t *testing.T, s *Service, org, endpoint, user string) Issued {
+	t.Helper()
+	got, err := s.Issue(context.Background(), IssueRequest{
+		OrgID: org, Subject: authz.EntityRef{Type: authz.EntityUser, ID: user}, Type: token.TypeSession,
+		AuthMethod: authz.AuthMethodOIDC, TTL: EndpointSessionTTL, EndpointID: endpoint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestRevokeEndpointSessionIsScopedToTheEndpoint(t *testing.T) {
+	s := newService(t)
+	ctx := context.Background()
+	target := issueEndpointSession(t, s, "org_1", "ep_1", "usr_1")
+	sibling := issueEndpointSession(t, s, "org_1", "ep_1", "usr_2")
+	for _, scope := range []struct{ org, endpoint string }{{"org_2", "ep_1"}, {"org_1", "ep_2"}} {
+		if err := s.RevokeEndpointSession(ctx, scope.org, scope.endpoint, target.Session.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("revoke from %+v = %v, want not found", scope, err)
+		}
+	}
+	if err := s.RevokeEndpointSession(ctx, "org_1", "ep_1", "tsn_missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("revoke missing = %v, want not found", err)
+	}
+	var got []Revocation
+	cancel := s.Subscribe(func(r Revocation) { got = append(got, r) })
+	defer cancel()
+	if err := s.RevokeEndpointSession(ctx, "org_1", "ep_1", target.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Authenticate(ctx, target.Token, token.TypeSession); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("revoked session still authenticates: %v", err)
+	}
+	if _, err := s.Authenticate(ctx, sibling.Token, token.TypeSession); err != nil {
+		t.Fatalf("sibling session revoked: %v", err)
+	}
+	if len(got) != 1 || got[0].SessionIDs[0] != target.Session.ID {
+		t.Fatalf("revocations = %+v", got)
+	}
+}
+
+func TestRevokeEndpointSessionsEndsEverySessionOfTheEndpoint(t *testing.T) {
+	s := newService(t)
+	ctx := context.Background()
+	a := issueEndpointSession(t, s, "org_1", "ep_1", "usr_1")
+	b := issueEndpointSession(t, s, "org_1", "ep_1", "usr_1")
+	c := issueEndpointSession(t, s, "org_1", "ep_1", "usr_2")
+	otherEndpoint := issueEndpointSession(t, s, "org_1", "ep_2", "usr_1")
+	console := issue(t, s, "org_1")
+	listed, err := s.EndpointSessions(ctx, "org_1", "ep_1")
+	if err != nil || len(listed) != 3 {
+		t.Fatalf("listed %d sessions, err %v", len(listed), err)
+	}
+	var got []Revocation
+	cancel := s.Subscribe(func(r Revocation) { got = append(got, r) })
+	defer cancel()
+	n, err := s.RevokeEndpointSessions(ctx, "org_1", "ep_1")
+	if err != nil || n != 3 {
+		t.Fatalf("revoked %d, err %v", n, err)
+	}
+	for _, tok := range []string{a.Token, b.Token, c.Token} {
+		if _, err := s.Authenticate(ctx, tok, token.TypeSession); !errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("revoked session still authenticates: %v", err)
+		}
+	}
+	for _, tok := range []string{otherEndpoint.Token, console.Token} {
+		if _, err := s.Authenticate(ctx, tok); err != nil {
+			t.Fatalf("unrelated session revoked: %v", err)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("want one revocation per subject, got %+v", got)
+	}
+	if left, _ := s.EndpointSessions(ctx, "org_1", "ep_1"); len(left) != 0 {
+		t.Fatalf("%d sessions left", len(left))
+	}
+}
