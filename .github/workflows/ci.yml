@@ -37,13 +37,12 @@ jobs:
           go vet ./.claude/scripts/loadtest/lt ./.claude/scripts/loadtest/ltserver
           go build -o /tmp/mishmesh-loadtest ./.claude/scripts/loadtest/lt
           go build -o /tmp/mishmesh-loadtest-server ./.claude/scripts/loadtest/ltserver
-      - run: go test -race -count=1 ./...
-        env:
-          MISHMESH_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
-      - name: postgres store tests ran
+      - run: go test -race -count=1 $(go list ./... | grep -v '/internal/store/postgres$')
+      - name: postgres store tests
         run: |
-          go test -count=1 -v ./internal/store/postgres/ > /tmp/pg-tests.log 2>&1 || { cat /tmp/pg-tests.log; exit 1; }
-          if grep -q -- '--- SKIP' /tmp/pg-tests.log; then grep -- '--- SKIP' /tmp/pg-tests.log; exit 1; fi
+          set -o pipefail
+          go test -race -count=1 -v ./internal/store/postgres/ | tee /tmp/pg-tests.log
+          if grep -q -- '--- SKIP' /tmp/pg-tests.log; then echo "postgres store tests were skipped"; exit 1; fi
         env:
           MISHMESH_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
       - name: govulncheck
