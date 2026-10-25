@@ -49,14 +49,20 @@ var (
 	errEgressCAInvalid    = errors.New("egress ca: server returned an invalid certificate")
 )
 
+type decryptSigner struct {
+	cert *x509.Certificate
+	pool *x509.CertPool
+}
+
 type decryptState struct {
-	key          *ecdsa.PrivateKey
-	leafKey      *ecdsa.PrivateKey
-	intermediate *x509.Certificate
-	roots        *x509.CertPool
-	inters       *x509.CertPool
-	allow        []string
-	bypass       []string
+	key       *ecdsa.PrivateKey
+	leafKey   *ecdsa.PrivateKey
+	signers   []decryptSigner
+	notBefore time.Time
+	notAfter  time.Time
+	roots     *x509.CertPool
+	allow     []string
+	bypass    []string
 
 	mu     sync.Mutex
 	leaves map[string]*tls.Certificate
@@ -64,7 +70,7 @@ type decryptState struct {
 }
 
 func (s *decryptState) usable(now time.Time) bool {
-	return now.Add(decryptExpiryMargin).Before(s.intermediate.NotAfter) && !now.Before(s.intermediate.NotBefore)
+	return now.Add(decryptExpiryMargin).Before(s.notAfter) && !now.Before(s.notBefore)
 }
 
 func (s *decryptState) leaf(host string, now time.Time) (*tls.Certificate, error) {
@@ -89,25 +95,36 @@ func (s *decryptState) leaf(host string, now time.Time) (*tls.Certificate, error
 }
 
 func (s *decryptState) mint(host string, now time.Time) (*tls.Certificate, error) {
+	err := errDecryptLeaf
+	for _, signer := range s.signers {
+		var c *tls.Certificate
+		if c, err = s.mintWith(signer, host, now); err == nil {
+			return c, nil
+		}
+	}
+	return nil, err
+}
+
+func (s *decryptState) mintWith(signer decryptSigner, host string, now time.Time) (*tls.Certificate, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), decryptSerialBits))
 	if err != nil {
 		return nil, fmt.Errorf("decrypt leaf serial: %w", err)
 	}
 	notBefore := now.Add(-decryptLeafBackdate)
-	if notBefore.Before(s.intermediate.NotBefore) {
-		notBefore = s.intermediate.NotBefore
+	if notBefore.Before(signer.cert.NotBefore) {
+		notBefore = signer.cert.NotBefore
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial.Add(serial, big.NewInt(1)),
 		Subject:               pkix.Name{CommonName: host},
 		DNSNames:              []string{host},
 		NotBefore:             notBefore,
-		NotAfter:              s.intermediate.NotAfter,
+		NotAfter:              signer.cert.NotAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, s.intermediate, &s.leafKey.PublicKey, s.key)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, signer.cert, &s.leafKey.PublicKey, s.key)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt leaf: %w", err)
 	}
@@ -116,12 +133,12 @@ func (s *decryptState) mint(host string, now time.Time) (*tls.Certificate, error
 		return nil, fmt.Errorf("decrypt leaf: %w", err)
 	}
 	if _, err := leaf.Verify(x509.VerifyOptions{
-		DNSName: host, Roots: s.roots, Intermediates: s.inters, CurrentTime: now,
+		DNSName: host, Roots: s.roots, Intermediates: signer.pool, CurrentTime: now,
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}); err != nil {
 		return nil, fmt.Errorf("%w: %w", errDecryptLeaf, err)
 	}
-	return &tls.Certificate{Certificate: [][]byte{der, s.intermediate.Raw}, PrivateKey: s.leafKey, Leaf: leaf}, nil
+	return &tls.Certificate{Certificate: [][]byte{der, signer.cert.Raw}, PrivateKey: s.leafKey, Leaf: leaf}, nil
 }
 
 type decryptor struct {
@@ -229,7 +246,7 @@ func (d *decryptor) run(gen uint64, done chan struct{}) {
 	default:
 		d.state = st
 		d.scheduleLocked(gen, st)
-		d.log.Info("egress decrypt intermediate issued", "not_after", st.intermediate.NotAfter, "allow", len(st.allow), "bypass", len(st.bypass))
+		d.log.Info("egress decrypt intermediate issued", "not_after", st.notAfter, "intermediates", len(st.signers), "allow", len(st.allow), "bypass", len(st.bypass))
 	}
 	d.inflight = nil
 	close(done)
@@ -243,7 +260,7 @@ func (d *decryptor) scheduleLocked(gen uint64, st *decryptState) {
 	if d.timer != nil {
 		d.timer.Stop()
 	}
-	lifetime := st.intermediate.NotAfter.Sub(d.now())
+	lifetime := st.notAfter.Sub(d.now())
 	d.timer = time.AfterFunc(max(lifetime*(decryptRefreshDivisor-1)/decryptRefreshDivisor, time.Second), func() {
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -353,14 +370,45 @@ func (d *decryptor) issue(gen uint64) (*decryptState, string, error) {
 }
 
 func (d *decryptor) stateFrom(key *ecdsa.PrivateKey, resp tunnel.CertResponse) (*decryptState, error) {
-	if len(resp.Chain) < 2 {
-		return nil, errDecryptChain
-	}
-	inter, err := x509.ParseCertificate(resp.Chain[0])
-	if err != nil {
+	if len(resp.Chain) < 2 || len(resp.Extra) >= decryptscope.MaxPatterns {
 		return nil, errDecryptChain
 	}
 	root, err := x509.ParseCertificate(resp.Chain[len(resp.Chain)-1])
+	if err != nil {
+		return nil, errDecryptChain
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(root)
+	st := &decryptState{key: key, roots: roots, leaves: map[string]*tls.Certificate{}}
+	for _, der := range append([][]byte{resp.Chain[0]}, resp.Extra...) {
+		inter, err := d.verifiedIntermediate(key, roots, der)
+		if err != nil {
+			return nil, err
+		}
+		pool := x509.NewCertPool()
+		pool.AddCert(inter)
+		st.signers = append(st.signers, decryptSigner{cert: inter, pool: pool})
+		if st.notBefore.IsZero() || inter.NotBefore.After(st.notBefore) {
+			st.notBefore = inter.NotBefore
+		}
+		if st.notAfter.IsZero() || inter.NotAfter.Before(st.notAfter) {
+			st.notAfter = inter.NotAfter
+		}
+	}
+	if st.allow, err = decryptscope.Normalize(resp.Allow); err != nil || len(st.allow) == 0 {
+		return nil, errDecryptChain
+	}
+	if st.bypass, err = decryptscope.Normalize(resp.Bypass); err != nil {
+		return nil, errDecryptChain
+	}
+	if st.leafKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
+		return nil, fmt.Errorf("decrypt leaf key: %w", err)
+	}
+	return st, nil
+}
+
+func (d *decryptor) verifiedIntermediate(key *ecdsa.PrivateKey, roots *x509.CertPool, der []byte) (*x509.Certificate, error) {
+	inter, err := x509.ParseCertificate(der)
 	if err != nil {
 		return nil, errDecryptChain
 	}
@@ -368,29 +416,10 @@ func (d *decryptor) stateFrom(key *ecdsa.PrivateKey, resp tunnel.CertResponse) (
 	if !ok || !pub.Equal(&key.PublicKey) || !inter.IsCA || !inter.MaxPathLenZero {
 		return nil, errDecryptChain
 	}
-	roots := x509.NewCertPool()
-	roots.AddCert(root)
 	if _, err := inter.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: d.now(), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
 		return nil, fmt.Errorf("%w: %w", errDecryptChain, err)
 	}
-	allow, err := decryptscope.Normalize(resp.Allow)
-	if err != nil || len(allow) == 0 {
-		return nil, errDecryptChain
-	}
-	bypass, err := decryptscope.Normalize(resp.Bypass)
-	if err != nil {
-		return nil, errDecryptChain
-	}
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt leaf key: %w", err)
-	}
-	inters := x509.NewCertPool()
-	inters.AddCert(inter)
-	return &decryptState{
-		key: key, leafKey: leafKey, intermediate: inter, roots: roots, inters: inters,
-		allow: allow, bypass: bypass, leaves: map[string]*tls.Certificate{},
-	}, nil
+	return inter, nil
 }
 
 func (a *Agent) serveDecrypted(client net.Conn, br *bufio.Reader, dest string, creds egressCreds) bool {

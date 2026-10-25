@@ -19,6 +19,8 @@ import (
 type decryptChainSpec struct {
 	interKey   *ecdsa.PrivateKey
 	permitted  []string
+	excluded   []string
+	extra      []decryptChainSpec
 	isCA       bool
 	notAfter   time.Time
 	allow      []string
@@ -65,17 +67,24 @@ func decryptCertResponse(t *testing.T, now time.Time, spec decryptChainSpec) tun
 		parent = mustCert(t, &rogueTmpl, &rogueTmpl, &rogueKey.PublicKey, rogueKey)
 		signer = rogueKey
 	}
-	inter := mustCert(t, &x509.Certificate{
-		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "agent intermediate"},
-		NotBefore: now.Add(-time.Minute), NotAfter: spec.notAfter,
-		IsCA: spec.isCA, BasicConstraintsValid: true, MaxPathLen: 0, MaxPathLenZero: spec.isCA,
-		KeyUsage: x509.KeyUsageCertSign, PermittedDNSDomainsCritical: true, PermittedDNSDomains: spec.permitted,
-	}, parent, &spec.interKey.PublicKey, signer)
-	chain := [][]byte{inter.Raw, root.Raw}
+	intermediate := func(serial int64, s decryptChainSpec) []byte {
+		return mustCert(t, &x509.Certificate{
+			SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "agent intermediate"},
+			NotBefore: now.Add(-time.Minute), NotAfter: s.notAfter,
+			IsCA: s.isCA, BasicConstraintsValid: true, MaxPathLen: 0, MaxPathLenZero: s.isCA,
+			KeyUsage: x509.KeyUsageCertSign, PermittedDNSDomainsCritical: true,
+			PermittedDNSDomains: s.permitted, ExcludedDNSDomains: s.excluded,
+		}, parent, &s.interKey.PublicKey, signer).Raw
+	}
+	chain := [][]byte{intermediate(2, spec), root.Raw}
 	if spec.dropRoot {
 		chain = chain[:1]
 	}
-	return tunnel.CertResponse{Chain: chain, Allow: spec.allow, Bypass: spec.bypass}
+	var extra [][]byte
+	for i, e := range spec.extra {
+		extra = append(extra, intermediate(int64(3+i), e))
+	}
+	return tunnel.CertResponse{Chain: chain, Extra: extra, Allow: spec.allow, Bypass: spec.bypass}
 }
 
 func TestDecryptStateFromValidatesChain(t *testing.T) {
@@ -96,6 +105,12 @@ func TestDecryptStateFromValidatesChain(t *testing.T) {
 		{"empty allow list", func(s *decryptChainSpec) { s.allow = nil }},
 		{"invalid allow entry", func(s *decryptChainSpec) { s.allow = []string{"*"} }},
 		{"invalid bypass entry", func(s *decryptChainSpec) { s.bypass = []string{"bad host"} }},
+		{"additional intermediate for another key", func(s *decryptChainSpec) {
+			s.extra = []decryptChainSpec{{interKey: mustKey(t), permitted: []string{"other.test"}, isCA: true, notAfter: s.notAfter}}
+		}},
+		{"additional intermediate that is not a CA", func(s *decryptChainSpec) {
+			s.extra = []decryptChainSpec{{interKey: s.interKey, permitted: []string{"other.test"}, notAfter: s.notAfter}}
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -118,8 +133,8 @@ func TestDecryptStateFromValidatesChain(t *testing.T) {
 	if again, _ := st.leaf("api.decrypt.test", now); again != leaf {
 		t.Fatal("leaf was not cached")
 	}
-	if got := leaf.Leaf.NotAfter; !got.Equal(st.intermediate.NotAfter) {
-		t.Fatalf("leaf NotAfter %v outlives or undercuts the intermediate %v", got, st.intermediate.NotAfter)
+	if got := leaf.Leaf.NotAfter; !got.Equal(st.notAfter) {
+		t.Fatalf("leaf NotAfter %v outlives or undercuts the intermediate %v", got, st.notAfter)
 	}
 	if _, err := st.leaf("evil.example", now); !errors.Is(err, errDecryptLeaf) {
 		t.Fatalf("leaf outside the name constraints = %v, want errDecryptLeaf", err)
@@ -154,12 +169,45 @@ func TestDecryptStateLeafCacheIsBounded(t *testing.T) {
 
 func TestDecryptStateUsableHonorsExpiryMargin(t *testing.T) {
 	now := time.Now()
-	st := &decryptState{intermediate: &x509.Certificate{NotBefore: now.Add(-time.Hour), NotAfter: now.Add(decryptExpiryMargin / 2)}}
+	st := &decryptState{notBefore: now.Add(-time.Hour), notAfter: now.Add(decryptExpiryMargin / 2)}
 	if st.usable(now) {
 		t.Fatal("an intermediate inside the expiry margin is usable")
 	}
-	st.intermediate.NotAfter = now.Add(time.Hour)
+	st.notAfter = now.Add(time.Hour)
 	if !st.usable(now) || st.usable(now.Add(-2*time.Hour)) {
 		t.Fatal("usable ignores the validity window")
+	}
+}
+
+func TestDecryptStateMintsFromTheIntermediateCoveringTheHost(t *testing.T) {
+	now := time.Now()
+	d := newDecryptor(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), func() time.Time { return now })
+	key := mustKey(t)
+	notAfter := now.Add(24 * time.Hour)
+	spec := decryptChainSpec{
+		interKey: key, isCA: true, notAfter: notAfter, allow: []string{"api.example.com", "example.com"},
+		permitted: []string{"example.com"}, excluded: []string{".example.com"},
+		extra: []decryptChainSpec{{interKey: key, isCA: true, notAfter: notAfter.Add(-time.Hour), permitted: []string{"api.example.com"}, excluded: []string{".api.example.com"}}},
+	}
+	st, err := d.stateFrom(key, decryptCertResponse(t, now, spec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.signers) != 2 || !st.notAfter.Equal(st.signers[1].cert.NotAfter) {
+		t.Fatalf("signers %d, notAfter %v must be the earliest intermediate expiry", len(st.signers), st.notAfter)
+	}
+	for host, signer := range map[string]int{"example.com": 0, "api.example.com": 1} {
+		leaf, err := st.leaf(host, now)
+		if err != nil {
+			t.Fatalf("%s: %v", host, err)
+		}
+		if got := leaf.Certificate[1]; string(got) != string(st.signers[signer].cert.Raw) {
+			t.Fatalf("%s: served with the wrong intermediate", host)
+		}
+	}
+	for _, host := range []string{"www.example.com", "x.api.example.com"} {
+		if _, err := st.leaf(host, now); !errors.Is(err, errDecryptLeaf) {
+			t.Fatalf("%s: leaf = %v, want errDecryptLeaf", host, err)
+		}
 	}
 }

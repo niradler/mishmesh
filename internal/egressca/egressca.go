@@ -151,6 +151,7 @@ func (a *Authority) signer(ctx context.Context, orgID string) (*x509.Certificate
 
 type Issued struct {
 	Chain    [][]byte
+	Extra    [][]byte
 	Allow    []string
 	Bypass   []string
 	NotAfter time.Time
@@ -171,7 +172,7 @@ func (a *Authority) Issue(ctx context.Context, orgID, agentID string, csrDER []b
 	if err != nil {
 		return nil, fmt.Errorf("load decrypt config: %w", err)
 	}
-	permitted, excluded, err := decryptscope.Constraints(cfg.Allow, cfg.Bypass)
+	groups, err := decryptscope.ConstraintGroups(cfg.Allow, cfg.Bypass)
 	if err != nil {
 		return nil, ErrDecryptDisabled
 	}
@@ -179,14 +180,31 @@ func (a *Authority) Issue(ctx context.Context, orgID, agentID string, csrDER []b
 	if err != nil {
 		return nil, err
 	}
-	serial, err := randomSerial()
-	if err != nil {
-		return nil, err
-	}
 	now := a.now()
 	notAfter := now.Add(IntermediateValidity)
 	if root.NotAfter.Before(notAfter) {
 		notAfter = root.NotAfter
+	}
+	notAfter = notAfter.Truncate(time.Second)
+	issued := &Issued{Allow: cfg.Allow, Bypass: cfg.Bypass, NotAfter: notAfter}
+	for i, g := range groups {
+		der, err := signIntermediate(root, rootKey, pub, orgID, agentID, g, now, notAfter)
+		if err != nil {
+			return nil, err
+		}
+		if i == 0 {
+			issued.Chain = [][]byte{der, root.Raw}
+			continue
+		}
+		issued.Extra = append(issued.Extra, der)
+	}
+	return issued, nil
+}
+
+func signIntermediate(root *x509.Certificate, rootKey *ecdsa.PrivateKey, pub *ecdsa.PublicKey, orgID, agentID string, constraints decryptscope.ConstraintSet, now, notAfter time.Time) ([]byte, error) {
+	serial, err := randomSerial()
+	if err != nil {
+		return nil, err
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:                serial,
@@ -200,8 +218,8 @@ func (a *Authority) Issue(ctx context.Context, orgID, agentID string, csrDER []b
 		KeyUsage:                    x509.KeyUsageCertSign,
 		ExtKeyUsage:                 []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		PermittedDNSDomainsCritical: true,
-		PermittedDNSDomains:         permitted,
-		ExcludedDNSDomains:          excluded,
+		PermittedDNSDomains:         constraints.Permitted,
+		ExcludedDNSDomains:          constraints.Excluded,
 		ExcludedIPRanges:            allAddresses(),
 		PermittedEmailAddresses:     []string{unreachableNameConstraint},
 		PermittedURIDomains:         []string{unreachableNameConstraint},
@@ -210,11 +228,7 @@ func (a *Authority) Issue(ctx context.Context, orgID, agentID string, csrDER []b
 	if err != nil {
 		return nil, fmt.Errorf("sign decrypt intermediate: %w", err)
 	}
-	inter, err := x509.ParseCertificate(der)
-	if err != nil {
-		return nil, fmt.Errorf("parse decrypt intermediate: %w", err)
-	}
-	return &Issued{Chain: [][]byte{der, root.Raw}, Allow: cfg.Allow, Bypass: cfg.Bypass, NotAfter: inter.NotAfter}, nil
+	return der, nil
 }
 
 func (a *Authority) IssueDecryptCert(ctx context.Context, agent *store.Agent, csr []byte) (tunnel.CertResponse, error) {
@@ -225,7 +239,7 @@ func (a *Authority) IssueDecryptCert(ctx context.Context, agent *store.Agent, cs
 	case err != nil:
 		return tunnel.CertResponse{}, err
 	}
-	return tunnel.CertResponse{Chain: issued.Chain, Allow: issued.Allow, Bypass: issued.Bypass, NotAfter: issued.NotAfter}, nil
+	return tunnel.CertResponse{Chain: issued.Chain, Extra: issued.Extra, Allow: issued.Allow, Bypass: issued.Bypass, NotAfter: issued.NotAfter}, nil
 }
 
 func (a *Authority) EgressCA(ctx context.Context, agent *store.Agent) (tunnel.EgressCA, error) {
