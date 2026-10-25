@@ -12,6 +12,18 @@ jobs:
   go:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -25,7 +37,14 @@ jobs:
           go vet ./.claude/scripts/loadtest/lt ./.claude/scripts/loadtest/ltserver
           go build -o /tmp/mishmesh-loadtest ./.claude/scripts/loadtest/lt
           go build -o /tmp/mishmesh-loadtest-server ./.claude/scripts/loadtest/ltserver
-      - run: go test -race -count=1 ./...
+      - run: go test -race -count=1 $(go list ./... | grep -v '/internal/store/postgres$')
+      - name: postgres store tests
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v ./internal/store/postgres/ | tee /tmp/pg-tests.log
+          if grep -q -- '--- SKIP' /tmp/pg-tests.log; then echo "postgres store tests were skipped"; exit 1; fi
+        env:
+          MISHMESH_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
