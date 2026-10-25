@@ -65,6 +65,7 @@ How it works:
 
 - The org root key is created on first use and sealed at rest on the server.
 - Each agent generates a P-256 key and requests an intermediate over its control channel. The server issues it with path length 0, a 4h lifetime and name constraints built only from the org's `allow` scope, excluding every IP, email and URI name. The agent can mint leaves only for hosts the org allowed.
+- An exact `allow` entry such as `example.com` covers only that name, never its subdomains. X.509 name constraints cannot express an exact name next to a listed subdomain (`example.com` with `api.example.com`), so the server then issues one extra intermediate per conflicting entry, all signed by the same org root. The agent picks the intermediate whose constraints cover the host. Agents that predate this use only the first intermediate and refuse the other hosts.
 - Decryption fails closed. While the agent cannot tell whether a host is in scope (not yet connected, intermediate pending or failed) or cannot mint a leaf, `CONNECT` returns `503 egress decryption unavailable` instead of passing through. A decrypt-scoped `CONNECT` that does not start with TLS is closed.
 - SOCKS cannot decrypt, so SOCKS connections to decrypt-scoped hosts, or made while the scope is unknown, are refused. Use the HTTP proxy for those hosts.
 - `CONNECT` to an IP address is never decrypted; only `egress:connect` applies to it.

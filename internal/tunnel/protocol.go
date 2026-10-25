@@ -121,6 +121,7 @@ type CertRequest struct {
 type CertResponse struct {
 	ID       uint64    `json:"id"`
 	Chain    [][]byte  `json:"chain,omitempty"`
+	Extra    [][]byte  `json:"additional_intermediates,omitempty"`
 	Allow    []string  `json:"allow,omitempty"`
 	Bypass   []string  `json:"bypass,omitempty"`
 	NotAfter time.Time `json:"not_after"`

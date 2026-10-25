@@ -65,57 +65,89 @@ func TestDecrypts(t *testing.T) {
 	}
 }
 
-func TestConstraints(t *testing.T) {
+func TestConstraintGroups(t *testing.T) {
 	for _, tc := range []struct {
-		name               string
-		allow, bypass      []string
-		permitted, exclude []string
+		name          string
+		allow, bypass []string
+		want          []ConstraintSet
 	}{
-		{name: "exact excludes its subdomains", allow: []string{"api.example.com"}, permitted: []string{"api.example.com"}, exclude: []string{".api.example.com"}},
-		{name: "wildcard", allow: []string{"*.corp.example"}, bypass: []string{"bank.corp.example", "*.health.corp.example"}, permitted: []string{".corp.example"}, exclude: []string{"bank.corp.example", ".health.corp.example"}},
-		{name: "exact with its own wildcard", allow: []string{"*.example.com", "example.com"}, permitted: []string{".example.com", "example.com"}},
-		{name: "exact with a listed subdomain", allow: []string{"a.example.com", "example.com"}, permitted: []string{"a.example.com", "example.com"}, exclude: []string{".a.example.com"}},
+		{name: "exact excludes its subdomains", allow: []string{"api.example.com"}, want: []ConstraintSet{
+			{Permitted: []string{"api.example.com"}, Excluded: []string{".api.example.com"}},
+		}},
+		{name: "wildcard covers subdomains", allow: []string{"*.corp.example"}, bypass: []string{"bank.corp.example", "*.health.corp.example"}, want: []ConstraintSet{
+			{Permitted: []string{".corp.example"}, Excluded: []string{"bank.corp.example", ".health.corp.example"}},
+		}},
+		{name: "exact with its own wildcard", allow: []string{"*.example.com", "example.com"}, want: []ConstraintSet{
+			{Permitted: []string{".example.com", "example.com"}},
+		}},
+		{name: "exact under a parent wildcard", allow: []string{"*.example.com", "a.example.com"}, want: []ConstraintSet{
+			{Permitted: []string{".example.com", "a.example.com"}},
+		}},
+		{name: "exact with a listed subdomain splits", allow: []string{"a.example.com", "example.com"}, want: []ConstraintSet{
+			{Permitted: []string{"example.com"}, Excluded: []string{".example.com"}},
+			{Permitted: []string{"a.example.com"}, Excluded: []string{".a.example.com"}},
+		}},
+		{name: "exact with a listed wildcard below it splits", allow: []string{"*.api.example.com", "example.com", "other.test"}, bypass: []string{"x.api.example.com"}, want: []ConstraintSet{
+			{Permitted: []string{"example.com", "other.test"}, Excluded: []string{".example.com", ".other.test", "x.api.example.com"}},
+			{Permitted: []string{".api.example.com"}, Excluded: []string{"x.api.example.com"}},
+		}},
+		{name: "nested exacts", allow: []string{"a.b.example.com", "b.example.com", "example.com"}, want: []ConstraintSet{
+			{Permitted: []string{"example.com"}, Excluded: []string{".example.com"}},
+			{Permitted: []string{"b.example.com"}, Excluded: []string{".b.example.com"}},
+			{Permitted: []string{"a.b.example.com"}, Excluded: []string{".a.b.example.com"}},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			permitted, excluded, err := Constraints(tc.allow, tc.bypass)
+			got, err := ConstraintGroups(tc.allow, tc.bypass)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(permitted, tc.permitted) || !reflect.DeepEqual(excluded, tc.exclude) {
-				t.Fatalf("got permitted %v excluded %v, want %v %v", permitted, excluded, tc.permitted, tc.exclude)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
 			}
 		})
 	}
-	if _, _, err := Constraints(nil, nil); err == nil {
+	if _, err := ConstraintGroups(nil, nil); err == nil {
 		t.Fatal("empty allowlist produced constraints")
 	}
 }
 
-func TestConstraintsAgreeWithDecrypts(t *testing.T) {
-	allow := []string{"api.example.com", "*.corp.example", "a.example.org", "example.org"}
+func TestConstraintGroupsAgreeWithDecrypts(t *testing.T) {
+	allow := []string{"api.example.com", "*.corp.example", "a.example.org", "example.org", "*.b.example.org", "*.net", "edge.example.net"}
 	bypass := []string{"bank.corp.example", "*.health.corp.example"}
-	permitted, excluded, err := Constraints(allow, bypass)
+	groups, err := ConstraintGroups(allow, bypass)
 	if err != nil {
 		t.Fatal(err)
 	}
 	root, rootKey := testCA(t, nil, nil, nil, nil)
-	inter, interKey := testCA(t, root, rootKey, permitted, excluded)
-	roots, inters := x509.NewCertPool(), x509.NewCertPool()
+	roots := x509.NewCertPool()
 	roots.AddCert(root)
-	inters.AddCert(inter)
-	exactParentWithListedChild := map[string]bool{"b.example.org": true, "x.a.example.org": true}
+	type signer struct {
+		cert *x509.Certificate
+		key  *ecdsa.PrivateKey
+	}
+	var inters []signer
+	for _, g := range groups {
+		cert, key := testCA(t, root, rootKey, g.Permitted, g.Excluded)
+		inters = append(inters, signer{cert, key})
+	}
 	for _, host := range []string{
 		"api.example.com", "sub.api.example.com", "example.com", "a.corp.example", "a.b.corp.example", "corp.example",
 		"bank.corp.example", "x.bank.corp.example", "health.corp.example", "x.health.corp.example",
-		"example.org", "a.example.org", "b.example.org", "x.a.example.org", "other.test",
+		"example.org", "a.example.org", "b.example.org", "x.a.example.org", "c.b.example.org", "x.c.b.example.org",
+		"edge.example.net", "x.edge.example.net", "example.net", "other.test",
 	} {
-		leaf := testLeaf(t, inter, interKey, host)
-		_, verr := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inters, DNSName: host})
-		if Decrypts(allow, bypass, host) && verr != nil {
-			t.Errorf("%s: agent would decrypt but the constrained chain rejects it: %v", host, verr)
+		accepted := false
+		for _, in := range inters {
+			pool := x509.NewCertPool()
+			pool.AddCert(in.cert)
+			leaf := testLeaf(t, in.cert, in.key, host)
+			if _, verr := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: pool, DNSName: host}); verr == nil {
+				accepted = true
+			}
 		}
-		if !Decrypts(allow, bypass, host) && verr == nil && !exactParentWithListedChild[host] {
-			t.Errorf("%s: outside the scope but the constrained chain accepts it", host)
+		if want := Decrypts(allow, bypass, host); accepted != want {
+			t.Errorf("%s: chain accepted %v, Decrypts %v", host, accepted, want)
 		}
 	}
 }

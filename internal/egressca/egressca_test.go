@@ -201,8 +201,8 @@ func TestIssuedIntermediateIsConstrainedByTheServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(issued.Chain) != 2 {
-		t.Fatalf("chain length = %d", len(issued.Chain))
+	if len(issued.Chain) != 2 || len(issued.Extra) != 0 {
+		t.Fatalf("chain length = %d, additional intermediates = %d", len(issued.Chain), len(issued.Extra))
 	}
 	inter, err := x509.ParseCertificate(issued.Chain[0])
 	if err != nil {
@@ -289,5 +289,46 @@ func TestIssueDecryptCertMapsPublicErrors(t *testing.T) {
 	resp, err := a.IssueDecryptCert(context.Background(), &store.Agent{ID: "ag", OrgID: "org-a"}, csrFor(t, p256(t)))
 	if err != nil || resp.Error != ErrDecryptDisabled.Error() || len(resp.Chain) != 0 {
 		t.Fatalf("resp = %+v err = %v", resp, err)
+	}
+}
+
+func TestIssueSplitsExactEntriesWithListedSubdomains(t *testing.T) {
+	a, data := newAuthority(t)
+	ctx := context.Background()
+	enableDecrypt(t, data, "org-a", []string{"example.com", "api.example.com"}, nil)
+	key := p256(t)
+	issued, err := a.Issue(ctx, "org-a", "agent-1", csrFor(t, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issued.Chain) != 2 || len(issued.Extra) != 1 {
+		t.Fatalf("chain %d, additional intermediates %d", len(issued.Chain), len(issued.Extra))
+	}
+	root, err := a.Root(ctx, "org-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(root.Cert)
+	accepts := map[string]int{}
+	for _, der := range [][]byte{issued.Chain[0], issued.Extra[0]} {
+		inter, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !inter.PublicKey.(*ecdsa.PublicKey).Equal(&key.PublicKey) || !inter.IsCA || !inter.MaxPathLenZero || !inter.NotAfter.Equal(issued.NotAfter) {
+			t.Fatalf("additional intermediate basics: %+v", inter)
+		}
+		pool := x509.NewCertPool()
+		pool.AddCert(inter)
+		for _, host := range []string{"example.com", "api.example.com", "www.example.com", "x.api.example.com"} {
+			leaf := leafUnder(t, inter, key, []string{host}, nil)
+			if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: pool, DNSName: host}); err == nil {
+				accepts[host]++
+			}
+		}
+	}
+	if accepts["example.com"] != 1 || accepts["api.example.com"] != 1 || accepts["www.example.com"] != 0 || accepts["x.api.example.com"] != 0 {
+		t.Fatalf("hosts accepted per intermediate: %v", accepts)
 	}
 }

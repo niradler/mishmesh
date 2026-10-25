@@ -113,37 +113,74 @@ func bypassMatches(pattern, host string) bool {
 	return host == pattern || strings.HasSuffix(host, "."+pattern)
 }
 
-func Constraints(allow, bypass []string) (permitted, excluded []string, err error) {
+type ConstraintSet struct {
+	Permitted []string
+	Excluded  []string
+}
+
+func ConstraintGroups(allow, bypass []string) ([]ConstraintSet, error) {
 	if len(allow) == 0 {
-		return nil, nil, errors.New("decryptscope: an empty allowlist permits nothing")
+		return nil, errors.New("decryptscope: an empty allowlist permits nothing")
 	}
-	for _, p := range allow {
-		if base, ok := strings.CutPrefix(p, wildcardPrefix); ok {
-			permitted = append(permitted, "."+base)
-			continue
+	ordered := slices.Clone(allow)
+	slices.SortStableFunc(ordered, func(a, b string) int {
+		return strings.Count(strings.TrimPrefix(a, wildcardPrefix), ".") - strings.Count(strings.TrimPrefix(b, wildcardPrefix), ".")
+	})
+	var groups [][]string
+	for _, p := range ordered {
+		placed := false
+		for i, members := range groups {
+			if !slices.ContainsFunc(members, func(m string) bool { return conflicts(allow, m, p) }) {
+				groups[i] = append(members, p)
+				placed = true
+				break
+			}
 		}
-		permitted = append(permitted, p)
-		if !subdomainsAllowed(allow, p) {
-			excluded = append(excluded, "."+p)
+		if !placed {
+			groups = append(groups, []string{p})
 		}
 	}
+	bypassExcluded := make([]string, 0, len(bypass))
 	for _, p := range bypass {
 		if base, ok := strings.CutPrefix(p, wildcardPrefix); ok {
-			excluded = append(excluded, "."+base)
+			bypassExcluded = append(bypassExcluded, "."+base)
 			continue
 		}
-		excluded = append(excluded, p)
+		bypassExcluded = append(bypassExcluded, p)
 	}
-	return permitted, excluded, nil
+	out := make([]ConstraintSet, 0, len(groups))
+	for _, members := range groups {
+		var set ConstraintSet
+		for _, p := range members {
+			if base, ok := strings.CutPrefix(p, wildcardPrefix); ok {
+				set.Permitted = append(set.Permitted, "."+base)
+				continue
+			}
+			set.Permitted = append(set.Permitted, p)
+			if !subdomainsAllowed(allow, p) {
+				set.Excluded = append(set.Excluded, "."+p)
+			}
+		}
+		set.Excluded = append(set.Excluded, bypassExcluded...)
+		out = append(out, set)
+	}
+	return out, nil
+}
+
+func conflicts(allow []string, a, b string) bool {
+	return excludesSubtreeOf(allow, a, b) || excludesSubtreeOf(allow, b, a)
+}
+
+func excludesSubtreeOf(allow []string, exact, other string) bool {
+	if strings.HasPrefix(exact, wildcardPrefix) || subdomainsAllowed(allow, exact) {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimPrefix(other, wildcardPrefix), "."+exact)
 }
 
 func subdomainsAllowed(allow []string, exact string) bool {
-	for _, other := range allow {
-		base := strings.TrimPrefix(other, wildcardPrefix)
-		if base == exact && other != exact {
-			return true
-		}
-		if strings.HasSuffix(base, "."+exact) {
+	for _, p := range allow {
+		if base, ok := strings.CutPrefix(p, wildcardPrefix); ok && (base == exact || strings.HasSuffix(exact, "."+base)) {
 			return true
 		}
 	}
