@@ -22,7 +22,6 @@ func TestIdentityGateRejectsPathsTheDecisionDidNotEvaluate(t *testing.T) {
 		"/a/../admin",
 		"//admin",
 		"/%2e%2e/admin",
-		"/a%2fadmin",
 		"/admin/.",
 		"/admin/",
 		"/admin;x",
@@ -50,7 +49,7 @@ func TestIdentityGateRejectsPathsTheDecisionDidNotEvaluate(t *testing.T) {
 }
 
 func TestIdentityGateAllowsPlainPaths(t *testing.T) {
-	for _, target := range []string{"/", "/api/v1/items", "/files/a%20b", "/dir/"} {
+	for _, target := range []string{"/", "/api/v1/items", "/files/a%20b", "/dir/", "/users/a%40b.com", "/q/a%3Ab", "/caf%c3%a9", "/a%2fadmin"} {
 		t.Run(target, func(t *testing.T) {
 			deciders := &fakeDeciders{decide: allowAll}
 			ing := &Ingress{log: discardLogger(), identity: newIdentityService(t), deciders: deciders}

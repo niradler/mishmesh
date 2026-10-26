@@ -151,7 +151,7 @@ func reauthWouldRepeat(p *identity.Principal) bool {
 }
 
 func decisionPathMatchesUpstream(r *http.Request, outPath string) bool {
-	if r.URL.RawPath != "" || strings.ContainsAny(outPath, `\;`) {
+	if strings.ContainsAny(outPath, `\;`) {
 		return false
 	}
 	return canonicalDecisionPath(outPath) == outPath
