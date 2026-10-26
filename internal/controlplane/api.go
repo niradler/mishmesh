@@ -773,19 +773,6 @@ func (a *API) handleErr(w http.ResponseWriter, err error) bool {
 	return true
 }
 
-func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	if r.Body == nil || r.ContentLength == 0 {
-		return true
-	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return false
-	}
-	return true
-}
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

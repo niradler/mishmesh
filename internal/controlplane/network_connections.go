@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -27,43 +26,6 @@ type connectionInput struct {
 type connectionDetectInput struct {
 	Type  string          `json:"type"`
 	Input json.RawMessage `json:"input"`
-}
-
-func decodeConnectionJSON(w http.ResponseWriter, r *http.Request, value any) bool {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return false
-	}
-	object := json.NewDecoder(bytes.NewReader(raw))
-	token, err := object.Token()
-	if err != nil || token != json.Delim('{') {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return false
-	}
-	keys := map[string]bool{}
-	for object.More() {
-		token, err := object.Token()
-		key, ok := token.(string)
-		var field json.RawMessage
-		if err != nil || !ok || keys[key] || object.Decode(&field) != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
-			return false
-		}
-		keys[key] = true
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return false
-	}
-	var extra any
-	if decoder.Decode(&extra) != io.EOF {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return false
-	}
-	return true
 }
 
 func (a *API) connectionTypesHandler(w http.ResponseWriter, _ *http.Request) {
@@ -238,7 +200,7 @@ func (a *API) saveConnection(w http.ResponseWriter, r *http.Request, existing *s
 		return
 	}
 	var input connectionInput
-	if !decodeConnectionJSON(w, r, &input) {
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	record := store.Connection{ID: store.NewID("conn"), OrgID: a.orgScope(r), Type: input.Type, CreatedAt: a.now()}
@@ -458,7 +420,7 @@ func (a *API) syncConnectionHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) detectConnectionHandler(w http.ResponseWriter, r *http.Request) {
 	var input connectionDetectInput
-	if !decodeConnectionJSON(w, r, &input) {
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	provider, descriptor, ok := a.connectionProvider(w, input.Type)

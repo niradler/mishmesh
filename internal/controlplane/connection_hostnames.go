@@ -16,7 +16,7 @@ type connectionHostnameInput struct {
 
 func (a *API) addConnectionHostnameHandler(w http.ResponseWriter, r *http.Request) {
 	var input connectionHostnameInput
-	if !decodeConnectionJSON(w, r, &input) {
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	a.changeConnectionHostname(w, r, "connection.hostname.add", input.Hostname, http.StatusCreated, func(ctx context.Context, record store.Connection) error {

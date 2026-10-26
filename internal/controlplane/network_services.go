@@ -166,7 +166,7 @@ func (a *API) scopedService(w http.ResponseWriter, r *http.Request) (*store.Serv
 
 func (a *API) buildService(w http.ResponseWriter, r *http.Request, existing *store.Service) (*store.Service, bool) {
 	var in serviceInput
-	if !decodeConnectionJSON(w, r, &in) {
+	if !decodeJSON(w, r, &in) {
 		return nil, false
 	}
 	in.Name = strings.TrimSpace(in.Name)
