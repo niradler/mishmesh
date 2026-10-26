@@ -2,8 +2,14 @@ package sshfwd
 
 import (
 	"net"
+	"net/netip"
 	"sync"
 	"time"
+)
+
+const (
+	ipFailureMultiplier = 5
+	maxThrottleEntries  = 4096
 )
 
 type failureWindow struct {
@@ -24,52 +30,69 @@ func newFailureThrottle(limit int, window time.Duration) *failureThrottle {
 	return &failureThrottle{limit: limit, window: window, now: time.Now, entries: make(map[string]*failureWindow)}
 }
 
-func (t *failureThrottle) blocked(ip string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	w, ok := t.entries[ip]
+func identityKey(ip, user string) string { return "u|" + ip + "|" + user }
+
+func ipKey(ip string) string { return "i|" + ip }
+
+func (t *failureThrottle) over(key string, limit int) bool {
+	w, ok := t.entries[key]
 	if !ok {
 		return false
 	}
 	if t.now().Sub(w.start) >= t.window {
-		delete(t.entries, ip)
+		delete(t.entries, key)
 		return false
 	}
-	return w.count >= t.limit
+	return w.count >= limit
 }
 
-func (t *failureThrottle) fail(ip string) {
+func (t *failureThrottle) blockedIP(ip string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.over(ipKey(ip), t.limit*ipFailureMultiplier)
+}
+
+func (t *failureThrottle) blocked(ip, user string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.over(identityKey(ip, user), t.limit) || t.over(ipKey(ip), t.limit*ipFailureMultiplier)
+}
+
+func (t *failureThrottle) fail(ip, user string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
-	if len(t.entries) >= 4096 {
+	if len(t.entries) >= maxThrottleEntries {
 		for k, w := range t.entries {
 			if now.Sub(w.start) >= t.window {
 				delete(t.entries, k)
 			}
 		}
 	}
-	w, ok := t.entries[ip]
+	t.bump(identityKey(ip, user), now)
+	t.bump(ipKey(ip), now)
+}
+
+func (t *failureThrottle) bump(key string, now time.Time) {
+	w, ok := t.entries[key]
 	if !ok || now.Sub(w.start) >= t.window {
-		t.entries[ip] = &failureWindow{count: 1, start: now}
+		t.entries[key] = &failureWindow{count: 1, start: now}
 		return
 	}
 	w.count++
 }
 
-func (t *failureThrottle) reset(ip string) {
-	t.mu.Lock()
-	delete(t.entries, ip)
-	t.mu.Unlock()
-}
-
-func remoteIP(addr net.Addr) string {
+func remoteIP(addr net.Addr) (string, bool) {
 	if addr == nil {
-		return ""
+		return "", false
 	}
 	host, _, err := net.SplitHostPort(addr.String())
 	if err != nil {
-		return addr.String()
+		return "", false
 	}
-	return host
+	parsed, err := netip.ParseAddr(host)
+	if err != nil {
+		return "", false
+	}
+	return parsed.Unmap().WithZone("").String(), true
 }

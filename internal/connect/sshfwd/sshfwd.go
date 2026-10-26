@@ -127,23 +127,26 @@ func hostSigner(pemBytes []byte) (ssh.Signer, error) {
 }
 
 func (s *Server) authPassword(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-	ip := remoteIP(c.RemoteAddr())
-	if s.throttle.blocked(ip) {
+	ip, ok := remoteIP(c.RemoteAddr())
+	if !ok {
+		return nil, fmt.Errorf("sshfwd: unrecognised remote address")
+	}
+	user := c.User()
+	if s.throttle.blocked(ip, user) {
 		return nil, fmt.Errorf("sshfwd: too many failed attempts")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tok, err := s.data.GetTokenByHash(ctx, store.HashToken(string(pass)))
 	if err != nil {
-		s.throttle.fail(ip)
+		s.throttle.fail(ip, user)
 		return nil, fmt.Errorf("sshfwd: invalid token")
 	}
 	agent, err := s.data.GetAgent(ctx, tok.AgentID)
 	if err != nil || agent.Status != store.AgentActive {
-		s.throttle.fail(ip)
+		s.throttle.fail(ip, user)
 		return nil, fmt.Errorf("sshfwd: agent not active")
 	}
-	s.throttle.reset(ip)
 	return &ssh.Permissions{Extensions: map[string]string{"org_id": agent.OrgID}}, nil
 }
 
@@ -171,7 +174,8 @@ func (s *Server) Serve(ln net.Listener) error {
 }
 
 func (s *Server) admit(nConn net.Conn) bool {
-	if s.throttle.blocked(remoteIP(nConn.RemoteAddr())) {
+	ip, ok := remoteIP(nConn.RemoteAddr())
+	if !ok || s.throttle.blockedIP(ip) {
 		return false
 	}
 	select {
