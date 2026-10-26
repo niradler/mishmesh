@@ -69,10 +69,31 @@ func connectionFields(descriptor connections.Descriptor, secrets bool) []typedfi
 	return fields
 }
 
-func (a *API) connectionView(record *store.Connection, status connections.Status) (map[string]any, error) {
+type connectionView struct {
+	ID        string
+	Name      json.RawMessage
+	Type      string
+	Config    json.RawMessage
+	Status    connections.Status
+	Action    string
+	HasSecret map[string]bool
+}
+
+func (v connectionView) MarshalJSON() ([]byte, error) {
+	out := map[string]any{"id": v.ID, "name": v.Name, "type": v.Type, "config": v.Config, "status": v.Status}
+	if v.Action != "" {
+		out["action"] = v.Action
+	}
+	for key, present := range v.HasSecret {
+		out["has_"+key] = present
+	}
+	return json.Marshal(out)
+}
+
+func (a *API) buildConnectionView(record *store.Connection, status connections.Status) (connectionView, error) {
 	cfg, err := connections.OpenConfig(*record, a.secretBox, a.hostCommands)
 	if err != nil {
-		return nil, err
+		return connectionView{}, err
 	}
 	descriptor := connections.Descriptor{}
 	if a.connectionRegistry != nil {
@@ -94,25 +115,29 @@ func (a *API) connectionView(record *store.Connection, status connections.Status
 	}
 	safe, err := connections.SanitizeJSON(cfg, descriptor, record.Config)
 	if err != nil {
-		return nil, err
+		return connectionView{}, err
 	}
 	if descriptor.Type == "" {
 		safe = json.RawMessage(`{}`)
 	}
 	rawName, err := json.Marshal(record.Name)
 	if err != nil {
-		return nil, err
+		return connectionView{}, err
 	}
 	safeName, err := connections.SanitizeJSON(cfg, descriptor, rawName)
 	if err != nil {
-		return nil, err
+		return connectionView{}, err
 	}
-	view := map[string]any{"id": record.ID, "name": safeName, "type": record.Type, "config": safe, "status": connections.SanitizeStatus(cfg, descriptor, status)}
+	view := connectionView{
+		ID: record.ID, Name: safeName, Type: record.Type, Config: safe,
+		Status:    connections.SanitizeStatus(cfg, descriptor, status),
+		HasSecret: map[string]bool{},
+	}
 	if status.LastError != "" {
-		view["action"] = "Retry sync, or save and restart the server after correcting the provider configuration."
+		view.Action = "Retry sync, or save and restart the server after correcting the provider configuration."
 	}
 	for _, field := range connectionFields(descriptor, true) {
-		view["has_"+field.Key] = cfg.Secrets[field.Key] != ""
+		view.HasSecret[field.Key] = cfg.Secrets[field.Key] != ""
 	}
 	return view, nil
 }
@@ -132,7 +157,7 @@ func (a *API) connectionRecordStatus(record *store.Connection) connections.Statu
 }
 
 func (a *API) writeConnection(w http.ResponseWriter, record *store.Connection, status connections.Status, code int) {
-	view, err := a.connectionView(record, status)
+	view, err := a.buildConnectionView(record, status)
 	if a.handleErr(w, err) {
 		return
 	}
@@ -144,9 +169,9 @@ func (a *API) listConnectionsHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
-	views := make([]map[string]any, 0, len(records))
+	views := make([]connectionView, 0, len(records))
 	for _, record := range records {
-		view, err := a.connectionView(record, a.connectionRecordStatus(record))
+		view, err := a.buildConnectionView(record, a.connectionRecordStatus(record))
 		if a.handleErr(w, err) {
 			return
 		}
@@ -312,12 +337,12 @@ func (a *API) saveConnection(w http.ResponseWriter, r *http.Request, existing *s
 			status = connections.WithHostDiagnostic(status, connections.HostSavedSyncFailed)
 		}
 	}
-	view, err := a.connectionView(&record, status)
+	view, err := a.buildConnectionView(&record, status)
 	if a.handleErr(w, err) {
 		return
 	}
 	if status.LastError != "" {
-		view["action"] = "Connection saved. Retry sync, or save and restart the server."
+		view.Action = "Connection saved. Retry sync, or save and restart the server."
 	}
 	writeJSON(w, code, view)
 }
