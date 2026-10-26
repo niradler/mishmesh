@@ -752,6 +752,14 @@ func (a *API) scopedAgent(w http.ResponseWriter, r *http.Request, id string) (*s
 	})
 }
 
+func (a *API) handleStoreErr(w http.ResponseWriter, err error, conflictMsg string) bool {
+	if errors.Is(err, store.ErrConflict) {
+		writeError(w, http.StatusConflict, conflictMsg)
+		return true
+	}
+	return a.handleErr(w, err)
+}
+
 func (a *API) handleErr(w http.ResponseWriter, err error) bool {
 	if err == nil {
 		return false

@@ -222,7 +222,7 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		Port: req.Port, Policy: pol, CreatedAt: time.Now(),
 		ConnectionSnapshots: connectionSnapshots,
 	}
-	if a.endpointWriteError(w, a.data.CreateEndpoint(r.Context(), ep)) {
+	if a.handleStoreErr(w, a.data.CreateEndpoint(r.Context(), ep), endpointConflictMsg) {
 		return
 	}
 	if method == store.MethodProxy && a.conns != nil {
@@ -291,7 +291,7 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ep.ConnectionSnapshots = connectionSnapshots
-	if a.endpointWriteError(w, a.data.UpdateEndpoint(r.Context(), ep)) {
+	if a.handleStoreErr(w, a.data.UpdateEndpoint(r.Context(), ep), endpointConflictMsg) {
 		return
 	}
 	a.audit(r, "endpoint.update", ep.ID, "")
@@ -324,14 +324,6 @@ func methodError(m string) string {
 	default:
 		return "unknown method"
 	}
-}
-
-func (a *API) endpointWriteError(w http.ResponseWriter, err error) bool {
-	if errors.Is(err, store.ErrConflict) {
-		writeError(w, http.StatusConflict, "endpoint access or hostname changed or is already claimed; reload and retry")
-		return true
-	}
-	return a.handleErr(w, err)
 }
 
 func (a *API) validatePolicyForMethod(method string, pol *store.EndpointPolicy) error {
@@ -392,3 +384,5 @@ func buildPolicy(in *policyInput, existing *store.EndpointPolicy) (*store.Endpoi
 	}
 	return &p, nil
 }
+
+const endpointConflictMsg = "endpoint access or hostname changed or is already claimed; reload and retry"

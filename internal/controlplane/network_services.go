@@ -216,14 +216,6 @@ func (a *API) buildService(w http.ResponseWriter, r *http.Request, existing *sto
 	return rec, true
 }
 
-func (a *API) writeServiceErr(w http.ResponseWriter, err error, name string) bool {
-	if errors.Is(err, store.ErrConflict) {
-		writeError(w, http.StatusConflict, "service name already exists or references changed; reload and retry")
-		return true
-	}
-	return a.handleErr(w, err)
-}
-
 func (a *API) respondService(w http.ResponseWriter, r *http.Request, status int, rec *store.Service) {
 	linked, err := a.linkedEndpoints(r.Context(), rec.OrgID)
 	if a.handleErr(w, err) {
@@ -298,7 +290,7 @@ func (a *API) createServiceHandler(w http.ResponseWriter, r *http.Request) {
 			return reservation.Apply(defs)
 		})
 	})
-	if a.writeServiceErr(w, err, rec.Name) {
+	if a.handleStoreErr(w, err, "service name already exists or references changed; reload and retry") {
 		return
 	}
 	a.audit(r, "service.create", rec.ID, rec.Name)

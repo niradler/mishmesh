@@ -1,7 +1,6 @@
 package controlplane
 
 import (
-	"errors"
 	"net/http"
 	"regexp"
 	"time"
@@ -36,14 +35,6 @@ func validGroupName(w http.ResponseWriter, name string) bool {
 	return true
 }
 
-func (a *API) groupErr(w http.ResponseWriter, err error) bool {
-	if errors.Is(err, store.ErrConflict) {
-		writeError(w, http.StatusConflict, "a group with that name already exists")
-		return true
-	}
-	return a.handleErr(w, err)
-}
-
 func (a *API) listGroupsHandler(w http.ResponseWriter, r *http.Request) {
 	groups, err := a.data.ListGroups(r.Context(), a.orgScope(r))
 	writeList(a, w, groups, err, toGroupDTO)
@@ -57,7 +48,7 @@ func (a *API) createGroupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g := &store.Group{ID: store.NewID("grp"), OrgID: a.orgScope(r), Name: req.Name, CreatedAt: time.Now()}
-	if a.groupErr(w, a.data.CreateGroup(r.Context(), g)) {
+	if a.handleStoreErr(w, a.data.CreateGroup(r.Context(), g), "a group with that name already exists") {
 		return
 	}
 	a.audit(r, "group.create", g.ID, g.Name)
@@ -91,7 +82,7 @@ func (a *API) renameGroupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	org := a.orgScope(r)
 	id := r.PathValue("id")
-	if a.groupErr(w, a.data.RenameGroup(r.Context(), org, id, req.Name)) {
+	if a.handleStoreErr(w, a.data.RenameGroup(r.Context(), org, id, req.Name), "a group with that name already exists") {
 		return
 	}
 	g, err := a.data.GetGroup(r.Context(), org, id)
