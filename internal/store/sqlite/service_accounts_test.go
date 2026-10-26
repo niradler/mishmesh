@@ -14,6 +14,10 @@ func TestServiceAccounts(t *testing.T) {
 	storetest.RunServiceAccounts(t, func(t *testing.T) store.DataStore { return newStore(t) })
 }
 
+func TestSignupClaimingInvite(t *testing.T) {
+	storetest.RunSignupClaimingInvite(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}
+
 func TestKeepOwner(t *testing.T) {
 	storetest.RunKeepOwner(t, func(t *testing.T) store.DataStore { return newStore(t) })
 }

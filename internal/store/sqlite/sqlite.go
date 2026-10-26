@@ -762,6 +762,32 @@ func (s *Store) DeleteInvite(ctx context.Context, orgID, id string) error {
 	return nil
 }
 
+func (s *Store) CreateUserWithMembershipClaimingInvite(ctx context.Context, u *store.User, inv *store.Invite) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("signup with invite", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM invites WHERE id = ? AND org_id = ?`, inv.ID, inv.OrgID)
+	if err != nil {
+		return wrap("claim invite", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("invite already claimed: %w", store.ErrConflict)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO users (id, email, name, password_hash, google_sub, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		u.ID, strings.ToLower(u.Email), u.Name, nullStr(u.PasswordHash), nullStr(u.GoogleSub), ns(u.CreatedAt)); err != nil {
+		return wrap("create user", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)`,
+		inv.OrgID, u.ID, inv.Role, ns(u.CreatedAt)); err != nil {
+		return wrap("create membership", err)
+	}
+	return wrap("signup with invite", tx.Commit())
+}
+
 func (s *Store) queryInvites(ctx context.Context, query string, args ...any) ([]*store.Invite, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

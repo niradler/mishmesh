@@ -479,6 +479,7 @@ type InviteStore interface {
 	ListInvitesByOrg(ctx context.Context, orgID string) ([]*Invite, error)
 	ListInvitesByEmail(ctx context.Context, email string) ([]*Invite, error)
 	DeleteInvite(ctx context.Context, orgID, id string) error
+	CreateUserWithMembershipClaimingInvite(ctx context.Context, u *User, inv *Invite) error
 }
 
 type WebSessionStore interface {
