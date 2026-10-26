@@ -22,6 +22,7 @@ const (
 	MeterKind          = "egress"
 	decisionTimeout    = 5 * time.Second
 	dialTimeout        = 10 * time.Second
+	dialBudget         = 30 * time.Second
 	replyTimeout       = 5 * time.Second
 	agentClientIP      = "0.0.0.0"
 	reasonBlocked      = "blocked_destination"
@@ -87,6 +88,7 @@ type Handler struct {
 	credentials Credentials
 	secrets     Secrets
 	flows       *flows.Tracker
+	dialBudget  time.Duration
 }
 
 func New(opts Options) *Handler {
@@ -106,6 +108,7 @@ func New(opts Options) *Handler {
 		credentials: opts.Credentials,
 		secrets:     opts.Secrets,
 		flows:       flows.NewTracker(log, "egress", opts.Revocations),
+		dialBudget:  dialBudget,
 	}
 }
 
@@ -297,6 +300,8 @@ func (h *Handler) dial(ctx context.Context, agent *store.Agent, exitStream net.C
 	}
 	var upstream net.Conn
 	var err error
+	ctx, cancel := context.WithTimeout(ctx, h.dialBudget)
+	defer cancel()
 	for _, target := range targets {
 		if upstream, err = h.dialer.Dial(ctx, target, nil, dialTimeout); err == nil || ctx.Err() != nil {
 			break

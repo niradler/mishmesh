@@ -21,6 +21,7 @@ const (
 	SystemOrgID = "org_system"
 
 	dialTimeout = 10 * time.Second
+	dialBudget  = 30 * time.Second
 )
 
 type TargetHealth interface {
@@ -28,12 +29,13 @@ type TargetHealth interface {
 }
 
 type Connector struct {
-	data     store.DataStore
-	log      *slog.Logger
-	guard    *Guard
-	counters sync.Map
-	mu       sync.RWMutex
-	health   TargetHealth
+	data       store.DataStore
+	log        *slog.Logger
+	guard      *Guard
+	counters   sync.Map
+	mu         sync.RWMutex
+	health     TargetHealth
+	dialBudget time.Duration
 }
 
 var _ store.AgentConn = (*Connector)(nil)
@@ -42,7 +44,7 @@ func newConn(data store.DataStore, log *slog.Logger, guard *Guard) *Connector {
 	if guard == nil {
 		guard = DefaultGuard()
 	}
-	return &Connector{data: data, log: log, guard: guard}
+	return &Connector{data: data, log: log, guard: guard, dialBudget: dialBudget}
 }
 
 func (c *Connector) AgentID() string { return AgentID }
@@ -135,6 +137,8 @@ func (c *Connector) OpenStream(ctx context.Context, endpointID, kind string, met
 		return nil, fmt.Errorf("proxy: endpoint %s has no proxy_targets", endpointID)
 	}
 	var lastErr error
+	ctx, cancel := context.WithTimeout(ctx, c.dialBudget)
+	defer cancel()
 	for _, target := range c.orderTargets(endpointID, meta[tunnel.MetaClientIP], ep.Policy) {
 		if !targetMatchesKind(target, kind) {
 			lastErr = fmt.Errorf("target %s does not carry %s traffic", target, kind)

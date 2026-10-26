@@ -26,6 +26,7 @@ const (
 	DefaultEgressListen    = "127.0.0.1:3128"
 	egressHandshakeTimeout = 10 * time.Second
 	exitDialTimeout        = 10 * time.Second
+	exitDialBudget         = 30 * time.Second
 	maxProxyHeaderBytes    = 32 << 10
 	proxyExitUserPrefix    = "exit="
 	connectUDPProtocol     = "connect-udp"
@@ -397,8 +398,10 @@ func dialApprovedExit(ctx context.Context, stream net.Conn, dialer ExitDialer, d
 		}
 	}
 	var upstream net.Conn
+	dialCtx, stopDial := context.WithTimeout(ctx, exitDialBudget)
+	defer stopDial()
 	for _, target := range approved {
-		if upstream, err = dialer.Dial(ctx, target, nil, exitDialTimeout); err == nil {
+		if upstream, err = dialer.Dial(dialCtx, target, nil, exitDialTimeout); err == nil {
 			return upstream, nil
 		}
 	}
