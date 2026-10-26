@@ -931,6 +931,30 @@ func (s *Store) CreateUserWithMembershipClaimingInvite(ctx context.Context, u *s
 	return wrap("signup with invite", tx.Commit())
 }
 
+func (s *Store) ClaimInviteCreatingMembership(ctx context.Context, inv *store.Invite, userID string, createdAt time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("accept invite", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM invites WHERE id = $1 AND org_id = $2`, inv.ID, inv.OrgID)
+	if err != nil {
+		return wrap("claim invite", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("invite already claimed: %w", store.ErrConflict)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO memberships (org_id, user_id, role, created_at) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (org_id, user_id) DO NOTHING`,
+		inv.OrgID, userID, inv.Role, ns(createdAt)); err != nil {
+		return wrap("create membership", err)
+	}
+	return wrap("accept invite", tx.Commit())
+}
+
 func (s *Store) queryInvites(ctx context.Context, query string, args ...any) ([]*store.Invite, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

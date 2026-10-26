@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
-	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -14,7 +13,8 @@ import (
 )
 
 func TestShouldSerializeOpposingRequirementUpdates(t *testing.T) {
-	first, second := newStore(t), newStore(t)
+	sharedDSN := isolatedSchemaDSN(t)
+	first, second := openStoreOn(t, sharedDSN, PoolConfig{}), openStoreOn(t, sharedDSN, PoolConfig{})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	now := time.Now().UTC()
@@ -62,11 +62,7 @@ func TestShouldSerializeOpposingRequirementUpdates(t *testing.T) {
 }
 
 func TestShouldRefreshRequirementGraphAfterWaitingWithRepeatableReadDefault(t *testing.T) {
-	dsn := os.Getenv("MISHMESH_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("MISHMESH_TEST_POSTGRES_DSN not set")
-	}
-	parsed, err := url.Parse(dsn)
+	parsed, err := url.Parse(isolatedSchemaDSN(t))
 	if err != nil {
 		t.Fatal(err)
 	}

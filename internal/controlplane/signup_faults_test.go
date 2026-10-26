@@ -18,19 +18,10 @@ import (
 
 type faultStore struct {
 	store.DataStore
-	failCreateUser    atomic.Bool
-	failUpdateUser    atomic.Bool
-	failGetMembership atomic.Bool
-	failCreateMember  atomic.Bool
-	onListMembers     atomic.Pointer[func()]
-}
-
-func (f *faultStore) ListMembershipsByOrg(ctx context.Context, orgID string) ([]*store.Membership, error) {
-	ms, err := f.DataStore.ListMembershipsByOrg(ctx, orgID)
-	if hook := f.onListMembers.Load(); hook != nil {
-		(*hook)()
-	}
-	return ms, err
+	failCreateUser   atomic.Bool
+	failUpdateUser   atomic.Bool
+	failCreateMember atomic.Bool
+	failCreateInvite atomic.Bool
 }
 
 func (f *faultStore) CreateUser(ctx context.Context, u *store.User) error {
@@ -52,13 +43,6 @@ func (f *faultStore) UpdateUser(ctx context.Context, u *store.User) error {
 		return errInjected
 	}
 	return f.DataStore.UpdateUser(ctx, u)
-}
-
-func (f *faultStore) GetMembership(ctx context.Context, orgID, userID string) (*store.Membership, error) {
-	if f.failGetMembership.Load() {
-		return nil, errInjected
-	}
-	return f.DataStore.GetMembership(ctx, orgID, userID)
 }
 
 func (f *faultStore) CreateMembership(ctx context.Context, m *store.Membership) error {
@@ -118,23 +102,6 @@ func TestFailedSignupDoesNotBurnInvite(t *testing.T) {
 				t.Fatalf("failed signup left an orphan user %+v (err %v)", u, err)
 			}
 		})
-	}
-}
-
-func TestGrantInviteMembershipSurfacesLookupError(t *testing.T) {
-	_, api, data := newFaultAPI(t, "invite")
-	ctx := context.Background()
-	org, err := api.createOrg(ctx, "o")
-	if err != nil {
-		t.Fatal(err)
-	}
-	user := &store.User{ID: store.NewID("usr"), Email: "m@example.com", Name: "m"}
-	if err := data.DataStore.CreateUser(ctx, user); err != nil {
-		t.Fatal(err)
-	}
-	data.failGetMembership.Store(true)
-	if err := api.grantInviteMembership(ctx, user.ID, &store.Invite{OrgID: org.ID, Role: store.RoleMember}); err == nil {
-		t.Fatal("membership lookup failure was swallowed")
 	}
 }
 

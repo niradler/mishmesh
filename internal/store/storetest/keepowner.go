@@ -123,4 +123,73 @@ func RunKeepOwner(t *testing.T, open func(t *testing.T) store.DataStore) {
 			}
 		}
 	})
+
+	t.Run("disable keeps an active owner", func(t *testing.T) {
+		ds := open(t)
+		org, u := setup(t, ds, store.RoleOwner, store.RoleOwner, store.RoleMember)
+		at := now.Add(time.Minute)
+		if err := ds.SetMembershipDisabledKeepingOwner(ctx, org, u[2], &at); err != nil {
+			t.Fatal(err)
+		}
+		if err := ds.SetMembershipDisabledKeepingOwner(ctx, org, u[0], &at); err != nil {
+			t.Fatal(err)
+		}
+		if err := ds.SetMembershipDisabledKeepingOwner(ctx, org, u[1], &at); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("disable last active owner err = %v", err)
+		}
+		if m, _ := ds.GetMembership(ctx, org, u[1]); m.DisabledAt != nil {
+			t.Fatalf("last owner disabled: %+v", m)
+		}
+		if err := ds.SetMembershipDisabledKeepingOwner(ctx, org, u[0], nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := ds.SetMembershipDisabledKeepingOwner(ctx, org, "usr_missing", &at); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("missing err = %v", err)
+		}
+	})
+
+	t.Run("concurrent mutual disable leaves exactly one active owner", func(t *testing.T) {
+		ds := open(t)
+		for i := 0; i < 40; i++ {
+			org, u := setup(t, ds, store.RoleOwner, store.RoleOwner)
+			at := now.Add(time.Minute)
+			var wg sync.WaitGroup
+			errs := make([]error, 2)
+			start := make(chan struct{})
+			for j := 0; j < 2; j++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					errs[j] = ds.SetMembershipDisabledKeepingOwner(ctx, org, u[j], &at)
+				}()
+			}
+			close(start)
+			wg.Wait()
+			succeeded, conflicted := 0, 0
+			for _, err := range errs {
+				switch {
+				case err == nil:
+					succeeded++
+				case errors.Is(err, store.ErrConflict):
+					conflicted++
+				default:
+					t.Fatalf("iteration %d: unexpected err %v", i, err)
+				}
+			}
+			ms, err := ds.ListMembershipsByOrg(ctx, org)
+			if err != nil {
+				t.Fatal(err)
+			}
+			active := 0
+			for _, m := range ms {
+				if m.Role == store.RoleOwner && m.DisabledAt == nil {
+					active++
+				}
+			}
+			if succeeded != 1 || conflicted != 1 || active != 1 {
+				t.Fatalf("iteration %d: succeeded=%d conflicted=%d active owners=%d", i, succeeded, conflicted, active)
+			}
+		}
+	})
 }

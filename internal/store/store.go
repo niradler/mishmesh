@@ -482,6 +482,7 @@ type InviteStore interface {
 	ListInvitesByEmail(ctx context.Context, email string) ([]*Invite, error)
 	DeleteInvite(ctx context.Context, orgID, id string) error
 	CreateUserWithMembershipClaimingInvite(ctx context.Context, u *User, inv *Invite) error
+	ClaimInviteCreatingMembership(ctx context.Context, inv *Invite, userID string, createdAt time.Time) error
 }
 
 type WebSessionStore interface {
@@ -491,6 +492,7 @@ type WebSessionStore interface {
 	DeleteExpiredSessions(ctx context.Context, now time.Time) error
 	DeleteUserSessions(ctx context.Context, orgID, userID string) error
 	SetMembershipDisabled(ctx context.Context, orgID, userID string, at *time.Time) error
+	SetMembershipDisabledKeepingOwner(ctx context.Context, orgID, userID string, at *time.Time) error
 }
 
 type OrgPolicyStore interface {
