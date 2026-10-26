@@ -600,3 +600,34 @@ func dropControlPlaneFields(p *store.EndpointPolicy) []string {
 	}
 	return dropped
 }
+
+func mergeAgentPolicy(stored, declared *store.EndpointPolicy) *store.EndpointPolicy {
+	if stored == nil {
+		return declared
+	}
+	if declared == nil {
+		declared = &store.EndpointPolicy{}
+	}
+	merged := *declared
+	mv, sv := reflect.ValueOf(&merged).Elem(), reflect.ValueOf(stored).Elem()
+	for i := 0; i < mv.NumField(); i++ {
+		if !agentSettablePolicyFields[mv.Type().Field(i).Name] {
+			mv.Field(i).Set(sv.Field(i))
+		}
+	}
+	merged.Identity = mergeAgentIdentity(stored.Identity, declared.Identity)
+	return &merged
+}
+
+func mergeAgentIdentity(stored, declared *store.EndpointIdentity) *store.EndpointIdentity {
+	if stored == nil {
+		return declared
+	}
+	merged := *stored
+	if declared != nil {
+		merged.Required = stored.Required || declared.Required
+		merged.AuthorizationHeader = declared.AuthorizationHeader
+		merged.BrowserLogin = declared.BrowserLogin
+	}
+	return &merged
+}

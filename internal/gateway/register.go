@@ -250,7 +250,7 @@ func (g *Gateway) registerPrivate(ctx context.Context, agent *store.Agent, req t
 		if existing.Kind != kind || existing.Port != 0 {
 			return tunnel.EndpointBinding{}, fmt.Errorf("connect name %q is already registered as a public %s endpoint", name, existing.Kind)
 		}
-		existing.Policy = pol
+		existing.Policy = mergeAgentPolicy(existing.Policy, pol)
 		if err := g.data.UpdateEndpoint(ctx, existing); err != nil {
 			g.log.Warn("update private endpoint failed", "endpoint_id", existing.ID, "err", err)
 		}
