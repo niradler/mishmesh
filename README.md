@@ -454,9 +454,11 @@ All settings are environment variables with the `MISHMESH_` prefix. Defaults bel
 | `PUBLIC_SCHEME` | `http` | `http` or `https`; also marks cookies `Secure` |
 | `INGRESS_ADDR` / `HTTPS_ADDR` / `API_ADDR` | `127.0.0.1:8080` / `127.0.0.1:8443` / `127.0.0.1:8081` | listeners |
 | `DATA_BACKEND` / `DATA_DSN` | inferred / `mishmesh.db` | `postgres` (a `postgres://` DSN selects it) or `sqlite` for dev |
-| `DATA_MAX_CONNS` / `DATA_MAX_IDLE_CONNS` | `25` / | Postgres pool size per pod |
+| `DATA_MAX_CONNS` / `DATA_MAX_IDLE_CONNS` | `25` / `0` (driver default) | Postgres pool size per pod |
+| `DATA_CONN_MAX_LIFETIME` / `DATA_CONN_MAX_IDLE_TIME` | `30m` / `5m` | Postgres connection recycling |
 | `DATA_QUERY_TIMEOUT` | `5s` | deadline for each Postgres store operation, including pool waits |
 | `CONN_BACKEND` / `REDIS_URL` / `REDIS_POOL_SIZE` | `memory` / empty / `0` | `redis` for clusters |
+| `API_PUBLIC_URL` | empty | public URL of the control API; used for endpoint browser-login redirects and service-account links |
 | `API_AUTH_TOKEN` | empty | admin bearer token for `/api/v1`; required unless `API_AUTH_DISABLED=true` |
 | `BOOTSTRAP_TOKEN` | empty | seed one agent token (`ag_bootstrap` in `org_default`) at startup |
 | `AUTH_ENABLED` / `AUTH_PASSWORD_ENABLED` | `false` / `true` | browser login; password off means Google only |
@@ -484,6 +486,10 @@ All settings are environment variables with the `MISHMESH_` prefix. Defaults bel
 | `OIDC_ALLOW_PRIVATE_ISSUERS` | `false` | allow endpoint OIDC issuers on private addresses |
 | `PROXY_ALLOW_LOOPBACK` / `PROXY_ALLOW_PRIVATE` / `PROXY_ALLOWED_CIDRS` | `false` / `false` / empty | what `method=proxy` endpoints may target |
 | `HEALTH_INTERVAL` / `HEALTH_TIMEOUT` | `15s` / `3s` | endpoint health probes |
+| `ACCESS_LOG_RETENTION` | `168h` | how long endpoint access logs are kept |
+| `INGRESS_CACHE_TTL` | `2s` | endpoint lookup cache on the ingress (`0s` disables it) |
+| `PPROF_ADDR` | empty | enables Go `pprof` on this address; keep it on `127.0.0.1` |
+| `TOKEN_KEY_FILE` | `token-signing.key` beside `SECRET_KEY_FILE` | key that signs issued tokens; created on first start |
 | `SECRET_KEY_FILE` | `mishmesh-secret.key` next to the SQLite file, else the working directory | AES-256 key that seals stored provider tokens; created on first start |
 | `HOST_COMMANDS` | `true` in `invite` mode, else `false` | allow services that run commands on the host ([docs/services.md](docs/services.md)) |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker Engine for `docker` and `compose` services |

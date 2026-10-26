@@ -70,6 +70,9 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
           git rev-parse --verify "refs/tags/$RELEASE_TAG"
           git diff --exit-code "$RELEASE_TAG" -- cmd internal go.mod go.sum web deploy/helm Dockerfile Dockerfile.agent
+          for chart in deploy/helm/mishmesh deploy/helm/mishmesh-agent; do
+            grep -qx "appVersion: \"${RELEASE_TAG#v}\"" "$chart/Chart.yaml" || { echo "$chart/Chart.yaml appVersion must be ${RELEASE_TAG#v}"; exit 1; }
+          done
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
