@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,7 @@ func TestDialTargetHTTP2ALPN(t *testing.T) {
 			backend.EnableHTTP2 = supported
 			backend.StartTLS()
 			t.Cleanup(backend.Close)
-			connection, err := dialTarget(localTarget{addr: backend.Listener.Addr().String(), useTLS: true, insecure: true}, "h2")
+			connection, err := dialTarget(context.Background(), localTarget{addr: backend.Listener.Addr().String(), useTLS: true, insecure: true}, "h2")
 			if !supported {
 				if err == nil {
 					connection.Close()

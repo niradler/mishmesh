@@ -143,23 +143,12 @@ func redactPolicy(p *store.EndpointPolicy) *store.EndpointPolicy {
 
 func (a *API) listOrgEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 	eps, err := a.data.ListEndpointsByOrg(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]endpointDTO, 0, len(eps))
-	for _, ep := range eps {
-		out = append(out, a.toEndpointDTO(ep))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, eps, err, a.toEndpointDTO)
 }
 
 func (a *API) getEndpointHandler(w http.ResponseWriter, r *http.Request) {
-	ep, err := a.data.GetEndpoint(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return
-	}
-	if ep.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
+	ep, ok := a.scopedEndpoint(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, a.toEndpointDTO(ep))
@@ -210,7 +199,7 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	agentID := req.AgentID
+	var agentID string
 	if method == store.MethodProxy {
 		agentID = proxy.AgentID
 	} else {
@@ -224,19 +213,16 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		agentID = ag.ID
 	}
-	if q, err := a.data.GetQuota(r.Context(), orgID); err == nil && q.MaxEndpoints > 0 {
-		if n, _ := a.data.CountEndpoints(r.Context(), orgID); n >= q.MaxEndpoints {
-			writeError(w, http.StatusConflict, "endpoint quota exceeded")
-			return
-		}
+	if !a.checkEndpointQuota(w, r, orgID) {
+		return
 	}
 	ep := &store.Endpoint{
 		ID: store.NewID("ep"), AgentID: agentID, OrgID: orgID, Kind: kind, Method: method,
 		Lifecycle: store.LifecycleReserved, Subdomain: req.Subdomain, Domain: domain,
-		Port: req.Port, Policy: pol, CreatedAt: time.Now(),
+		Port: req.Port, Policy: pol, CreatedAt: a.now(),
 		ConnectionSnapshots: connectionSnapshots,
 	}
-	if a.endpointWriteError(w, a.data.CreateEndpoint(r.Context(), ep)) {
+	if a.handleStoreErr(w, a.data.CreateEndpoint(r.Context(), ep), endpointConflictMsg) {
 		return
 	}
 	if method == store.MethodProxy && a.conns != nil {
@@ -248,12 +234,8 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
-	ep, err := a.data.GetEndpoint(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return
-	}
-	if ep.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
+	ep, ok := a.scopedEndpoint(w, r)
+	if !ok {
 		return
 	}
 	previousAccess := a.previousAccess(r.Context(), ep)
@@ -309,7 +291,7 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ep.ConnectionSnapshots = connectionSnapshots
-	if a.endpointWriteError(w, a.data.UpdateEndpoint(r.Context(), ep)) {
+	if a.handleStoreErr(w, a.data.UpdateEndpoint(r.Context(), ep), endpointConflictMsg) {
 		return
 	}
 	a.audit(r, "endpoint.update", ep.ID, "")
@@ -318,12 +300,8 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) deleteEndpointHandler(w http.ResponseWriter, r *http.Request) {
-	ep, err := a.data.GetEndpoint(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return
-	}
-	if ep.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
+	ep, ok := a.scopedEndpoint(w, r)
+	if !ok {
 		return
 	}
 	if a.handleErr(w, a.data.DeleteEndpoint(r.Context(), ep.ID)) {
@@ -346,14 +324,6 @@ func methodError(m string) string {
 	default:
 		return "unknown method"
 	}
-}
-
-func (a *API) endpointWriteError(w http.ResponseWriter, err error) bool {
-	if errors.Is(err, store.ErrConflict) {
-		writeError(w, http.StatusConflict, "endpoint access or hostname changed or is already claimed; reload and retry")
-		return true
-	}
-	return a.handleErr(w, err)
 }
 
 func (a *API) validatePolicyForMethod(method string, pol *store.EndpointPolicy) error {
@@ -414,3 +384,5 @@ func buildPolicy(in *policyInput, existing *store.EndpointPolicy) (*store.Endpoi
 	}
 	return &p, nil
 }
+
+const endpointConflictMsg = "endpoint access or hostname changed or is already claimed; reload and retry"

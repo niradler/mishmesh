@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"net"
 	"testing"
 )
@@ -35,11 +36,11 @@ func TestAllowlistRules(t *testing.T) {
 
 func TestAllowlistResolvePinsIP(t *testing.T) {
 	a := NewAllowlist([]string{"8.8.8.8:53"})
-	dialAddr, serverName, ok := a.Resolve("8.8.8.8:53")
+	dialAddr, serverName, ok := a.Resolve(context.Background(), "8.8.8.8:53")
 	if !ok || dialAddr != "8.8.8.8:53" || serverName != "8.8.8.8" {
 		t.Fatalf("Resolve pinning: addr=%q sni=%q ok=%v", dialAddr, serverName, ok)
 	}
-	if _, _, ok := a.Resolve("169.254.169.254:53"); ok {
+	if _, _, ok := a.Resolve(context.Background(), "169.254.169.254:53"); ok {
 		t.Fatal("metadata target must not resolve")
 	}
 }
@@ -54,6 +55,21 @@ func TestAllowlistHardDenyOverridesBroadRule(t *testing.T) {
 	}
 	if !a.Allowed("8.8.8.8:53") {
 		t.Fatal("public IP under 0.0.0.0/0 should be allowed")
+	}
+}
+
+func TestAllowlistHardDeniesEmbeddedUnspecifiedAndMulticast(t *testing.T) {
+	a := NewAllowlist([]string{"0.0.0.0/0", "::/0"})
+	for _, target := range []string{
+		"[64:ff9b::a9fe:a9fe]:80",
+		"[64:ff9b::7f00:1]:80",
+		"0.0.0.1:80",
+		"224.0.0.1:80",
+		"255.255.255.255:80",
+	} {
+		if a.Allowed(target) {
+			t.Fatalf("%s must be hard-denied", target)
+		}
 	}
 }
 
@@ -76,11 +92,11 @@ func TestAllowlistSkipsLookupForUnmatchableHost(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			a := NewAllowlist(c.specs)
 			looked := false
-			a.lookupIP = func(string) ([]net.IP, error) {
+			a.lookupIP = func(context.Context, string) ([]net.IPAddr, error) {
 				looked = true
-				return []net.IP{net.ParseIP("10.1.2.3")}, nil
+				return []net.IPAddr{{IP: net.ParseIP("10.1.2.3")}}, nil
 			}
-			_, _, ok := a.Resolve(c.target)
+			_, _, ok := a.Resolve(context.Background(), c.target)
 			if looked != c.wantLookup {
 				t.Fatalf("lookup performed=%v want %v", looked, c.wantLookup)
 			}
@@ -89,4 +105,9 @@ func TestAllowlistSkipsLookupForUnmatchableHost(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (a *Allowlist) Allowed(target string) bool {
+	_, _, ok := a.Resolve(context.Background(), target)
+	return ok
 }

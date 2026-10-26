@@ -38,7 +38,10 @@ func (c *Cache) Get(src []byte) (*Authorizer, error) {
 		return existing, nil
 	}
 	if len(c.entries) >= c.max {
-		clear(c.entries)
+		for victim := range c.entries {
+			delete(c.entries, victim)
+			break
+		}
 	}
 	c.entries[key] = az
 	return az, nil

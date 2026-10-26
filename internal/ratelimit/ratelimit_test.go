@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -169,15 +170,17 @@ func TestRedisFailsOpenAndWarns(t *testing.T) {
 func TestMemoryEvictsIdleBuckets(t *testing.T) {
 	h := newMemoryHarness()
 	m := h.limiter.(*Memory)
-	m.maxKeys = 2
 	limit := Limit{Requests: 1, Period: time.Second}
 	ctx := context.Background()
-	m.Allow(ctx, "a", limit)
-	m.Allow(ctx, "b", limit)
-	h.advance(time.Minute)
-	m.Allow(ctx, "c", limit)
-	if len(m.buckets) != 1 {
-		t.Fatalf("expected idle buckets evicted, have %d", len(m.buckets))
+	for i := 0; i < 100; i++ {
+		m.Allow(ctx, "k"+strconv.Itoa(i), limit)
+	}
+	h.advance(2 * sweepInterval)
+	for i := 0; i < 1000; i++ {
+		m.Allow(ctx, "fresh"+strconv.Itoa(i), limit)
+	}
+	if got := m.size(); got != 1000 {
+		t.Fatalf("expected idle buckets swept, have %d", got)
 	}
 }
 

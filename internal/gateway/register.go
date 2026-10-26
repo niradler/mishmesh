@@ -70,6 +70,10 @@ func (g *Gateway) registerHostBased(ctx context.Context, agent *store.Agent, req
 	if sub != "" && domain != "" {
 		return tunnel.EndpointBinding{}, errors.New("subdomain and domain are mutually exclusive")
 	}
+	pol := decodePolicy(req.Policy, g.log)
+	if _, err := g.connectNameOwner(ctx, agent, connectName(pol)); err != nil {
+		return tunnel.EndpointBinding{}, err
+	}
 	if domain != "" {
 		return g.rebindDomain(ctx, agent, req, kind, domain)
 	}
@@ -94,29 +98,57 @@ func (g *Gateway) registerHostBased(ctx context.Context, agent *store.Agent, req
 			return tunnel.EndpointBinding{}, errors.New("internal error looking up subdomain")
 		}
 	}
-	if !g.quotaAllowsEndpoint(ctx, agent.OrgID) {
-		return tunnel.EndpointBinding{}, errors.New("endpoint quota exceeded for this organization")
+	ep, err := g.createEndpoint(ctx, agent, endpointSpec{kind: kind, lifecycle: lifecycle, subdomain: sub, policy: pol}, nil)
+	if err != nil {
+		if existing := g.ownSubdomainEndpoint(ctx, agent, sub, kind); existing != nil && !isQuotaError(err) {
+			return g.bindExisting(agent, req, existing), nil
+		}
+		return tunnel.EndpointBinding{}, err
+	}
+	return g.binding(req.Ref, ep), nil
+}
+
+type endpointSpec struct {
+	kind      string
+	lifecycle string
+	subdomain string
+	policy    *store.EndpointPolicy
+}
+
+func isQuotaError(err error) bool {
+	return errors.Is(err, errEndpointQuotaExceeded) || errors.Is(err, errEndpointQuotaCheck)
+}
+
+func (g *Gateway) createEndpoint(ctx context.Context, agent *store.Agent, spec endpointSpec, claimPort func(*store.Endpoint) error) (*store.Endpoint, error) {
+	if err := g.checkEndpointQuota(ctx, agent.OrgID); err != nil {
+		return nil, err
 	}
 	ep := &store.Endpoint{
 		ID:        store.NewID("ep"),
 		AgentID:   agent.ID,
 		OrgID:     agent.OrgID,
-		Kind:      kind,
-		Lifecycle: lifecycle,
-		Subdomain: sub,
-		Policy:    decodePolicy(req.Policy, g.log),
+		Kind:      spec.kind,
+		Lifecycle: spec.lifecycle,
+		Subdomain: spec.subdomain,
+		Policy:    spec.policy,
 		CreatedAt: time.Now(),
 	}
-	if err := g.data.CreateEndpoint(ctx, ep); err != nil {
-		if existing := g.ownSubdomainEndpoint(ctx, agent, sub, kind); existing != nil {
-			return g.bindExisting(agent, req, existing), nil
+	if claimPort != nil {
+		if err := claimPort(ep); err != nil {
+			return nil, err
 		}
-		g.log.Warn("create endpoint failed", "agent_id", agent.ID, "err", err)
-		return tunnel.EndpointBinding{}, errors.New("internal error creating endpoint")
 	}
+	if err := g.data.CreateEndpoint(ctx, ep); err != nil {
+		if ep.Port != 0 {
+			g.portsFor(ep.Kind).Close(ep.ID)
+		}
+		g.log.Warn("create endpoint failed", "agent_id", agent.ID, "kind", ep.Kind, "err", err)
+		return nil, errors.New("internal error creating endpoint")
+	}
+	g.notifyEndpointsChanged()
 	g.conns.BindEndpoint(ep.ID, agent.ID)
-	g.log.Info("endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "kind", kind, "url", g.publicURL(ep))
-	return g.binding(req.Ref, ep), nil
+	g.log.Info("endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "kind", ep.Kind, "url", g.publicURL(ep))
+	return ep, nil
 }
 
 func (g *Gateway) ownSubdomainEndpoint(ctx context.Context, agent *store.Agent, sub, kind string) *store.Endpoint {
@@ -223,30 +255,16 @@ func (g *Gateway) registerPrivate(ctx context.Context, agent *store.Agent, req t
 		if existing.Kind != kind || existing.Port != 0 {
 			return tunnel.EndpointBinding{}, fmt.Errorf("connect name %q is already registered as a public %s endpoint", name, existing.Kind)
 		}
-		existing.Policy = pol
+		existing.Policy = mergeAgentPolicy(existing.Policy, pol)
 		if err := g.data.UpdateEndpoint(ctx, existing); err != nil {
 			g.log.Warn("update private endpoint failed", "endpoint_id", existing.ID, "err", err)
 		}
 		return g.bindExisting(agent, req, existing), nil
 	}
-	if !g.quotaAllowsEndpoint(ctx, agent.OrgID) {
-		return tunnel.EndpointBinding{}, errors.New("endpoint quota exceeded for this organization")
+	ep, err := g.createEndpoint(ctx, agent, endpointSpec{kind: kind, lifecycle: lifecycle, policy: pol}, nil)
+	if err != nil {
+		return tunnel.EndpointBinding{}, err
 	}
-	ep := &store.Endpoint{
-		ID:        store.NewID("ep"),
-		AgentID:   agent.ID,
-		OrgID:     agent.OrgID,
-		Kind:      kind,
-		Lifecycle: lifecycle,
-		Policy:    pol,
-		CreatedAt: time.Now(),
-	}
-	if err := g.data.CreateEndpoint(ctx, ep); err != nil {
-		g.log.Warn("create private endpoint failed", "agent_id", agent.ID, "err", err)
-		return tunnel.EndpointBinding{}, errors.New("internal error creating endpoint")
-	}
-	g.conns.BindEndpoint(ep.ID, agent.ID)
-	g.log.Info("private endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "kind", kind, "name", name)
 	return g.binding(req.Ref, ep), nil
 }
 
@@ -278,35 +296,22 @@ func (g *Gateway) registerPort(ctx context.Context, agent *store.Agent, req tunn
 			return g.bindExisting(agent, req, endpoint), nil
 		}
 	}
-	if !g.quotaAllowsEndpoint(ctx, agent.OrgID) {
-		return tunnel.EndpointBinding{}, errors.New("endpoint quota exceeded for this organization")
-	}
-	ep := &store.Endpoint{
-		ID:        store.NewID("ep"),
-		AgentID:   agent.ID,
-		OrgID:     agent.OrgID,
-		Kind:      kind,
-		Lifecycle: lifecycle,
-		Policy:    pol,
-		CreatedAt: time.Now(),
-	}
-	port, err := ports.Open(ep.ID, req.Port)
-	if err != nil {
-		if req.Port > 0 {
-			return tunnel.EndpointBinding{}, fmt.Errorf("%s port %d unavailable: %v", kind, req.Port, err)
+	openPort := func(ep *store.Endpoint) error {
+		port, err := ports.Open(ep.ID, req.Port)
+		if err != nil {
+			if req.Port > 0 {
+				return fmt.Errorf("%s port %d unavailable: %v", kind, req.Port, err)
+			}
+			return fmt.Errorf("%s port allocation failed: %v", kind, err)
 		}
-		return tunnel.EndpointBinding{}, fmt.Errorf("%s port allocation failed: %v", kind, err)
+		ep.Port = port
+		return nil
 	}
-	ep.Port = port
-	if err := g.data.CreateEndpoint(ctx, ep); err != nil {
-		ports.Close(ep.ID)
-		g.log.Warn("create port endpoint failed", "agent_id", agent.ID, "kind", kind, "err", err)
-		return tunnel.EndpointBinding{}, errors.New("internal error creating endpoint")
+	ep, err := g.createEndpoint(ctx, agent, endpointSpec{kind: kind, lifecycle: lifecycle, policy: pol}, openPort)
+	if err != nil {
+		return tunnel.EndpointBinding{}, err
 	}
-	g.conns.BindEndpoint(ep.ID, agent.ID)
-	b := g.binding(req.Ref, ep)
-	g.log.Info("port endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "kind", kind, "url", b.PublicURL)
-	return b, nil
+	return g.binding(req.Ref, ep), nil
 }
 
 func (g *Gateway) publicURL(ep *store.Endpoint) string {

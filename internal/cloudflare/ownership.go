@@ -175,6 +175,16 @@ func (o *routeOwnership) foreignClaims(ctx context.Context) (map[string]string, 
 	return claims, nil
 }
 
+func (o *routeOwnership) update(host string, change func(*ownedRoute)) {
+	owned := o.state.Routes[host]
+	change(&owned)
+	if owned.empty() {
+		delete(o.state.Routes, host)
+		return
+	}
+	o.state.Routes[host] = owned
+}
+
 func (o *routeOwnership) recordIngress(host string, rules []IngressRule, applied bool) {
 	if !applied {
 		return
@@ -190,23 +200,21 @@ func (o *routeOwnership) recordIngress(host string, rules []IngressRule, applied
 		matched = &rules[index]
 	}
 	if matched != nil {
-		owned := o.state.Routes[host]
-		owned.Ingress = resourceFingerprint(*matched)
-		o.state.Routes[host] = owned
+		fingerprint := resourceFingerprint(*matched)
+		o.update(host, func(owned *ownedRoute) { owned.Ingress = fingerprint })
 	}
 }
 
 func (o *routeOwnership) recordDNS(host string, records []DNSRecord, applied bool) {
-	owned := o.state.Routes[host]
 	if !applied {
 		return
 	}
-	owned.DNS = make([]string, 0, len(records))
+	fingerprints := make([]string, 0, len(records))
 	for _, record := range records {
-		owned.DNS = append(owned.DNS, resourceFingerprint(record))
+		fingerprints = append(fingerprints, resourceFingerprint(record))
 	}
-	sort.Strings(owned.DNS)
-	o.state.Routes[host] = owned
+	sort.Strings(fingerprints)
+	o.update(host, func(owned *ownedRoute) { owned.DNS = fingerprints })
 }
 
 func (o *routeOwnership) ownsDNS(host string, record DNSRecord) bool {

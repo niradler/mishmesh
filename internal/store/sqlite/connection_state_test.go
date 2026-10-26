@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/store/storetest"
 )
 
 func TestShouldUpdatePrivateConnectionStateWithoutOverwritingConfig(t *testing.T) {
@@ -84,8 +85,8 @@ func TestShouldPersistCurrentPrivateConnectionStateAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	org := createTypedOrg(t, data)
-	record := createTypedConnection(t, data, org)
+	org := storetest.CreateTypedOrg(t, data)
+	record := storetest.CreateTypedConnection(t, data, org)
 	if err := data.UpdateConnectionState(context.Background(), org, record.ID, json.RawMessage(`{"owned":true}`)); err != nil {
 		t.Fatal(err)
 	}

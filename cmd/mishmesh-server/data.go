@@ -66,30 +66,24 @@ func openDataStoreWithBox(cfg config.Server) (store.DataStore, *secrets.Box, err
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	orgs, err := data.ListOrgs(ctx)
-	if err == nil {
-		for _, org := range orgs {
-			var records []*store.Connection
-			records, err = data.ListConnections(ctx, org.ID)
-			if err != nil {
-				break
-			}
-			for _, record := range records {
-				_, err = connections.OpenConfig(*record, box, cfg.HostCommands)
-				if err != nil {
-					break
-				}
-			}
-			if err != nil {
-				break
-			}
-		}
-	}
-	if err != nil {
+	if err := verifyConnections(data, box, cfg.HostCommands); err != nil {
 		_ = data.Close()
 		return nil, nil, err
 	}
 	return data, box, nil
+}
+
+func verifyConnections(data store.DataStore, box *secrets.Box, hostCommands bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	records, err := data.ListAllConnections(ctx)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if _, err := connections.OpenConfig(*record, box, hostCommands); err != nil {
+			return err
+		}
+	}
+	return nil
 }

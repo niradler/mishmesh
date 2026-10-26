@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
+	"github.com/mishmesh/mishmesh/internal/connect"
 	"github.com/mishmesh/mishmesh/internal/credseal"
 	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -84,34 +85,16 @@ func (h *Handler) decideRequest(ctx context.Context, agent *store.Agent, p ident
 	if h.deciders == nil {
 		return authz.Decision{Reason: authz.ReasonUnavailable}, false
 	}
-	scope := identity.Scope{OrgID: agent.OrgID, AgentID: agent.ID}
-	principal := authz.EntityRef{Type: authz.EntityAgent, ID: agent.ID}
 	reqCtx := authz.RequestContext{
-		ClientIP:   agentClientIP,
-		AuthMethod: authz.AuthMethodAgentToken,
-		Method:     hq.Method,
-		Path:       hq.Path,
-		TLS:        hq.TLS,
-		Decrypted:  hq.Decrypted,
+		Method:    hq.Method,
+		Path:      hq.Path,
+		TLS:       hq.TLS,
+		Decrypted: hq.Decrypted,
 	}
 	if exit != nil {
 		reqCtx.Exit = exit.ID
 	}
-	if hasPrincipal {
-		principal = p.Ref
-		scope.TokenSessionID = p.SessionID
-		reqCtx.AuthMethod = p.AuthMethod
-		authTime := p.AuthTime.UTC()
-		reqCtx.AuthTime = &authTime
-	}
-	decideCtx, cancel := context.WithTimeout(ctx, decisionTimeout)
-	defer cancel()
-	d, err := h.deciders.Decider(scope).Decide(decideCtx, authz.DecisionRequest{
-		Principal: principal,
-		Action:    authz.ActionEgressRequest,
-		Resource:  authz.EntityRef{Type: authz.EntityDestination, ID: dest},
-		Context:   reqCtx,
-	})
+	d, err := connect.NewAgentDecision(agent, p, hasPrincipal, reqCtx).Decide(ctx, h.deciders, authz.ActionEgressRequest, authz.EntityRef{Type: authz.EntityDestination, ID: dest})
 	switch {
 	case err != nil || d.Reason == authz.ReasonUnavailable:
 		return authz.Decision{Reason: authz.ReasonUnavailable}, false

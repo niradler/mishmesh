@@ -16,7 +16,7 @@ func TestCheckBasicAuthCache(t *testing.T) {
 	check := func(epID, user, pass, hashStr string) bool {
 		r := httptest.NewRequest("GET", "/", nil)
 		r.SetBasicAuth(user, pass)
-		return checkBasicAuth(r, epID, "alice", hashStr, cache)
+		return checkBasicAuth(r, epID, "alice", hashStr, cache, nil) == basicAuthOK
 	}
 
 	tests := []struct {
@@ -70,7 +70,7 @@ func TestCheckBasicAuthCache(t *testing.T) {
 	t.Run("nil cache still verifies", func(t *testing.T) {
 		r := httptest.NewRequest("GET", "/", nil)
 		r.SetBasicAuth("alice", "s3cret")
-		if !checkBasicAuth(r, "ep_1", "alice", string(hash), nil) {
+		if checkBasicAuth(r, "ep_1", "alice", string(hash), nil, nil) != basicAuthOK {
 			t.Fatal("nil cache must fall back to bcrypt")
 		}
 	})

@@ -29,6 +29,7 @@ func TestMetricsAuth(t *testing.T) {
 		{"api token required without header", "", "api", "", "127.0.0.1:5555", nil, http.StatusUnauthorized},
 		{"api token accepted as fallback", "", "api", "Bearer api", "192.0.2.1:1234", nil, http.StatusOK},
 		{"api token accepted through proxy headers", "", "api", "Bearer api", "127.0.0.1:5555", map[string]string{"X-Forwarded-For": "203.0.113.9"}, http.StatusOK},
+		{"scheme is case-insensitive", "", "api", "bearer api", "192.0.2.1:1234", nil, http.StatusOK},
 		{"wrong token rejected", "", "api", "Bearer nope", "127.0.0.1:5555", nil, http.StatusUnauthorized},
 		{"dedicated token required", "scrape", "api", "Bearer scrape", "127.0.0.1:5555", nil, http.StatusOK},
 		{"api token rejected when dedicated set", "scrape", "api", "Bearer api", "127.0.0.1:5555", nil, http.StatusUnauthorized},

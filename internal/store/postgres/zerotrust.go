@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -121,6 +122,39 @@ func (s *Store) SetMembershipDisabled(ctx context.Context, orgID, userID string,
 		return wrap("set membership disabled", err)
 	}
 	return affected("set membership disabled", res)
+}
+
+func (s *Store) SetMembershipDisabledKeepingOwner(ctx context.Context, orgID, userID string, at *time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("set membership disabled", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM orgs WHERE id = $1 FOR UPDATE`, orgID); err != nil {
+		return wrap("lock org", err)
+	}
+	target, err := scanMembership(tx.QueryRowContext(ctx,
+		`SELECT org_id, user_id, role, created_at, disabled_at FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID).Scan)
+	if err != nil {
+		return err
+	}
+	if at != nil && target.Role == store.RoleOwner && target.DisabledAt == nil {
+		var others int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM memberships WHERE org_id = $1 AND role = $2 AND disabled_at IS NULL AND user_id <> $3`,
+			orgID, store.RoleOwner, userID).Scan(&others); err != nil {
+			return wrap("count owners", err)
+		}
+		if others == 0 {
+			return fmt.Errorf("organization must keep an active owner: %w", store.ErrConflict)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE memberships SET disabled_at = $1 WHERE org_id = $2 AND user_id = $3`, nsPtr(at), orgID, userID); err != nil {
+		return wrap("update membership", err)
+	}
+	return wrap("set membership disabled", tx.Commit())
 }
 
 func (s *Store) DeleteUserSessions(ctx context.Context, orgID, userID string) error {

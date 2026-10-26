@@ -289,25 +289,7 @@ type Zone struct {
 }
 
 func (c *Client) ListZones(ctx context.Context, accountID string) ([]Zone, error) {
-	var zones []Zone
-	for page := 1; ; page++ {
-		q := url.Values{}
-		q.Set("per_page", "50")
-		q.Set("page", strconv.Itoa(page))
-		q.Set("account.id", accountID)
-		env, err := c.do(ctx, http.MethodGet, "/zones", q, nil)
-		if err != nil {
-			return nil, fmt.Errorf("list zones: %w", err)
-		}
-		var batch []Zone
-		if err := json.Unmarshal(env.Result, &batch); err != nil {
-			return nil, fmt.Errorf("decode zones: %w", err)
-		}
-		zones = append(zones, batch...)
-		if page >= env.ResultInfo.TotalPages || len(batch) == 0 {
-			return zones, nil
-		}
-	}
+	return listAll[Zone](ctx, c, "/zones", url.Values{"account.id": {accountID}}, 50, "list zones")
 }
 
 type DNSRecord struct {
@@ -322,18 +304,57 @@ type DNSRecord struct {
 	Settings map[string]any `json:"settings,omitempty"`
 }
 
-func (c *Client) ListDNSRecords(ctx context.Context, zoneID, name string) ([]DNSRecord, error) {
-	q := url.Values{}
-	q.Set("name", name)
-	env, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records", q, nil)
+func doInto[T any](ctx context.Context, c *Client, decode func([]byte, any) error, method, path string, body any, op string) (T, error) {
+	var out T
+	env, err := c.do(ctx, method, path, nil, body)
 	if err != nil {
-		return nil, fmt.Errorf("list dns records: %w", err)
+		return out, fmt.Errorf("%s: %w", op, err)
 	}
-	var recs []DNSRecord
-	if err := json.Unmarshal(env.Result, &recs); err != nil {
-		return nil, fmt.Errorf("decode dns records: %w", err)
+	if err := decode(env.Result, &out); err != nil {
+		return out, fmt.Errorf("%s: decode response: %w", op, err)
 	}
-	return recs, nil
+	return out, nil
+}
+
+func doVoid(ctx context.Context, c *Client, method, path string, body any, op string) error {
+	if _, err := c.do(ctx, method, path, nil, body); err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	return nil
+}
+
+func listAll[T any](ctx context.Context, c *Client, path string, query url.Values, perPage int, op string) ([]T, error) {
+	var all []T
+	for page := 1; ; page++ {
+		q := url.Values{}
+		for k, v := range query {
+			q[k] = v
+		}
+		q.Set("per_page", strconv.Itoa(perPage))
+		q.Set("page", strconv.Itoa(page))
+		env, err := c.do(ctx, http.MethodGet, path, q, nil)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		var batch []T
+		if err := json.Unmarshal(env.Result, &batch); err != nil {
+			return nil, fmt.Errorf("%s: decode response: %w", op, err)
+		}
+		all = append(all, batch...)
+		if page >= env.ResultInfo.TotalPages || len(batch) == 0 {
+			return all, nil
+		}
+	}
+}
+
+func decodeAccessObject(raw []byte, out any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	return dec.Decode(out)
+}
+
+func (c *Client) ListDNSRecords(ctx context.Context, zoneID, name string) ([]DNSRecord, error) {
+	return listAll[DNSRecord](ctx, c, "/zones/"+zoneID+"/dns_records", url.Values{"name": {name}}, 100, "list dns records")
 }
 
 func (c *Client) CreateDNSRecord(ctx context.Context, zoneID string, rec DNSRecord) error {
@@ -342,108 +363,47 @@ func (c *Client) CreateDNSRecord(ctx context.Context, zoneID string, rec DNSReco
 }
 
 func (c *Client) createDNSRecord(ctx context.Context, zoneID string, rec DNSRecord) (DNSRecord, error) {
-	envelope, err := c.do(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records", nil, rec)
-	if err != nil {
-		return DNSRecord{}, fmt.Errorf("create dns record: %w", err)
-	}
-	var created DNSRecord
-	if err := json.Unmarshal(envelope.Result, &created); err != nil {
-		return DNSRecord{}, errors.New("invalid created DNS record")
-	}
-	return created, nil
+	return doInto[DNSRecord](ctx, c, json.Unmarshal, http.MethodPost, "/zones/"+zoneID+"/dns_records", rec, "create dns record")
 }
 
 func (c *Client) DeleteDNSRecord(ctx context.Context, zoneID, recordID string) error {
-	if _, err := c.do(ctx, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+recordID, nil, nil); err != nil {
-		return fmt.Errorf("delete dns record: %w", err)
-	}
-	return nil
+	return doVoid(ctx, c, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+recordID, nil, "delete dns record")
 }
 
 type AccessApp map[string]any
 
-func (c *Client) GetAccessApp(ctx context.Context, accountID, appID string) (AccessApp, error) {
-	env, err := c.do(ctx, http.MethodGet, "/accounts/"+accountID+"/access/apps/"+appID, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("get access app: %w", err)
-	}
-	var app AccessApp
-	if err := decodeAccessObject(env.Result, &app); err != nil {
-		return nil, fmt.Errorf("decode access app: %w", err)
-	}
-	return app, nil
-}
-
-func (c *Client) PutAccessApp(ctx context.Context, accountID, appID string, app AccessApp) error {
-	if _, err := c.do(ctx, http.MethodPut, "/accounts/"+accountID+"/access/apps/"+appID, nil, app); err != nil {
-		return fmt.Errorf("put access app: %w", err)
-	}
-	return nil
-}
-
 type AccessPolicy map[string]any
 
-func decodeAccessObject(raw []byte, out any) error {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	return dec.Decode(out)
+func (c *Client) GetAccessApp(ctx context.Context, accountID, appID string) (AccessApp, error) {
+	return doInto[AccessApp](ctx, c, decodeAccessObject, http.MethodGet, "/accounts/"+accountID+"/access/apps/"+appID, nil, "get access app")
 }
 
 func (c *Client) CreateAccessApp(ctx context.Context, accountID string, app AccessApp) (AccessApp, error) {
-	env, err := c.do(ctx, http.MethodPost, "/accounts/"+accountID+"/access/apps", nil, app)
-	if err != nil {
-		return nil, fmt.Errorf("create access app: %w", err)
-	}
-	var created AccessApp
-	if err := decodeAccessObject(env.Result, &created); err != nil {
-		return nil, fmt.Errorf("decode access app: %w", err)
-	}
-	return created, nil
+	return doInto[AccessApp](ctx, c, decodeAccessObject, http.MethodPost, "/accounts/"+accountID+"/access/apps", app, "create access app")
+}
+
+func (c *Client) PutAccessApp(ctx context.Context, accountID, appID string, app AccessApp) error {
+	return doVoid(ctx, c, http.MethodPut, "/accounts/"+accountID+"/access/apps/"+appID, app, "put access app")
 }
 
 func (c *Client) DeleteAccessApp(ctx context.Context, accountID, appID string) error {
-	if _, err := c.do(ctx, http.MethodDelete, "/accounts/"+accountID+"/access/apps/"+appID, nil, nil); err != nil {
-		return fmt.Errorf("delete access app: %w", err)
-	}
-	return nil
+	return doVoid(ctx, c, http.MethodDelete, "/accounts/"+accountID+"/access/apps/"+appID, nil, "delete access app")
 }
 
 func (c *Client) GetAccessPolicy(ctx context.Context, accountID, policyID string) (AccessPolicy, error) {
-	env, err := c.do(ctx, http.MethodGet, "/accounts/"+accountID+"/access/policies/"+policyID, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("get access policy: %w", err)
-	}
-	var policy AccessPolicy
-	if err := decodeAccessObject(env.Result, &policy); err != nil {
-		return nil, fmt.Errorf("decode access policy: %w", err)
-	}
-	return policy, nil
+	return doInto[AccessPolicy](ctx, c, decodeAccessObject, http.MethodGet, "/accounts/"+accountID+"/access/policies/"+policyID, nil, "get access policy")
 }
 
 func (c *Client) CreateAccessPolicy(ctx context.Context, accountID string, policy AccessPolicy) (AccessPolicy, error) {
-	env, err := c.do(ctx, http.MethodPost, "/accounts/"+accountID+"/access/policies", nil, policy)
-	if err != nil {
-		return nil, fmt.Errorf("create access policy: %w", err)
-	}
-	var created AccessPolicy
-	if err := decodeAccessObject(env.Result, &created); err != nil {
-		return nil, fmt.Errorf("decode access policy: %w", err)
-	}
-	return created, nil
+	return doInto[AccessPolicy](ctx, c, decodeAccessObject, http.MethodPost, "/accounts/"+accountID+"/access/policies", policy, "create access policy")
 }
 
 func (c *Client) PutAccessPolicy(ctx context.Context, accountID, policyID string, policy AccessPolicy) error {
-	if _, err := c.do(ctx, http.MethodPut, "/accounts/"+accountID+"/access/policies/"+policyID, nil, policy); err != nil {
-		return fmt.Errorf("put access policy: %w", err)
-	}
-	return nil
+	return doVoid(ctx, c, http.MethodPut, "/accounts/"+accountID+"/access/policies/"+policyID, policy, "put access policy")
 }
 
 func (c *Client) DeleteAccessPolicy(ctx context.Context, accountID, policyID string) error {
-	if _, err := c.do(ctx, http.MethodDelete, "/accounts/"+accountID+"/access/policies/"+policyID, nil, nil); err != nil {
-		return fmt.Errorf("delete access policy: %w", err)
-	}
-	return nil
+	return doVoid(ctx, c, http.MethodDelete, "/accounts/"+accountID+"/access/policies/"+policyID, nil, "delete access policy")
 }
 
 func isNotFound(err error) bool {

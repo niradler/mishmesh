@@ -16,7 +16,16 @@ const (
 	MaxDatagramSize     = 65507
 	DefaultDatagramIdle = 60 * time.Second
 	datagramHeaderSize  = 2
+	DefaultMaxFlows     = 1024
 )
+
+var datagramBufPool = sync.Pool{New: func() any {
+	b := make([]byte, MaxDatagramSize)
+	return &b
+}}
+
+func getDatagramBuf() *[]byte  { return datagramBufPool.Get().(*[]byte) }
+func putDatagramBuf(b *[]byte) { datagramBufPool.Put(b) }
 
 var ErrDatagramTooLarge = errors.New("tunnel: datagram too large")
 
@@ -102,7 +111,9 @@ func RelayDatagrams(stream net.Conn, socket net.Conn, idle time.Duration) (fromS
 	go func() {
 		defer wg.Done()
 		defer closeBoth()
-		buf := make([]byte, MaxDatagramSize)
+		bufp := getDatagramBuf()
+		defer putDatagramBuf(bufp)
+		buf := *bufp
 		for {
 			n, err := ReadDatagram(stream, buf)
 			if err != nil {
@@ -118,7 +129,9 @@ func RelayDatagrams(stream net.Conn, socket net.Conn, idle time.Duration) (fromS
 	go func() {
 		defer wg.Done()
 		defer closeBoth()
-		buf := make([]byte, MaxDatagramSize)
+		bufp := getDatagramBuf()
+		defer putDatagramBuf(bufp)
+		buf := *bufp
 		for {
 			n, err := socket.Read(buf)
 			if err != nil {
@@ -194,6 +207,9 @@ func NewDatagramListener(pc net.PacketConn, opts DatagramListenerOptions) *Datag
 	if opts.Idle <= 0 {
 		opts.Idle = DefaultDatagramIdle
 	}
+	if opts.MaxFlows <= 0 {
+		opts.MaxFlows = DefaultMaxFlows
+	}
 	if opts.QueueSize <= 0 {
 		opts.QueueSize = defaultDatagramQueue
 	}
@@ -231,14 +247,19 @@ func (l *DatagramListener) Serve() error {
 }
 
 func (l *DatagramListener) deliver(client net.Addr, packet []byte) {
+	if reason := l.enqueue(client, packet); reason != "" {
+		l.drop(reason)
+	}
+}
+
+func (l *DatagramListener) enqueue(client net.Addr, packet []byte) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	key := client.String()
 	f, ok := l.flows[key]
 	if !ok {
-		if l.opts.MaxFlows > 0 && len(l.flows) >= l.opts.MaxFlows {
-			l.drop(DropFlowLimit)
-			return
+		if len(l.flows) >= l.opts.MaxFlows {
+			return DropFlowLimit
 		}
 		f = &datagramFlow{client: client, queue: make(chan []byte, l.opts.QueueSize), stop: make(chan struct{}), activity: newIdleWatch()}
 		l.flows[key] = f
@@ -247,8 +268,9 @@ func (l *DatagramListener) deliver(client net.Addr, packet []byte) {
 	f.activity.touch()
 	select {
 	case f.queue <- packet:
+		return ""
 	default:
-		l.drop(DropQueueFull)
+		return DropQueueFull
 	}
 }
 
@@ -268,7 +290,9 @@ func (l *DatagramListener) runFlow(key string, f *datagramFlow) {
 	go func() {
 		defer close(readerDone)
 		defer f.close()
-		buf := make([]byte, MaxDatagramSize)
+		bufp := getDatagramBuf()
+		defer putDatagramBuf(bufp)
+		buf := *bufp
 		for {
 			n, err := ReadDatagram(stream, buf)
 			if err != nil {

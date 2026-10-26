@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -101,9 +102,18 @@ type Gateway struct {
 	users              UserAuthenticator
 	certs              CertIssuer
 	unavailable        map[string]string
+	endpointsChanged   func()
 
 	liveMu sync.Mutex
 	live   map[*agentConn]struct{}
+}
+
+func (g *Gateway) SetEndpointInvalidator(invalidate func()) { g.endpointsChanged = invalidate }
+
+func (g *Gateway) notifyEndpointsChanged() {
+	if g.endpointsChanged != nil {
+		g.endpointsChanged()
+	}
 }
 
 func New(opts Options) *Gateway {
@@ -152,7 +162,7 @@ func (g *Gateway) revoke(rev identity.Revocation) {
 
 func (g *Gateway) authenticateAgent(w http.ResponseWriter, r *http.Request) (*store.Agent, bool) {
 	ctx := r.Context()
-	raw := bearerToken(r)
+	raw := token.Bearer(r.Header.Get("Authorization"))
 	if raw == "" {
 		http.Error(w, "missing bearer token", http.StatusUnauthorized)
 		return nil, false
@@ -237,7 +247,8 @@ func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
 	if g.metrics != nil {
 		g.metrics.AgentConnected()
 	}
-	serveCtx := context.WithoutCancel(ctx)
+	serveCtx, cancelServe := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelServe()
 	if user != nil {
 		serveCtx = identity.WithPrincipal(serveCtx, *user)
 		g.log.Info("agent connected", "agent_id", agent.ID, "org_id", agent.OrgID, "user_id", user.Ref.ID)
@@ -365,7 +376,6 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 			if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgPong}); err != nil {
 				return
 			}
-		default:
 		}
 	}
 }
@@ -384,6 +394,7 @@ func (g *Gateway) cleanupEphemeral(ctx context.Context, agentID string) {
 		}
 		if ep.Lifecycle == store.LifecycleEphemeral {
 			_ = g.data.DeleteEndpoint(ctx, ep.ID)
+			g.notifyEndpointsChanged()
 		}
 	}
 }
@@ -525,16 +536,32 @@ func (g *Gateway) publicHost() string {
 	return g.baseDomain
 }
 
-func (g *Gateway) quotaAllowsEndpoint(ctx context.Context, orgID string) bool {
+var (
+	errEndpointQuotaExceeded = errors.New("endpoint quota exceeded for this organization")
+	errEndpointQuotaCheck    = errors.New("internal error checking endpoint quota")
+)
+
+func (g *Gateway) checkEndpointQuota(ctx context.Context, orgID string) error {
 	q, err := g.data.GetQuota(ctx, orgID)
-	if err != nil || q.MaxEndpoints <= 0 {
-		return true
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		g.log.Error("endpoint quota lookup failed", "org_id", orgID, "err", err)
+		return errEndpointQuotaCheck
+	}
+	if q.MaxEndpoints <= 0 {
+		return nil
 	}
 	n, err := g.data.CountEndpoints(ctx, orgID)
 	if err != nil {
-		return true
+		g.log.Error("endpoint count failed", "org_id", orgID, "err", err)
+		return errEndpointQuotaCheck
 	}
-	return n < q.MaxEndpoints
+	if n >= q.MaxEndpoints {
+		return errEndpointQuotaExceeded
+	}
+	return nil
 }
 
 func decodePolicy(raw json.RawMessage, log *slog.Logger) *store.EndpointPolicy {
@@ -558,36 +585,59 @@ func decodePolicy(raw json.RawMessage, log *slog.Logger) *store.EndpointPolicy {
 	return &p
 }
 
+var agentSettablePolicyFields = map[string]bool{
+	"RequestHeadersAdd": true, "RequestHeadersRemove": true, "ResponseHeadersAdd": true, "ResponseHeadersRemove": true,
+	"HostHeader": true, "StripPathPrefix": true, "AddPathPrefix": true, "BasicAuthUser": true, "BasicAuthHash": true,
+	"IPAllow": true, "IPDeny": true, "ForceHTTPS": true, "MaxBodyBytes": true, "Compression": true,
+	"OIDC": true, "MTLS": true, "RateLimit": true, "Connect": true, "Identity": true,
+}
+
 func dropControlPlaneFields(p *store.EndpointPolicy) []string {
 	var dropped []string
-	if len(p.ProxyTargets) > 0 {
-		dropped = append(dropped, "proxy_targets")
-		p.ProxyTargets = nil
+	v := reflect.ValueOf(p).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Type().Field(i)
+		if agentSettablePolicyFields[field.Name] || v.Field(i).IsZero() {
+			continue
+		}
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		dropped = append(dropped, name)
+		v.Field(i).SetZero()
 	}
-	if p.LoadBalance != "" {
-		dropped = append(dropped, "load_balance")
-		p.LoadBalance = ""
-	}
-	if p.OriginTLS != nil {
-		dropped = append(dropped, "origin_tls")
-		p.OriginTLS = nil
-	}
-	if p.ServiceID != "" {
-		dropped = append(dropped, "service_id")
-		p.ServiceID = ""
-	}
-	if len(p.Access) > 0 {
-		dropped = append(dropped, "access")
-		p.Access = nil
+	if p.Identity != nil && len(p.Identity.Credentials) > 0 {
+		dropped = append(dropped, "identity.credentials")
+		p.Identity.Credentials = nil
 	}
 	return dropped
 }
 
-func bearerToken(r *http.Request) string {
-	const prefix = "Bearer "
-	h := r.Header.Get("Authorization")
-	if strings.HasPrefix(h, prefix) {
-		return strings.TrimSpace(h[len(prefix):])
+func mergeAgentPolicy(stored, declared *store.EndpointPolicy) *store.EndpointPolicy {
+	if stored == nil {
+		return declared
 	}
-	return ""
+	if declared == nil {
+		declared = &store.EndpointPolicy{}
+	}
+	merged := *declared
+	mv, sv := reflect.ValueOf(&merged).Elem(), reflect.ValueOf(stored).Elem()
+	for i := 0; i < mv.NumField(); i++ {
+		if !agentSettablePolicyFields[mv.Type().Field(i).Name] {
+			mv.Field(i).Set(sv.Field(i))
+		}
+	}
+	merged.Identity = mergeAgentIdentity(stored.Identity, declared.Identity)
+	return &merged
+}
+
+func mergeAgentIdentity(stored, declared *store.EndpointIdentity) *store.EndpointIdentity {
+	if stored == nil {
+		return declared
+	}
+	merged := *stored
+	if declared != nil {
+		merged.Required = stored.Required || declared.Required
+		merged.AuthorizationHeader = declared.AuthorizationHeader
+		merged.BrowserLogin = declared.BrowserLogin
+	}
+	return &merged
 }

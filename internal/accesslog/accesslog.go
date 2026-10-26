@@ -54,6 +54,7 @@ type Logger struct {
 	tokens   float64
 	refillAt time.Time
 	lastSeen map[string]time.Time
+	purgedAt time.Time
 }
 
 func New(sink Sink, opts Options) *Logger {
@@ -148,11 +149,22 @@ func (l *Logger) admitFailure(key string) bool {
 		return false
 	}
 	l.tokens--
-	if len(l.lastSeen) >= maxFailureKeys {
-		clear(l.lastSeen)
+	if len(l.lastSeen) >= maxFailureKeys && now.Sub(l.purgedAt) >= l.opts.PerKeyWindow {
+		l.dropExpiredKeys(now)
 	}
-	l.lastSeen[key] = now
+	if len(l.lastSeen) < maxFailureKeys {
+		l.lastSeen[key] = now
+	}
 	return true
+}
+
+func (l *Logger) dropExpiredKeys(now time.Time) {
+	l.purgedAt = now
+	for k, last := range l.lastSeen {
+		if now.Sub(last) >= l.opts.PerKeyWindow {
+			delete(l.lastSeen, k)
+		}
+	}
 }
 
 func (l *Logger) Run(ctx context.Context) {

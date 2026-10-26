@@ -20,10 +20,13 @@ import (
 )
 
 type gateDeps struct {
-	oidc    *oidcGate
-	trusted []*net.IPNet
-	limiter ratelimit.Limiter
-	basic   *ttlCache[struct{}]
+	oidc           *oidcGate
+	trusted        []*net.IPNet
+	limiter        ratelimit.Limiter
+	basic          *ttlCache[struct{}]
+	basicLockout   *ttlCache[time.Time]
+	basicVerifying *keyedLocks
+	caPools        *ttlCache[*x509.CertPool]
 }
 
 func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, deps gateDeps) bool {
@@ -32,7 +35,7 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 	}
 	p := ep.Policy
 
-	if p.ForceHTTPS && !requestIsHTTPS(r) {
+	if p.ForceHTTPS && !requestIsHTTPS(r, deps.trusted) {
 		target := "https://" + r.Host + r.URL.RequestURI()
 		http.Redirect(w, r, target, http.StatusPermanentRedirect)
 		return false
@@ -53,7 +56,38 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 	}
 
 	if p.BasicAuthUser != "" {
-		if !checkBasicAuth(r, ep.ID, p.BasicAuthUser, p.BasicAuthHash, deps.basic) {
+		var retryAfter time.Duration
+		guard := func(verify func() bool) basicAuthResult {
+			key := basicAuthVerifyKey(ep.ID, ip)
+			release, err := deps.basicVerifying.acquire(r.Context(), key)
+			if err != nil {
+				return basicAuthDenied
+			}
+			defer release()
+			if until, ok := deps.basicLockout.get(key); ok {
+				if retryAfter = time.Until(until); retryAfter > 0 {
+					return basicAuthThrottled
+				}
+			}
+			if verify() {
+				return basicAuthOK
+			}
+			if deps.limiter == nil {
+				return basicAuthDenied
+			}
+			d := deps.limiter.Allow(r.Context(), key, ratelimit.Limit{Requests: basicAuthVerifyRequests, Period: basicAuthVerifyPeriod})
+			if d.Allowed {
+				return basicAuthDenied
+			}
+			deps.basicLockout.put(key, time.Now().Add(d.RetryAfter))
+			retryAfter = d.RetryAfter
+			return basicAuthThrottled
+		}
+		switch checkBasicAuth(r, ep.ID, p.BasicAuthUser, p.BasicAuthHash, deps.basic, guard) {
+		case basicAuthThrottled:
+			writeBasicAuthThrottled(w, retryAfter)
+			return false
+		case basicAuthDenied:
 			w.Header().Set("WWW-Authenticate", `Basic realm="mishmesh"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return false
@@ -61,7 +95,7 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 	}
 
 	if p.MTLS != nil {
-		if !checkMTLS(r, p.MTLS) {
+		if !checkMTLS(r, p.MTLS, deps.caPools) {
 			http.Error(w, "client certificate required", http.StatusForbidden)
 			return false
 		}
@@ -144,11 +178,8 @@ func applyResponsePolicy(h http.Header, ep *store.Endpoint) {
 	}
 }
 
-func requestIsHTTPS(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+func requestIsHTTPS(r *http.Request, trusted []*net.IPNet) bool {
+	return clientip.IsHTTPS(r, trusted)
 }
 
 func allowRate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, ip net.IP, limiter ratelimit.Limiter) bool {
@@ -216,12 +247,26 @@ func shouldCompress(ep *store.Endpoint, r *http.Request, resp *http.Response) bo
 	return strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip")
 }
 
-func checkMTLS(r *http.Request, m *store.MTLSConfig) bool {
+const clientCAPoolCacheTTL = 10 * time.Minute
+
+func clientCAPool(cache *ttlCache[*x509.CertPool], caPEM string) *x509.CertPool {
+	if roots, ok := cache.get(caPEM); ok {
+		return roots
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM([]byte(caPEM)) {
+		return nil
+	}
+	cache.put(caPEM, roots)
+	return roots
+}
+
+func checkMTLS(r *http.Request, m *store.MTLSConfig, pools *ttlCache[*x509.CertPool]) bool {
 	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 		return false
 	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM([]byte(m.ClientCAPEM)) {
+	roots := clientCAPool(pools, m.ClientCAPEM)
+	if roots == nil {
 		return false
 	}
 	leaf := r.TLS.PeerCertificates[0]
@@ -249,25 +294,58 @@ func checkMTLS(r *http.Request, m *store.MTLSConfig) bool {
 
 const basicAuthCacheTTL = time.Minute
 
-func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[struct{}]) bool {
+type basicAuthResult int
+
+const (
+	basicAuthDenied basicAuthResult = iota
+	basicAuthOK
+	basicAuthThrottled
+)
+
+var compareBasicAuthPassword = bcrypt.CompareHashAndPassword
+
+const (
+	basicAuthVerifyRequests = 10
+	basicAuthVerifyPeriod   = time.Minute
+)
+
+func basicAuthVerifyKey(epID string, ip net.IP) string {
+	if ip == nil {
+		return "basic:" + epID + ":unknown"
+	}
+	return "basic:" + epID + ":" + rateLimitIPKey(ip)
+}
+
+func writeBasicAuthThrottled(w http.ResponseWriter, retryAfter time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(retryAfter)))
+	http.Error(w, "too many authentication attempts", http.StatusTooManyRequests)
+}
+
+func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[struct{}], guard func(verify func() bool) basicAuthResult) basicAuthResult {
 	u, pass, ok := r.BasicAuth()
-	if !ok {
-		return false
-	}
-	if subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 {
-		return false
-	}
-	if hash == "" {
-		return false
+	if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 || hash == "" {
+		return basicAuthDenied
 	}
 	sum := sha256.Sum256([]byte(hash + "|" + u + ":" + pass))
 	key := epID + "|" + hex.EncodeToString(sum[:])
 	if _, hit := cache.get(key); hit {
+		return basicAuthOK
+	}
+	verify := func() bool {
+		if _, hit := cache.get(key); hit {
+			return true
+		}
+		if compareBasicAuthPassword([]byte(hash), []byte(pass)) != nil {
+			return false
+		}
+		cache.put(key, struct{}{})
 		return true
 	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) != nil {
-		return false
+	if guard != nil {
+		return guard(verify)
 	}
-	cache.put(key, struct{}{})
-	return true
+	if verify() {
+		return basicAuthOK
+	}
+	return basicAuthDenied
 }

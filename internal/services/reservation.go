@@ -35,16 +35,12 @@ func snapshotDefinitionEqual(a, b Definition) bool {
 func (m *Manager) Reserve(ctx context.Context, expected []Definition, action func(LifecycleReservation) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for !m.applyMu.TryLock() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
+	select {
+	case m.applySlot <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	defer m.applyMu.Unlock()
+	defer func() { <-m.applySlot }()
 	m.mu.Lock()
 	m.reloadDone = make(chan struct{})
 	m.reserved = true
@@ -56,37 +52,17 @@ func (m *Manager) Reserve(ctx context.Context, expected []Definition, action fun
 		m.reserved = false
 		m.mu.Unlock()
 	}()
-	for {
-		m.mu.Lock()
-		var wait <-chan struct{}
-		for _, service := range m.services {
-			if service.inflight != nil {
-				wait = service.inflight.done
-				break
-			}
-			if service.stopping != nil {
-				wait = service.stopping
-				break
-			}
-		}
-		if wait == nil {
-			for _, def := range expected {
-				service := m.services[def.ID]
-				if service == nil || !snapshotDefinitionEqual(service.def, def) {
-					m.mu.Unlock()
-					return ErrDefinitionChanged
-				}
-			}
+	if err := m.waitIdleLocked(ctx); err != nil {
+		return err
+	}
+	for _, def := range expected {
+		service := m.services[def.ID]
+		if service == nil || !snapshotDefinitionEqual(service.def, def) {
 			m.mu.Unlock()
-			break
-		}
-		m.mu.Unlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			return ctx.Err()
+			return ErrDefinitionChanged
 		}
 	}
+	m.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}

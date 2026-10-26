@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -34,20 +35,12 @@ func identityFrom(r *http.Request) *requestIdentity {
 	return id
 }
 
-func bearerValue(v string) string {
-	scheme, rest, ok := strings.Cut(strings.TrimSpace(v), " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return ""
-	}
-	return strings.TrimSpace(rest)
-}
-
 func presentedToken(r *http.Request, idp *store.EndpointIdentity) string {
-	if v := bearerValue(r.Header.Get(identityAuthHeader)); v != "" {
+	if v := token.Bearer(r.Header.Get(identityAuthHeader)); v != "" {
 		return v
 	}
 	if idp.AuthorizationHeader {
-		if v := bearerValue(r.Header.Get("Authorization")); token.LooksLikeToken(v) {
+		if v := token.Bearer(r.Header.Get("Authorization")); token.LooksLikeToken(v) {
 			return v
 		}
 	}
@@ -71,6 +64,11 @@ func (i *Ingress) applyIdentityGate(w http.ResponseWriter, r *http.Request, ep *
 	if i.identity == nil || i.deciders == nil {
 		writeIdentityUnavailable(w)
 		i.recordCode(http.StatusServiceUnavailable)
+		return r, false
+	}
+	if !decisionPathMatchesUpstream(r, outPath) {
+		http.Error(w, "bad request path", http.StatusBadRequest)
+		i.recordCode(http.StatusBadRequest)
 		return r, false
 	}
 	idp := ep.Policy.Identity
@@ -152,15 +150,30 @@ func reauthWouldRepeat(p *identity.Principal) bool {
 	return !p.AuthTime.IsZero() && time.Since(p.AuthTime) <= identity.EndpointReauthMaxAge
 }
 
+func decisionPathMatchesUpstream(r *http.Request, outPath string) bool {
+	if strings.ContainsAny(outPath, `\;`) {
+		return false
+	}
+	return canonicalDecisionPath(outPath) == outPath
+}
+
+func canonicalDecisionPath(p string) string {
+	clean := path.Clean("/" + p)
+	if clean != "/" && strings.HasSuffix(p, "/") {
+		return clean + "/"
+	}
+	return clean
+}
+
 func (i *Ingress) decideEndpoint(r *http.Request, ep *store.Endpoint, outPath string, principal *identity.Principal) (authz.Decision, error) {
 	ref := authz.EntityRef{Type: authz.EntityAnonymous, ID: authz.AnonymousID}
 	scope := identity.Scope{OrgID: ep.OrgID}
 	reqCtx := authz.RequestContext{
 		ClientIP:   unknownClientIP,
 		Host:       hostOnly(r.Host),
-		TLS:        requestIsHTTPS(r),
+		TLS:        requestIsHTTPS(r, i.trusted),
 		Method:     r.Method,
-		Path:       outPath,
+		Path:       canonicalDecisionPath(outPath),
 		AuthMethod: authz.AuthMethodNone,
 	}
 	if ip := clientip.Resolve(r, i.trusted); ip != nil {
@@ -204,7 +217,7 @@ func sanitizeUpstreamRequest(h http.Header, ep *store.Endpoint) {
 	h.Del("Forwarded")
 	stripCookiesMatching(h, func(name string) bool { return strings.HasPrefix(name, mishmeshCookiePrefix) })
 	if ep != nil && ep.Policy != nil && ep.Policy.Identity != nil && ep.Policy.Identity.AuthorizationHeader {
-		if token.LooksLikeToken(bearerValue(h.Get("Authorization"))) {
+		if token.LooksLikeToken(token.Bearer(h.Get("Authorization"))) {
 			h.Del("Authorization")
 		}
 	}

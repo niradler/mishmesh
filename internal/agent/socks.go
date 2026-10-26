@@ -39,7 +39,7 @@ var (
 	errUDPEgress          = errors.New("udp egress (QUIC, HTTP/3, DNS over UDP) is not supported; only TCP egress is proxied")
 )
 
-func (a *Agent) serveSocksClient(client net.Conn) {
+func (a *Agent) serveSocksClient(ctx context.Context, client net.Conn) {
 	defer client.Close()
 	_ = client.SetDeadline(time.Now().Add(egressHandshakeTimeout))
 	br := bufio.NewReader(io.LimitReader(client, maxProxyHeaderBytes))
@@ -57,12 +57,12 @@ func (a *Agent) serveSocksClient(client net.Conn) {
 		}
 		return
 	}
-	if !a.socksMayPassThrough(dest) {
+	if !a.socksMayPassThrough(ctx, dest) {
 		writeSocksReply(client, socksNotAllowed)
 		a.log.Info("egress refused", "proto", "socks5", "destination", truncateLog(dest), "err", errSocksDecryptScoped)
 		return
 	}
-	stream, err := a.openEgress(remoteHost(client.RemoteAddr().String()), dest, creds)
+	stream, err := a.openEgress(ctx, remoteHost(client.RemoteAddr().String()), dest, creds)
 	if err != nil {
 		writeSocksReply(client, socksRefusalCode(err))
 		a.log.Info("egress refused", "proto", "socks5", "destination", truncateLog(dest), "err", err)
@@ -73,7 +73,7 @@ func (a *Agent) serveSocksClient(client net.Conn) {
 		return
 	}
 	_ = client.SetDeadline(time.Time{})
-	tunnel.Splice(&bufferedConn{Conn: client, r: bufio.NewReader(io.MultiReader(br, client))}, stream)
+	tunnel.Splice(&tunnel.BufferedConn{Conn: client, R: io.MultiReader(io.LimitReader(br, int64(br.Buffered())), client)}, stream)
 }
 
 func (a *Agent) socksHandshake(client net.Conn, br *bufio.Reader) (egressCreds, error) {
@@ -203,12 +203,12 @@ func writeSocksReply(w io.Writer, code byte) bool {
 	return err == nil
 }
 
-func (a *Agent) socksMayPassThrough(dest string) bool {
+func (a *Agent) socksMayPassThrough(ctx context.Context, dest string) bool {
 	host, _, err := net.SplitHostPort(dest)
 	if err != nil {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), egressHandshakeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, egressHandshakeTimeout)
 	defer cancel()
 	return a.decrypt.classify(ctx, host).verdict == decryptPassthrough
 }

@@ -28,14 +28,7 @@ func (a *API) SetSecretVault(v *orgsecret.Vault) {
 
 func (a *API) listSecretsHandler(w http.ResponseWriter, r *http.Request) {
 	list, err := a.data.ListOrgSecrets(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]orgSecretDTO, 0, len(list))
-	for _, s := range list {
-		out = append(out, toOrgSecretDTO(s))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, list, err, toOrgSecretDTO)
 }
 
 func (a *API) putSecretHandler(w http.ResponseWriter, r *http.Request) {

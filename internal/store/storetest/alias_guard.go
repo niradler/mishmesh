@@ -1,4 +1,4 @@
-package postgres
+package storetest
 
 import (
 	"context"
@@ -10,14 +10,14 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-func TestShouldRejectLateAliasPublicationAfterAccessEdit(t *testing.T) {
+func shouldRejectLateAliasPublicationAfterAccessEdit(t *testing.T, newStore func(*testing.T) store.DataStore) {
 	s := newStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	orgID := createTypedOrg(t, s)
-	connection := createTypedConnection(t, s, orgID)
+	orgID := CreateTypedOrg(t, s)
+	connection := CreateTypedConnection(t, s, orgID)
 	aliasDomain := strings.ReplaceAll(store.NewID("tail"), "_", "-") + ".ts.net"
-	endpoint := createTypedEndpoint(t, s, orgID, "")
+	endpoint := CreateTypedEndpoint(t, s, orgID, "")
 	endpoint.Policy = &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: connection.ID, Hostname: "notes"}}}
 	if err := s.UpdateEndpoint(ctx, endpoint); err != nil {
 		t.Fatal(err)
@@ -60,14 +60,14 @@ func TestShouldRejectLateAliasPublicationAfterAccessEdit(t *testing.T) {
 	}
 }
 
-func TestShouldPreserveUnchangedAliasesAndRollbackInvalidEndpointPolicy(t *testing.T) {
+func shouldPreserveUnchangedAliasesAndRollbackInvalidEndpointPolicy(t *testing.T, newStore func(*testing.T) store.DataStore) {
 	s := newStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	orgID := createTypedOrg(t, s)
-	connection := createTypedConnection(t, s, orgID)
+	orgID := CreateTypedOrg(t, s)
+	connection := CreateTypedConnection(t, s, orgID)
 	aliasDomain := strings.ReplaceAll(store.NewID("tail"), "_", "-") + ".ts.net"
-	endpoint := createTypedEndpoint(t, s, orgID, "")
+	endpoint := CreateTypedEndpoint(t, s, orgID, "")
 	endpoint.Policy = &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: connection.ID, Hostname: "Notes"}}, Connect: &store.ConnectPolicy{Name: "private-notes", AllowAgents: []string{"*"}}}
 	if err := s.UpdateEndpoint(ctx, endpoint); err != nil {
 		t.Fatal(err)
@@ -94,13 +94,13 @@ func TestShouldPreserveUnchangedAliasesAndRollbackInvalidEndpointPolicy(t *testi
 	}
 }
 
-func TestShouldFenceAliasPublicationByConnectionSnapshot(t *testing.T) {
+func shouldFenceAliasPublicationByConnectionSnapshot(t *testing.T, newStore func(*testing.T) store.DataStore) {
 	s := newStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	orgID := createTypedOrg(t, s)
-	connection := createTypedConnection(t, s, orgID)
-	endpoint := createTypedEndpoint(t, s, orgID, "")
+	orgID := CreateTypedOrg(t, s)
+	connection := CreateTypedConnection(t, s, orgID)
+	endpoint := CreateTypedEndpoint(t, s, orgID, "")
 	host := strings.ReplaceAll(store.NewID("alias"), "_", "-") + ".example"
 	endpoint.Policy = &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: connection.ID, Hostname: ""}}}
 	if err := s.UpdateEndpoint(ctx, endpoint); err != nil {
@@ -163,14 +163,14 @@ func TestShouldFenceAliasPublicationByConnectionSnapshot(t *testing.T) {
 	}
 }
 
-func TestShouldSerializeAccessHostnameClaimsPerConnection(t *testing.T) {
+func shouldSerializeAccessHostnameClaimsPerConnection(t *testing.T, newStore func(*testing.T) store.DataStore) {
 	s := newStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	orgID := createTypedOrg(t, s)
-	connection := createTypedConnection(t, s, orgID)
-	separate := createTypedConnection(t, s, orgID)
-	first, second := createTypedEndpoint(t, s, orgID, ""), createTypedEndpoint(t, s, orgID, "")
+	orgID := CreateTypedOrg(t, s)
+	connection := CreateTypedConnection(t, s, orgID)
+	separate := CreateTypedConnection(t, s, orgID)
+	first, second := CreateTypedEndpoint(t, s, orgID, ""), CreateTypedEndpoint(t, s, orgID, "")
 	host := strings.ReplaceAll(store.NewID("claim"), "_", "-") + ".example"
 	first.Policy = &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: connection.ID, Hostname: host}}}
 	second.Policy = &store.EndpointPolicy{Access: []store.AccessRef{{ConnectionID: connection.ID, Hostname: strings.ToUpper(host) + "."}}}
@@ -224,13 +224,13 @@ func TestShouldSerializeAccessHostnameClaimsPerConnection(t *testing.T) {
 	}
 }
 
-func TestShouldFenceEndpointAccessByAuthorizedConnectionSnapshot(t *testing.T) {
+func shouldFenceEndpointAccessByAuthorizedConnectionSnapshot(t *testing.T, newStore func(*testing.T) store.DataStore) {
 	s := newStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	orgID := createTypedOrg(t, s)
-	connection := createTypedConnection(t, s, orgID)
-	endpoint := createTypedEndpoint(t, s, orgID, "")
+	orgID := CreateTypedOrg(t, s)
+	connection := CreateTypedConnection(t, s, orgID)
+	endpoint := CreateTypedEndpoint(t, s, orgID, "")
 	snapshot, err := s.GetConnection(ctx, connection.ID)
 	if err != nil {
 		t.Fatal(err)

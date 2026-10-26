@@ -1,4 +1,4 @@
-package sqlite
+package storetest
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-func TestShouldConditionConnectionMutationsOnAuthorizedUserFields(t *testing.T) {
+func shouldConditionConnectionMutationsOnAuthorizedUserFields(t *testing.T, newStore func(*testing.T) store.DataStore) {
 	data := newStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

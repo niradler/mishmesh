@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -146,6 +147,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_endpoints_subdomain
   ON endpoints(subdomain) WHERE subdomain IS NOT NULL AND subdomain <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_endpoints_domain
   ON endpoints(domain) WHERE domain IS NOT NULL AND domain <> '';
+CREATE INDEX IF NOT EXISTS idx_endpoints_domain_normalized
+  ON endpoints(lower(rtrim(domain, '.'))) WHERE domain IS NOT NULL AND domain <> '';
 CREATE TABLE IF NOT EXISTS quotas (
   org_id              TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
   max_agents          INTEGER NOT NULL DEFAULT 0,
@@ -215,7 +218,7 @@ CREATE TABLE IF NOT EXISTS org_policies (
   updated_at BIGINT NOT NULL
 );
 `
-	if _, err := tx.ExecContext(ctx, schema+networkSchema+groupsSchema+zeroTrustSchema+zeroTrustColumns+accessLogSchema+orgSecretsSchema+workloadIdentitiesSchema+egressSchema); err != nil {
+	if _, err := tx.ExecContext(ctx, schema+networkSchema+groupsSchema+zeroTrustSchema+zeroTrustColumns+accessLogSchema+orgSecretsSchema+workloadIdentitiesSchema+egressSchema+foreignKeyIndexes); err != nil {
 		return fmt.Errorf("postgres migrate: %w", err)
 	}
 	return tx.Commit()
@@ -301,22 +304,31 @@ func (s *Store) ListAgents(ctx context.Context, orgID string) ([]*store.Agent, e
 func (s *Store) UpdateAgent(ctx context.Context, a *store.Agent) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `UPDATE agents SET name = $1, status = $2 WHERE id = $3`, a.Name, a.Status, a.ID)
-	return wrap("update agent", err)
+	res, err := s.db.ExecContext(ctx, `UPDATE agents SET name = $1, status = $2 WHERE id = $3`, a.Name, a.Status, a.ID)
+	if err != nil {
+		return wrap("update agent", err)
+	}
+	return affected("update agent", res)
 }
 
 func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = $1`, id)
-	return wrap("delete agent", err)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = $1`, id)
+	if err != nil {
+		return wrap("delete agent", err)
+	}
+	return affected("delete agent", res)
 }
 
 func (s *Store) TouchAgent(ctx context.Context, id string, seenAt time.Time) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `UPDATE agents SET last_seen_at = $1 WHERE id = $2`, ns(seenAt), id)
-	return wrap("touch agent", err)
+	res, err := s.db.ExecContext(ctx, `UPDATE agents SET last_seen_at = $1 WHERE id = $2`, ns(seenAt), id)
+	if err != nil {
+		return wrap("touch agent", err)
+	}
+	return affected("touch agent", res)
 }
 
 func (s *Store) CountAgents(ctx context.Context, orgID string) (int, error) {
@@ -447,11 +459,20 @@ func (s *Store) GetEndpointBySubdomain(ctx context.Context, subdomain string) (*
 	return scanEndpoint(s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE subdomain = $1`, subdomain).Scan)
 }
 
+const endpointByDomainQuery = `SELECT ` + endpointCols + ` FROM endpoints WHERE domain IS NOT NULL AND domain <> '' AND lower(rtrim(domain, '.')) = $1 LIMIT 2`
+
 func (s *Store) GetEndpointByDomain(ctx context.Context, domain string) (*store.Endpoint, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
-	return scanEndpoint(s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE lower(rtrim(domain, '.')) = $1 AND (SELECT COUNT(*) FROM endpoints WHERE lower(rtrim(domain, '.')) = $1) = 1`, domain).Scan)
+	matches, err := s.queryEndpoints(ctx, endpointByDomainQuery, domain)
+	if err != nil {
+		return nil, err
+	}
+	if len(matches) != 1 {
+		return nil, store.ErrNotFound
+	}
+	return matches[0], nil
 }
 
 func (s *Store) ListEndpointsByAgent(ctx context.Context, agentID string) ([]*store.Endpoint, error) {
@@ -464,6 +485,12 @@ func (s *Store) ListEndpointsByOrg(ctx context.Context, orgID string) ([]*store.
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
 	return s.queryEndpoints(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE org_id = $1 ORDER BY created_at`, orgID)
+}
+
+func (s *Store) ListAllEndpoints(ctx context.Context) ([]*store.Endpoint, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	return s.queryEndpoints(ctx, `SELECT `+endpointCols+` FROM endpoints ORDER BY created_at`)
 }
 
 func (s *Store) queryEndpoints(ctx context.Context, query string, args ...any) ([]*store.Endpoint, error) {
@@ -513,8 +540,11 @@ func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
 func (s *Store) DeleteEndpoint(ctx context.Context, id string) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM endpoints WHERE id = $1`, id)
-	return wrap("delete endpoint", err)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM endpoints WHERE id = $1`, id)
+	if err != nil {
+		return wrap("delete endpoint", err)
+	}
+	return affected("delete endpoint", res)
 }
 
 func (s *Store) CountEndpoints(ctx context.Context, orgID string) (int, error) {
@@ -586,6 +616,38 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (*store.User, error)
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE id = $1`, id).Scan)
 }
 
+func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) ([]*store.User, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	var out []*store.User
+	for chunk := range slices.Chunk(slices.Compact(slices.Sorted(slices.Values(ids))), 500) {
+		args := make([]any, len(chunk))
+		marks := make([]string, len(chunk))
+		for i, id := range chunk {
+			args[i], marks[i] = id, fmt.Sprintf("$%d", i+1)
+		}
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE id IN (`+strings.Join(marks, ", ")+`)`, args...)
+		if err != nil {
+			return nil, wrap("get users", err)
+		}
+		for rows.Next() {
+			u, err := scanUser(rows.Scan)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, u)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, wrap("get users", err)
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*store.User, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
@@ -601,10 +663,13 @@ func (s *Store) GetUserByGoogleSub(ctx context.Context, sub string) (*store.User
 func (s *Store) UpdateUser(ctx context.Context, u *store.User) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE users SET email = $1, name = $2, password_hash = $3, google_sub = $4 WHERE id = $5`,
 		strings.ToLower(u.Email), u.Name, nullStr(u.PasswordHash), nullStr(u.GoogleSub), u.ID)
-	return wrap("update user", err)
+	if err != nil {
+		return wrap("update user", err)
+	}
+	return affected("update user", res)
 }
 
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
@@ -675,8 +740,11 @@ func (s *Store) queryMemberships(ctx context.Context, query string, args ...any)
 func (s *Store) UpdateMembership(ctx context.Context, m *store.Membership) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `UPDATE memberships SET role = $1 WHERE org_id = $2 AND user_id = $3`, m.Role, m.OrgID, m.UserID)
-	return wrap("update membership", err)
+	res, err := s.db.ExecContext(ctx, `UPDATE memberships SET role = $1 WHERE org_id = $2 AND user_id = $3`, m.Role, m.OrgID, m.UserID)
+	if err != nil {
+		return wrap("update membership", err)
+	}
+	return affected("update membership", res)
 }
 
 func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) error {
@@ -690,10 +758,54 @@ func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) erro
 	if _, err := tx.ExecContext(ctx, `DELETE FROM group_members WHERE org_id = $1 AND member_type = $2 AND member_id = $3`, orgID, store.GroupMemberUser, userID); err != nil {
 		return wrap("delete membership groups", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID); err != nil {
+	res, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID)
+	if err != nil {
 		return wrap("delete membership", err)
 	}
+	if err := affected("delete membership", res); err != nil {
+		return err
+	}
 	return wrap("delete membership", tx.Commit())
+}
+
+func (s *Store) DemoteOrRemoveMembershipKeepingOwner(ctx context.Context, orgID, userID, newRole string, remove bool) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("demote membership", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM orgs WHERE id = $1 FOR UPDATE`, orgID); err != nil {
+		return wrap("lock org", err)
+	}
+	target, err := scanMembership(tx.QueryRowContext(ctx,
+		`SELECT org_id, user_id, role, created_at, disabled_at FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID).Scan)
+	if err != nil {
+		return err
+	}
+	if target.Role == store.RoleOwner && target.DisabledAt == nil && (remove || newRole != store.RoleOwner) {
+		var others int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM memberships WHERE org_id = $1 AND role = $2 AND disabled_at IS NULL AND user_id <> $3`,
+			orgID, store.RoleOwner, userID).Scan(&others); err != nil {
+			return wrap("count owners", err)
+		}
+		if others == 0 {
+			return fmt.Errorf("organization must keep an active owner: %w", store.ErrConflict)
+		}
+	}
+	if remove {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM group_members WHERE org_id = $1 AND member_type = $2 AND member_id = $3`, orgID, store.GroupMemberUser, userID); err != nil {
+			return wrap("delete membership groups", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID); err != nil {
+			return wrap("delete membership", err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `UPDATE memberships SET role = $1 WHERE org_id = $2 AND user_id = $3`, newRole, orgID, userID); err != nil {
+		return wrap("update membership", err)
+	}
+	return wrap("demote membership", tx.Commit())
 }
 
 func scanMembership(scan func(...any) error) (*store.Membership, error) {
@@ -789,6 +901,58 @@ func (s *Store) DeleteInvite(ctx context.Context, orgID, id string) error {
 		return store.ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) CreateUserWithMembershipClaimingInvite(ctx context.Context, u *store.User, inv *store.Invite) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("signup with invite", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM invites WHERE id = $1 AND org_id = $2`, inv.ID, inv.OrgID)
+	if err != nil {
+		return wrap("claim invite", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("invite already claimed: %w", store.ErrConflict)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO users (id, email, name, password_hash, google_sub, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+		u.ID, strings.ToLower(u.Email), u.Name, nullStr(u.PasswordHash), nullStr(u.GoogleSub), ns(u.CreatedAt)); err != nil {
+		return wrap("create user", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO memberships (org_id, user_id, role, created_at) VALUES ($1, $2, $3, $4)`,
+		inv.OrgID, u.ID, inv.Role, ns(u.CreatedAt)); err != nil {
+		return wrap("create membership", err)
+	}
+	return wrap("signup with invite", tx.Commit())
+}
+
+func (s *Store) ClaimInviteCreatingMembership(ctx context.Context, inv *store.Invite, userID string, createdAt time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("accept invite", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM invites WHERE id = $1 AND org_id = $2`, inv.ID, inv.OrgID)
+	if err != nil {
+		return wrap("claim invite", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("invite already claimed: %w", store.ErrConflict)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO memberships (org_id, user_id, role, created_at) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (org_id, user_id) DO NOTHING`,
+		inv.OrgID, userID, inv.Role, ns(createdAt)); err != nil {
+		return wrap("create membership", err)
+	}
+	return wrap("accept invite", tx.Commit())
 }
 
 func (s *Store) queryInvites(ctx context.Context, query string, args ...any) ([]*store.Invite, error) {

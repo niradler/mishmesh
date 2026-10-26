@@ -139,7 +139,9 @@ func (u *UDP) openStream(endpointID string, client net.Addr) (net.Conn, error) {
 	if !ok {
 		return nil, errUDPEndpointOffline
 	}
-	stream, err := agent.OpenStream(context.Background(), endpointID, store.KindUDP, withClientIP(tunnel.WithDatagramIdle(nil, u.idle), peerIP(client)))
+	openCtx, cancelOpen := context.WithTimeout(context.Background(), streamOpenTimeout)
+	stream, err := agent.OpenStream(openCtx, endpointID, store.KindUDP, withClientIP(tunnel.WithDatagramIdle(nil, u.idle), peerIP(client)))
+	cancelOpen()
 	if err != nil {
 		u.log.Warn("udp open stream failed", "endpoint_id", endpointID, "err", err)
 		return nil, err
@@ -148,10 +150,8 @@ func (u *UDP) openStream(endpointID string, client net.Addr) (net.Conn, error) {
 }
 
 func (u *UDP) meterUsage(endpointID string, up, down int64) {
-	if u.data != nil {
-		if ep, err := u.data.GetEndpoint(context.Background(), endpointID); err == nil && ep.OrgID != "" {
-			u.conns.AddUsage(ep.OrgID, up+down)
-		}
+	if orgID := endpointOrgID(context.Background(), u.data, endpointID); orgID != "" {
+		u.conns.AddUsage(orgID, up+down)
 	}
 	if u.meter != nil {
 		u.meter.AddBytes(store.KindUDP, up, down)

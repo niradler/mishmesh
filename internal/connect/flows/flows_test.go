@@ -9,8 +9,12 @@ import (
 	"github.com/mishmesh/mishmesh/internal/identity"
 )
 
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 func quietTracker() *Tracker {
-	return NewTracker(slog.New(slog.NewTextHandler(io.Discard, nil)), "test", nil)
+	return NewTracker(quietLogger(), "test", nil)
 }
 
 func TestRevokeClosesOnlyMatchingFlows(t *testing.T) {

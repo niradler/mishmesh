@@ -35,7 +35,7 @@ func (a *Agent) startConnects(ctx context.Context) (func(), error) {
 		})
 	}
 	for _, spec := range a.opts.Connects {
-		closeFn, err := a.listenConnect(spec, &wg)
+		closeFn, err := a.listenConnect(ctx, spec, &wg)
 		if err != nil {
 			stop()
 			return nil, fmt.Errorf("connect %q: %w", spec.Name, err)
@@ -43,7 +43,7 @@ func (a *Agent) startConnects(ctx context.Context) (func(), error) {
 		closers = append(closers, closeFn)
 	}
 	if a.opts.Egress != nil {
-		closeFn, err := a.listenEgress(*a.opts.Egress, &wg)
+		closeFn, err := a.listenEgress(ctx, *a.opts.Egress, &wg)
 		if err != nil {
 			stop()
 			return nil, fmt.Errorf("egress: %w", err)
@@ -59,7 +59,7 @@ func (a *Agent) startConnects(ctx context.Context) (func(), error) {
 	return stop, nil
 }
 
-func (a *Agent) listenConnect(spec ConnectSpec, wg *sync.WaitGroup) (func(), error) {
+func (a *Agent) listenConnect(ctx context.Context, spec ConnectSpec, wg *sync.WaitGroup) (func(), error) {
 	switch spec.Kind {
 	case store.KindUDP:
 		pc, err := net.ListenPacket("udp", spec.Listen)
@@ -67,7 +67,7 @@ func (a *Agent) listenConnect(spec ConnectSpec, wg *sync.WaitGroup) (func(), err
 			return nil, err
 		}
 		dl := tunnel.NewDatagramListener(pc, tunnel.DatagramListenerOptions{
-			Open: func(net.Addr) (net.Conn, error) { return a.openConnect(spec) },
+			Open: func(net.Addr) (net.Conn, error) { return a.openConnect(ctx, spec) },
 			Idle: spec.Idle,
 		})
 		wg.Go(func() {
@@ -82,7 +82,7 @@ func (a *Agent) listenConnect(spec ConnectSpec, wg *sync.WaitGroup) (func(), err
 		if err != nil {
 			return nil, err
 		}
-		wg.Go(func() { a.acceptConnect(ln, spec) })
+		wg.Go(func() { a.acceptConnect(ctx, ln, spec) })
 		a.log.Info("connect listening", "connect", spec.Name, "endpoint", spec.Endpoint, "proto", spec.Kind, "addr", ln.Addr().String())
 		return func() { _ = ln.Close() }, nil
 	default:
@@ -90,7 +90,7 @@ func (a *Agent) listenConnect(spec ConnectSpec, wg *sync.WaitGroup) (func(), err
 	}
 }
 
-func (a *Agent) acceptConnect(ln net.Listener, spec ConnectSpec) {
+func (a *Agent) acceptConnect(ctx context.Context, ln net.Listener, spec ConnectSpec) {
 	for {
 		client, err := ln.Accept()
 		if err != nil {
@@ -98,7 +98,7 @@ func (a *Agent) acceptConnect(ln net.Listener, spec ConnectSpec) {
 		}
 		go func() {
 			defer client.Close()
-			stream, err := a.openConnect(spec)
+			stream, err := a.openConnect(ctx, spec)
 			if err != nil {
 				a.log.Warn("connect stream failed", "connect", spec.Name, "err", err)
 				return
@@ -109,8 +109,8 @@ func (a *Agent) acceptConnect(ln net.Listener, spec ConnectSpec) {
 	}
 }
 
-func (a *Agent) openConnect(spec ConnectSpec) (net.Conn, error) {
-	if err := a.dec.check(context.Background(), spec.Endpoint, spec.Kind); err != nil {
+func (a *Agent) openConnect(ctx context.Context, spec ConnectSpec) (net.Conn, error) {
+	if err := a.dec.check(ctx, spec.Endpoint, spec.Kind); err != nil {
 		return nil, err
 	}
 	sess := a.sess.Load()
@@ -124,8 +124,11 @@ func (a *Agent) openConnect(spec ConnectSpec) (net.Conn, error) {
 	return sess.OpenData(tunnel.StreamInit{Kind: spec.Kind, Meta: meta})
 }
 
-func (a *Agent) relayUDP(stream net.Conn, init tunnel.StreamInit, tgt localTarget) {
-	socket, err := net.Dial("udp", tgt.addr)
+func (a *Agent) relayUDP(ctx context.Context, stream net.Conn, init tunnel.StreamInit, tgt localTarget) {
+	ctx, cancel := context.WithTimeout(ctx, localDialTimeout)
+	defer cancel()
+	var dialer net.Dialer
+	socket, err := dialer.DialContext(ctx, "udp", tgt.addr)
 	if err != nil {
 		a.log.Warn("dial local udp target failed", "target", tgt.addr, "err", err)
 		return

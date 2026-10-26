@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -106,6 +108,8 @@ type Server struct {
 	DockerHost     string
 	HostCommands   bool
 	CloudflaredBin string
+
+	envErrors []string
 }
 
 type Agent struct {
@@ -118,85 +122,86 @@ type Agent struct {
 const envPrefix = "MISHMESH_"
 
 func LoadServer() Server {
+	l := &loader{}
 	signupMode := env("SIGNUP_MODE", "org")
-	return Server{
+	s := Server{
 		IngressAddr:              env("INGRESS_ADDR", "127.0.0.1:8080"),
 		APIAddr:                  env("API_ADDR", "127.0.0.1:8081"),
 		BaseDomain:               env("BASE_DOMAIN", "localhost:8080"),
 		PublicScheme:             env("PUBLIC_SCHEME", "http"),
 		DataDSN:                  env("DATA_DSN", "mishmesh.db"),
-		AuthEnabled:              envBool("AUTH_ENABLED", false),
-		AuthPasswordEnabled:      envBool("AUTH_PASSWORD_ENABLED", true),
+		AuthEnabled:              l.envBool("AUTH_ENABLED", false),
+		AuthPasswordEnabled:      l.envBool("AUTH_PASSWORD_ENABLED", true),
 		SignupMode:               signupMode,
-		DomainVerification:       envBool("DOMAIN_VERIFICATION", signupMode == "org"),
-		PathRouting:              envBool("PATH_ROUTING", signupMode != "org"),
+		DomainVerification:       l.envBool("DOMAIN_VERIFICATION", signupMode == "org"),
+		PathRouting:              l.envBool("PATH_ROUTING", signupMode != "org"),
 		MetricsToken:             env("METRICS_TOKEN", ""),
-		WebUIEnabled:             envBool("WEBUI_ENABLED", false),
-		IngressEnabled:           envBool("INGRESS_ENABLED", true),
-		TLSEnabled:               envBool("TLS_ENABLED", false),
+		WebUIEnabled:             l.envBool("WEBUI_ENABLED", false),
+		IngressEnabled:           l.envBool("INGRESS_ENABLED", true),
+		TLSEnabled:               l.envBool("TLS_ENABLED", false),
 		HTTPSAddr:                env("HTTPS_ADDR", "127.0.0.1:8443"),
 		TLSCertFile:              env("TLS_CERT_FILE", ""),
 		TLSKeyFile:               env("TLS_KEY_FILE", ""),
-		ACMEEnabled:              envBool("ACME_ENABLED", false),
+		ACMEEnabled:              l.envBool("ACME_ENABLED", false),
 		ACMEEmail:                env("ACME_EMAIL", ""),
 		ACMECacheDir:             env("ACME_CACHE_DIR", "./certs"),
-		TCPEnabled:               envBool("TCP_ENABLED", true),
+		TCPEnabled:               l.envBool("TCP_ENABLED", true),
 		TCPBindHost:              env("TCP_BIND_HOST", "127.0.0.1"),
-		TCPPortMin:               envInt("TCP_PORT_MIN", 10000),
-		TCPPortMax:               envInt("TCP_PORT_MAX", 10100),
+		TCPPortMin:               l.envInt("TCP_PORT_MIN", 10000),
+		TCPPortMax:               l.envInt("TCP_PORT_MAX", 10100),
 		UDPBindHost:              env("UDP_BIND_HOST", "127.0.0.1"),
-		UDPPortMin:               envInt("UDP_PORT_MIN", 10200),
-		UDPPortMax:               envInt("UDP_PORT_MAX", 10300),
-		UDPIdleTimeout:           envDuration("UDP_IDLE_TIMEOUT", 60*time.Second),
-		UDPMaxFlows:              envInt("UDP_MAX_FLOWS", 1024),
-		AccessLogRetention:       envDuration("ACCESS_LOG_RETENTION", 168*time.Hour),
+		UDPPortMin:               l.envInt("UDP_PORT_MIN", 10200),
+		UDPPortMax:               l.envInt("UDP_PORT_MAX", 10300),
+		UDPIdleTimeout:           l.envDuration("UDP_IDLE_TIMEOUT", 60*time.Second),
+		UDPMaxFlows:              l.envInt("UDP_MAX_FLOWS", 1024),
+		AccessLogRetention:       l.envDuration("ACCESS_LOG_RETENTION", 168*time.Hour),
 		TLSPassthroughAddr:       env("TLS_PASSTHROUGH_ADDR", "127.0.0.1:8444"),
-		TLSPassthroughEnabled:    envBool("TLS_PASSTHROUGH_ENABLED", false),
-		TLSPassthroughPublicPort: envInt("TLS_PASSTHROUGH_PUBLIC_PORT", 8444),
-		SSHEnabled:               envBool("SSH_ENABLED", false),
+		TLSPassthroughEnabled:    l.envBool("TLS_PASSTHROUGH_ENABLED", false),
+		TLSPassthroughPublicPort: l.envInt("TLS_PASSTHROUGH_PUBLIC_PORT", 8444),
+		SSHEnabled:               l.envBool("SSH_ENABLED", false),
 		SSHAddr:                  env("SSH_ADDR", "127.0.0.1:2222"),
 		SSHHostKeyFile:           env("SSH_HOST_KEY_FILE", ""),
-		ProxyAllowLoopback:       envBool("PROXY_ALLOW_LOOPBACK", false),
-		ProxyAllowPrivate:        envBool("PROXY_ALLOW_PRIVATE", false),
+		ProxyAllowLoopback:       l.envBool("PROXY_ALLOW_LOOPBACK", false),
+		ProxyAllowPrivate:        l.envBool("PROXY_ALLOW_PRIVATE", false),
 		ProxyAllowedCIDRs:        envList("PROXY_ALLOWED_CIDRS"),
-		SelfSignedTLS:            envBool("SELF_SIGNED_TLS", false),
+		SelfSignedTLS:            l.envBool("SELF_SIGNED_TLS", false),
 		BootstrapToken:           env("BOOTSTRAP_TOKEN", ""),
 		APIAuthToken:             env("API_AUTH_TOKEN", ""),
-		APIAuthDisabled:          envBool("API_AUTH_DISABLED", false),
+		APIAuthDisabled:          l.envBool("API_AUTH_DISABLED", false),
 		LogLevel:                 env("LOG_LEVEL", "info"),
 
 		DataBackend:             env("DATA_BACKEND", ""),
-		DataMaxConns:            envInt("DATA_MAX_CONNS", 25),
-		DataMaxIdleConns:        envInt("DATA_MAX_IDLE_CONNS", 0),
-		DataConnMaxLifetime:     envDuration("DATA_CONN_MAX_LIFETIME", 30*time.Minute),
-		DataConnMaxIdleTime:     envDuration("DATA_CONN_MAX_IDLE_TIME", 5*time.Minute),
+		DataMaxConns:            l.envInt("DATA_MAX_CONNS", 25),
+		DataMaxIdleConns:        l.envInt("DATA_MAX_IDLE_CONNS", 0),
+		DataConnMaxLifetime:     l.envDuration("DATA_CONN_MAX_LIFETIME", 30*time.Minute),
+		DataConnMaxIdleTime:     l.envDuration("DATA_CONN_MAX_IDLE_TIME", 5*time.Minute),
 		DataQueryTimeout:        strictDuration("DATA_QUERY_TIMEOUT", "5s"),
-		IngressCacheTTL:         envDuration("INGRESS_CACHE_TTL", 2*time.Second),
+		IngressCacheTTL:         l.envDuration("INGRESS_CACHE_TTL", 2*time.Second),
 		UpstreamResponseTimeout: strictDuration("UPSTREAM_RESPONSE_TIMEOUT", "5m"),
 		PprofAddr:               env("PPROF_ADDR", ""),
 		ConnBackend:             env("CONN_BACKEND", "memory"),
 		RedisURL:                env("REDIS_URL", ""),
-		RedisPoolSize:           envInt("REDIS_POOL_SIZE", 0),
+		RedisPoolSize:           l.envInt("REDIS_POOL_SIZE", 0),
 
-		MetricsEnabled: envBool("METRICS_ENABLED", true),
-		ReachInEnabled: envBool("REACHIN_ENABLED", false),
+		MetricsEnabled: l.envBool("METRICS_ENABLED", true),
+		ReachInEnabled: l.envBool("REACHIN_ENABLED", false),
 
 		WebUIDir:        env("WEBUI_DIR", ""),
-		SessionTTLHours: envInt("SESSION_TTL_HOURS", 168),
+		SessionTTLHours: l.envInt("SESSION_TTL_HOURS", 168),
 
 		OIDCIssuer:         env("OIDC_ISSUER", "https://accounts.google.com"),
 		GoogleClientID:     env("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: env("GOOGLE_CLIENT_SECRET", ""),
 		OIDCRedirectURL:    env("OIDC_REDIRECT_URL", ""),
 		EndpointOIDCKey:    env("ENDPOINT_OIDC_KEY", ""),
-		OIDCAllowPrivate:   envBool("OIDC_ALLOW_PRIVATE_ISSUERS", false),
+		OIDCAllowPrivate:   l.envBool("OIDC_ALLOW_PRIVATE_ISSUERS", false),
 
-		MaxOrgsPerUser:         envInt("MAX_ORGS_PER_USER", 3),
-		QuotaMaxAgents:         envInt("QUOTA_MAX_AGENTS", 0),
-		QuotaMaxEndpoints:      envInt("QUOTA_MAX_ENDPOINTS", 0),
-		QuotaMaxBandwidthBytes: int64(envInt("QUOTA_MAX_BANDWIDTH_BYTES", 0)),
+		MaxOrgsPerUser:         l.envInt("MAX_ORGS_PER_USER", 3),
+		QuotaMaxAgents:         l.envInt("QUOTA_MAX_AGENTS", 0),
+		QuotaMaxEndpoints:      l.envInt("QUOTA_MAX_ENDPOINTS", 0),
+		QuotaMaxBandwidthBytes: int64(l.envInt("QUOTA_MAX_BANDWIDTH_BYTES", 0)),
 
-		ClusterEnabled: envBool("CLUSTER_ENABLED", false),
+		ClusterEnabled: l.envBool("CLUSTER_ENABLED", false),
 		NodeID:         env("NODE_ID", hostnameOrEmpty()),
 		RelayAddr:      env("RELAY_ADDR", "127.0.0.1:7443"),
 		RelayAdvertise: env("RELAY_ADVERTISE", ""),
@@ -213,9 +218,11 @@ func LoadServer() Server {
 		TokenKeyFile:   env("TOKEN_KEY_FILE", ""),
 		APIPublicURL:   env("API_PUBLIC_URL", ""),
 		DockerHost:     env("DOCKER_HOST", ""),
-		HostCommands:   envBool("HOST_COMMANDS", signupMode == "invite"),
+		HostCommands:   l.envBool("HOST_COMMANDS", signupMode == "invite"),
 		CloudflaredBin: env("CLOUDFLARED_BIN", ""),
 	}
+	s.envErrors = l.errs
+	return s
 }
 
 func envList(key string) []string {
@@ -310,7 +317,41 @@ func LoadAgent() Agent {
 	}
 }
 
+func validPortRange(min, max int) bool {
+	return min >= 1 && max <= 65535 && min <= max
+}
+
+func (s Server) validateRanges() error {
+	if s.TCPEnabled && !validPortRange(s.TCPPortMin, s.TCPPortMax) {
+		return fmt.Errorf("config: TCP_PORT_MIN..TCP_PORT_MAX must be within 1-65535 with min <= max, got %d-%d", s.TCPPortMin, s.TCPPortMax)
+	}
+	if s.IngressEnabled && !validPortRange(s.UDPPortMin, s.UDPPortMax) {
+		return fmt.Errorf("config: UDP_PORT_MIN..UDP_PORT_MAX must be within 1-65535 with min <= max, got %d-%d", s.UDPPortMin, s.UDPPortMax)
+	}
+	nonNegative := map[string]int64{
+		"QUOTA_MAX_AGENTS":          int64(s.QuotaMaxAgents),
+		"QUOTA_MAX_ENDPOINTS":       int64(s.QuotaMaxEndpoints),
+		"QUOTA_MAX_BANDWIDTH_BYTES": s.QuotaMaxBandwidthBytes,
+		"MAX_ORGS_PER_USER":         int64(s.MaxOrgsPerUser),
+		"UDP_MAX_FLOWS":             int64(s.UDPMaxFlows),
+		"SESSION_TTL_HOURS":         int64(s.SessionTTLHours),
+		"REDIS_POOL_SIZE":           int64(s.RedisPoolSize),
+	}
+	for _, name := range slices.Sorted(maps.Keys(nonNegative)) {
+		if nonNegative[name] < 0 {
+			return fmt.Errorf("config: %s must not be negative", name)
+		}
+	}
+	return nil
+}
+
 func (s Server) Validate() error {
+	if len(s.envErrors) > 0 {
+		return fmt.Errorf("config: %s", strings.Join(s.envErrors, "; "))
+	}
+	if err := s.validateRanges(); err != nil {
+		return err
+	}
 	if s.BaseDomain == "" {
 		return fmt.Errorf("config: BASE_DOMAIN is required")
 	}
@@ -357,37 +398,48 @@ func env(key, def string) string {
 	return def
 }
 
-func envInt(key string, def int) int {
+type loader struct {
+	errs []string
+}
+
+func (l *loader) reject(key, value, want string) {
+	l.errs = append(l.errs, fmt.Sprintf("%s%s=%q is not %s", envPrefix, key, value, want))
+}
+
+func (l *loader) envInt(key string, def int) int {
 	v, ok := os.LookupEnv(envPrefix + key)
 	if !ok {
 		return def
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil {
+		l.reject(key, v, "an integer")
 		return def
 	}
 	return n
 }
 
-func envBool(key string, def bool) bool {
+func (l *loader) envBool(key string, def bool) bool {
 	v, ok := os.LookupEnv(envPrefix + key)
 	if !ok {
 		return def
 	}
 	b, err := strconv.ParseBool(strings.TrimSpace(v))
 	if err != nil {
+		l.reject(key, v, "a boolean")
 		return def
 	}
 	return b
 }
 
-func envDuration(key string, def time.Duration) time.Duration {
+func (l *loader) envDuration(key string, def time.Duration) time.Duration {
 	v, ok := os.LookupEnv(envPrefix + key)
 	if !ok {
 		return def
 	}
 	d, err := time.ParseDuration(strings.TrimSpace(v))
 	if err != nil || d < 0 {
+		l.reject(key, v, "a non-negative duration")
 		return def
 	}
 	return d

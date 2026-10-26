@@ -163,20 +163,21 @@ func (s *SessionStore) DeleteTokenSession(ctx context.Context, id string) error 
 	return nil
 }
 
+var deleteSubjectSessionsScript = goredis.NewScript(`
+local ids = redis.call('SMEMBERS', KEYS[1])
+for _, id in ipairs(ids) do
+  redis.call('DEL', ARGV[1] .. id)
+end
+redis.call('DEL', KEYS[1])
+return ids
+`)
+
 func (s *SessionStore) DeleteSubjectSessions(ctx context.Context, orgID, subjectType, subjectID string) ([]string, error) {
 	ctx, cancel := opCtx(ctx)
 	defer cancel()
 	subject := subjectKeyPrefix + store.SubjectKey(orgID, subjectType, subjectID)
-	ids, err := s.rdb.SMembers(ctx, subject).Result()
+	ids, err := deleteSubjectSessionsScript.Run(ctx, s.rdb, []string{subject}, sessionKeyPrefix).StringSlice()
 	if err != nil {
-		return nil, fmt.Errorf("redis: list subject sessions: %w", err)
-	}
-	keys := make([]string, 0, len(ids)+1)
-	for _, id := range ids {
-		keys = append(keys, sessionKeyPrefix+id)
-	}
-	keys = append(keys, subject)
-	if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
 		return nil, fmt.Errorf("redis: delete subject sessions: %w", err)
 	}
 	return ids, nil

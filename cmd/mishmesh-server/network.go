@@ -34,14 +34,6 @@ type networkControl struct {
 	wg                 sync.WaitGroup
 }
 
-func newNetworkControl(cfg config.Server, data store.DataStore, conns store.ConnectionStore, guard *proxy.Guard, connector *proxy.Connector, log *slog.Logger) (*networkControl, error) {
-	box, err := loadDataBox(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return newNetworkControlWithBox(cfg, data, conns, guard, connector, log, box)
-}
-
 func newNetworkControlWithBox(cfg config.Server, data store.DataStore, conns store.ConnectionStore, guard *proxy.Guard, connector *proxy.Connector, log *slog.Logger, box *secrets.Box) (*networkControl, error) {
 	if box == nil {
 		return nil, fmt.Errorf("network control requires the data migration secret box")

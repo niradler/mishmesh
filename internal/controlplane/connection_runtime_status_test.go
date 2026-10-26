@@ -72,7 +72,7 @@ func TestShouldExposeCommittedCanceledReloadFailureOnLaterGET(t *testing.T) {
 	api.data = cancelCommittedConnectionData{DataStore: api.data, cancel: cancel}
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/connections/"+id, strings.NewReader(`{"name":"committed-new","config":{"location":"new"}}`)).WithContext(ctx)
 	request.SetPathValue("id", id)
-	request = request.WithContext(api.authContext(request, defaultOrgID, "owner", store.RoleOwner, true))
+	request = request.WithContext(api.authContext(request, caller{orgID: defaultOrgID, actor: "owner", role: store.RoleOwner, admin: true}))
 	recorder := httptest.NewRecorder()
 	api.updateConnectionHandler(recorder, request)
 	if recorder.Code != http.StatusOK {

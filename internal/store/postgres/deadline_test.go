@@ -68,3 +68,27 @@ func TestQueriesCancelWhenDatabaseIsStalled(t *testing.T) {
 		t.Fatalf("query did not recover: %v", err)
 	}
 }
+
+func TestServiceSnapshotMutationCancelsWhenNetworkLockIsStalled(t *testing.T) {
+	s := newStoreWithPool(t, PoolConfig{QueryTimeout: 100 * time.Millisecond})
+	holder, err := s.db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if _, err := holder.ExecContext(context.Background(), "SELECT pg_advisory_lock($1)", networkWriteLockKey); err != nil {
+		t.Fatal(err)
+	}
+	defer holder.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", networkWriteLockKey)
+
+	guard, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	started := time.Now()
+	err = s.WithServiceSnapshots(guard, "org_stalled", nil, func(store.ServiceMutation) error { return nil })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want deadline exceeded, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("service snapshot mutation ignored the query timeout for %s", elapsed)
+	}
+}

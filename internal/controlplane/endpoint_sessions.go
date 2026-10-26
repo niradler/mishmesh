@@ -41,13 +41,22 @@ func (a *API) listEndpointSessionsHandler(w http.ResponseWriter, r *http.Request
 		writeStoreUnavailable(w)
 		return
 	}
-	emails := map[string]string{}
+	var userIDs []string
+	for _, ts := range sessions {
+		if ts.SubjectType == store.SubjectUser {
+			userIDs = append(userIDs, ts.SubjectID)
+		}
+	}
+	users, err := a.usersByID(r.Context(), userIDs)
+	if a.handleErr(w, err) {
+		return
+	}
 	for _, ts := range sessions {
 		out = append(out, endpointSessionDTO{
 			ID:          ts.ID,
 			SubjectType: ts.SubjectType,
 			SubjectID:   ts.SubjectID,
-			Email:       a.sessionEmail(r, ts, emails),
+			Email:       sessionEmail(ts, users),
 			AuthMethod:  ts.AuthMethod,
 			AuthTime:    ts.AuthTime,
 			CreatedAt:   ts.CreatedAt,
@@ -57,21 +66,14 @@ func (a *API) listEndpointSessionsHandler(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (a *API) sessionEmail(r *http.Request, ts store.TokenSession, cache map[string]string) string {
+func sessionEmail(ts store.TokenSession, users map[string]*store.User) string {
 	switch ts.SubjectType {
 	case store.SubjectGuest:
 		return ts.SubjectID
 	case store.SubjectUser:
-		if email, ok := cache[ts.SubjectID]; ok {
-			return email
+		if user, ok := users[ts.SubjectID]; ok {
+			return user.Email
 		}
-		user, err := a.data.GetUserByID(r.Context(), ts.SubjectID)
-		if err != nil {
-			cache[ts.SubjectID] = ""
-			return ""
-		}
-		cache[ts.SubjectID] = user.Email
-		return user.Email
 	}
 	return ""
 }
@@ -119,13 +121,5 @@ func (a *API) revokeEndpointSessionsHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (a *API) scopedEndpoint(w http.ResponseWriter, r *http.Request) (*store.Endpoint, bool) {
-	ep, err := a.data.GetEndpoint(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return nil, false
-	}
-	if ep.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
-		return nil, false
-	}
-	return ep, true
+	return loadScoped(a, w, r, r.PathValue("id"), a.data.GetEndpoint, func(ep *store.Endpoint) string { return ep.OrgID })
 }

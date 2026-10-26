@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
+	"github.com/mishmesh/mishmesh/internal/services"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -22,13 +23,13 @@ const (
 )
 
 const (
-	ServiceRunning  = "running"
-	ServiceStopped  = "stopped"
-	ServiceSleeping = "sleeping"
-	ServiceStarting = "starting"
-	ServicePartial  = "partial"
-	ServiceUnknown  = "unknown"
-	ServiceError    = "error"
+	ServiceRunning  = services.StateRunning
+	ServiceStopped  = services.StateStopped
+	ServiceSleeping = services.StateSleeping
+	ServiceStarting = services.StateStarting
+	ServicePartial  = services.StatePartial
+	ServiceUnknown  = services.StateUnknown
+	ServiceError    = services.StateError
 )
 
 const (
@@ -130,19 +131,10 @@ func (p *Prober) Trigger() {
 }
 
 func (p *Prober) sweep(ctx context.Context) {
-	orgs, err := p.data.ListOrgs(ctx)
+	eps, err := p.data.ListAllEndpoints(ctx)
 	if err != nil {
-		p.log.Warn("health: list orgs", "error", err)
+		p.log.Warn("health: list endpoints", "error", err)
 		return
-	}
-	var eps []*store.Endpoint
-	for _, org := range orgs {
-		list, err := p.data.ListEndpointsByOrg(ctx, org.ID)
-		if err != nil {
-			p.log.Warn("health: list endpoints", "org", org.ID, "error", err)
-			return
-		}
-		eps = append(eps, list...)
 	}
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup

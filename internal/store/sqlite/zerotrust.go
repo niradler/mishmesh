@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -128,6 +129,34 @@ func (s *Store) SetMembershipDisabled(ctx context.Context, orgID, userID string,
 		return wrap("set membership disabled", err)
 	}
 	return affected("set membership disabled", res)
+}
+
+func (s *Store) SetMembershipDisabledKeepingOwner(ctx context.Context, orgID, userID string, at *time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("set membership disabled", err)
+	}
+	defer tx.Rollback()
+	target, err := scanMembership(tx.QueryRowContext(ctx,
+		`SELECT org_id, user_id, role, created_at, disabled_at FROM memberships WHERE org_id = ? AND user_id = ?`, orgID, userID).Scan)
+	if err != nil {
+		return err
+	}
+	if at != nil && target.Role == store.RoleOwner && target.DisabledAt == nil {
+		var others int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM memberships WHERE org_id = ? AND role = ? AND disabled_at IS NULL AND user_id <> ?`,
+			orgID, store.RoleOwner, userID).Scan(&others); err != nil {
+			return wrap("count owners", err)
+		}
+		if others == 0 {
+			return fmt.Errorf("organization must keep an active owner: %w", store.ErrConflict)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE memberships SET disabled_at = ? WHERE org_id = ? AND user_id = ?`, nsPtr(at), orgID, userID); err != nil {
+		return wrap("update membership", err)
+	}
+	return wrap("set membership disabled", tx.Commit())
 }
 
 func (s *Store) DeleteUserSessions(ctx context.Context, orgID, userID string) error {

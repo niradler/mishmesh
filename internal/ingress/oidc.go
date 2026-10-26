@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -42,6 +43,7 @@ type oidcGate struct {
 	sessions      *identity.Service
 	cookieSecure  bool
 	allowLoopback bool
+	trusted       []*net.IPNet
 	log           *slog.Logger
 	httpClient    *http.Client
 	mu            sync.Mutex
@@ -63,7 +65,7 @@ type oidcProvider struct {
 	keysAt                time.Time
 }
 
-func newOIDCGate(data store.DataStore, signKey []byte, sessions *identity.Service, cookieSecure, allowLoopback, allowPrivate bool, log *slog.Logger) *oidcGate {
+func newOIDCGate(data store.DataStore, signKey []byte, sessions *identity.Service, cookieSecure, allowLoopback, allowPrivate bool, trusted []*net.IPNet, log *slog.Logger) *oidcGate {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -73,6 +75,7 @@ func newOIDCGate(data store.DataStore, signKey []byte, sessions *identity.Servic
 		sessions:      sessions,
 		cookieSecure:  cookieSecure,
 		allowLoopback: allowLoopback,
+		trusted:       trusted,
 		log:           log,
 		httpClient:    safehttp.Client(allowLoopback, allowPrivate),
 		providers:     make(map[string]*oidcIssuer),
@@ -112,7 +115,7 @@ func (g *oidcGate) startAuth(w http.ResponseWriter, r *http.Request, ep *store.E
 		http.Error(w, "oidc state failed", http.StatusInternalServerError)
 		return
 	}
-	returnURL := requestScheme(r) + "://" + r.Host + r.URL.RequestURI()
+	returnURL := requestScheme(r, g.trusted) + "://" + r.Host + r.URL.RequestURI()
 	state := g.signState(stateClaims{Ep: ep.ID, Ret: returnURL, Nonce: nonce, Exp: time.Now().Add(oidcStateTTL).Unix()})
 
 	http.SetCookie(w, &http.Cookie{
@@ -194,7 +197,7 @@ func (g *oidcGate) handleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *oidcGate) redirectURI(r *http.Request) string {
-	return requestScheme(r) + "://" + r.Host + oidcCallbackPath
+	return requestScheme(r, g.trusted) + "://" + r.Host + oidcCallbackPath
 }
 
 func (g *oidcGate) exchangeCode(ctx context.Context, prov *oidcProvider, cfg *store.OIDCEndpointAuth, code, redirectURI string) (string, error) {
@@ -365,11 +368,8 @@ func allowlistPermits(email string, cfg *store.OIDCEndpointAuth) bool {
 	return false
 }
 
-func requestScheme(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
-	}
-	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+func requestScheme(r *http.Request, trusted []*net.IPNet) string {
+	if requestIsHTTPS(r, trusted) {
 		return "https"
 	}
 	return "http"

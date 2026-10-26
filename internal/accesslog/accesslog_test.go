@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -114,6 +115,24 @@ func TestAuthFailureLimiter(t *testing.T) {
 	l.Record(fail("192.0.2.1", "unauthenticated"))
 	if len(l.queue) != 6 {
 		t.Fatalf("key window and bucket refill, queued %d", len(l.queue))
+	}
+}
+
+func TestFailureKeyFloodDoesNotResetDedup(t *testing.T) {
+	c := &clock{now: time.Unix(1000, 0)}
+	l := New(&fakeSink{}, Options{Now: c.Now, Log: quiet(), FailureRate: 1e9, FailureBurst: 1e9, PerKeyWindow: time.Minute})
+	if !l.admitFailure("ip:192.0.2.1|unauthenticated") {
+		t.Fatal("first failure must be admitted")
+	}
+	for i := range 2 * maxFailureKeys {
+		l.admitFailure("ip:flood-" + strconv.Itoa(i) + "|unauthenticated")
+		c.advance(time.Millisecond)
+	}
+	if l.admitFailure("ip:192.0.2.1|unauthenticated") {
+		t.Fatal("key flood reset per-key dedup window")
+	}
+	if len(l.lastSeen) > maxFailureKeys {
+		t.Fatalf("lastSeen grew to %d", len(l.lastSeen))
 	}
 }
 

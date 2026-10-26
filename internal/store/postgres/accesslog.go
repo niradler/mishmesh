@@ -42,6 +42,12 @@ ALTER TABLE access_log ADD COLUMN IF NOT EXISTS exit_agent_id TEXT NOT NULL DEFA
 
 const accessEventCols = `id, org_id, at, source, decision, reason, principal_type, principal_id, session_id, agent_id, exit_agent_id, endpoint_id, destination, policy_ids, client_ip, method, path, status, protocol, bytes_in, bytes_out, duration_ms, latency_ms`
 
+const (
+	accessEventColumnCount = 23
+	accessInsertChunkRows  = 500
+	accessPruneBatchRows   = 1000
+)
+
 func (s *Store) AppendAccessEvents(ctx context.Context, events []*store.AccessEvent) error {
 	if len(events) == 0 {
 		return nil
@@ -53,19 +59,29 @@ func (s *Store) AppendAccessEvents(ctx context.Context, events []*store.AccessEv
 		return wrap("append access events", err)
 	}
 	defer tx.Rollback()
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO access_log (`+accessEventCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`)
-	if err != nil {
-		return wrap("append access events", err)
-	}
-	defer stmt.Close()
-	for _, e := range events {
-		if _, err := stmt.ExecContext(ctx, e.ID, e.OrgID, ns(e.At), e.Source, e.Decision, e.Reason, e.PrincipalType, e.PrincipalID, e.SessionID,
-			e.AgentID, e.ExitAgentID, e.EndpointID, e.Destination, strings.Join(e.PolicyIDs, ","), e.ClientIP, e.Method, e.Path, e.Status, e.Protocol,
-			e.BytesIn, e.BytesOut, e.DurationMs, e.LatencyMs); err != nil {
+	for start := 0; start < len(events); start += accessInsertChunkRows {
+		chunk := events[start:min(start+accessInsertChunkRows, len(events))]
+		rows := make([]string, len(chunk))
+		args := make([]any, 0, len(chunk)*accessEventColumnCount)
+		for i, e := range chunk {
+			rows[i] = accessInsertRow(i * accessEventColumnCount)
+			args = append(args, e.ID, e.OrgID, ns(e.At), e.Source, e.Decision, e.Reason, e.PrincipalType, e.PrincipalID, e.SessionID,
+				e.AgentID, e.ExitAgentID, e.EndpointID, e.Destination, strings.Join(e.PolicyIDs, ","), e.ClientIP, e.Method, e.Path, e.Status, e.Protocol,
+				e.BytesIn, e.BytesOut, e.DurationMs, e.LatencyMs)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO access_log (`+accessEventCols+`) VALUES `+strings.Join(rows, ", "), args...); err != nil {
 			return wrap("append access events", err)
 		}
 	}
 	return wrap("append access events", tx.Commit())
+}
+
+func accessInsertRow(offset int) string {
+	marks := make([]string, accessEventColumnCount)
+	for i := range marks {
+		marks[i] = "$" + strconv.Itoa(offset+i+1)
+	}
+	return "(" + strings.Join(marks, ", ") + ")"
 }
 
 func (s *Store) ListAccessEvents(ctx context.Context, orgID string, q store.AccessLogQuery) ([]*store.AccessEvent, error) {
@@ -114,9 +130,23 @@ func (s *Store) ListAccessEvents(ctx context.Context, orgID string, q store.Acce
 }
 
 func (s *Store) PruneAccessEvents(ctx context.Context, before time.Time) (int64, error) {
+	var total int64
+	for {
+		n, err := s.pruneAccessBatch(ctx, before)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n < accessPruneBatchRows {
+			return total, nil
+		}
+	}
+}
+
+func (s *Store) pruneAccessBatch(ctx context.Context, before time.Time) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	res, err := s.db.ExecContext(ctx, `DELETE FROM access_log WHERE at < $1`, ns(before))
+	res, err := s.db.ExecContext(ctx, `DELETE FROM access_log WHERE id IN (SELECT id FROM access_log WHERE at < $1 LIMIT $2)`, ns(before), accessPruneBatchRows)
 	if err != nil {
 		return 0, wrap("prune access events", err)
 	}

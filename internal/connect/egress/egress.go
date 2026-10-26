@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
+	"github.com/mishmesh/mishmesh/internal/connect"
 	"github.com/mishmesh/mishmesh/internal/connect/flows"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/identity"
@@ -20,10 +21,9 @@ import (
 
 const (
 	MeterKind          = "egress"
-	decisionTimeout    = 5 * time.Second
 	dialTimeout        = 10 * time.Second
+	dialBudget         = 30 * time.Second
 	replyTimeout       = 5 * time.Second
-	agentClientIP      = "0.0.0.0"
 	reasonBlocked      = "blocked_destination"
 	reasonDial         = "dial_failed"
 	reasonResolve      = "resolve_failed"
@@ -45,10 +45,6 @@ type Dialer interface {
 	Dial(ctx context.Context, target string, otls *store.OriginTLS, timeout time.Duration) (net.Conn, error)
 }
 
-type Meter interface {
-	AddBytes(kind string, in, out int64)
-}
-
 type Recorder interface {
 	Record(e *store.AccessEvent)
 }
@@ -64,7 +60,7 @@ type Agents interface {
 type Options struct {
 	Conns       store.ConnectionStore
 	Log         *slog.Logger
-	Meter       Meter
+	Meter       connect.Meter
 	Deciders    identity.Deciders
 	Dialer      Dialer
 	Access      Recorder
@@ -78,7 +74,7 @@ type Options struct {
 type Handler struct {
 	conns       store.ConnectionStore
 	log         *slog.Logger
-	meter       Meter
+	meter       connect.Meter
 	deciders    identity.Deciders
 	dialer      Dialer
 	access      Recorder
@@ -87,6 +83,7 @@ type Handler struct {
 	credentials Credentials
 	secrets     Secrets
 	flows       *flows.Tracker
+	dialBudget  time.Duration
 }
 
 func New(opts Options) *Handler {
@@ -106,6 +103,7 @@ func New(opts Options) *Handler {
 		credentials: opts.Credentials,
 		secrets:     opts.Secrets,
 		flows:       flows.NewTracker(log, "egress", opts.Revocations),
+		dialBudget:  dialBudget,
 	}
 }
 
@@ -297,6 +295,8 @@ func (h *Handler) dial(ctx context.Context, agent *store.Agent, exitStream net.C
 	}
 	var upstream net.Conn
 	var err error
+	ctx, cancel := context.WithTimeout(ctx, h.dialBudget)
+	defer cancel()
 	for _, target := range targets {
 		if upstream, err = h.dialer.Dial(ctx, target, nil, dialTimeout); err == nil || ctx.Err() != nil {
 			break
@@ -359,15 +359,15 @@ func validExitTargets(targets []string) bool {
 }
 
 func confirmExit(stream net.Conn, targets []string) (net.Conn, *refusal) {
-	_ = stream.SetWriteDeadline(time.Now().Add(replyTimeout))
-	err := tunnel.WriteExitTargets(stream, targets)
-	_ = stream.SetWriteDeadline(time.Time{})
+	err := tunnel.WriteWithDeadline(stream, replyTimeout, func() error {
+		return tunnel.WriteExitTargets(stream, targets)
+	})
 	if err != nil {
 		return nil, &refusal{tunnel.EgressUnavailable, reasonExitOffline}
 	}
-	_ = stream.SetReadDeadline(time.Now().Add(tunnel.EgressReplyTimeout))
-	reply, err := tunnel.ReadEgressReply(stream)
-	_ = stream.SetReadDeadline(time.Time{})
+	reply, err := tunnel.ReadWithDeadline(stream, tunnel.EgressReplyTimeout, func() (tunnel.EgressReply, error) {
+		return tunnel.ReadEgressReply(stream)
+	})
 	if err != nil {
 		return nil, &refusal{tunnel.EgressDialFailed, reasonDial}
 	}
@@ -395,30 +395,14 @@ func (h *Handler) decide(ctx context.Context, agent *store.Agent, p identity.Pri
 	if h.deciders == nil || h.dialer == nil {
 		return authz.Decision{Reason: authz.ReasonUnavailable}, tunnel.EgressUnavailable
 	}
-	scope := identity.Scope{OrgID: agent.OrgID, AgentID: agent.ID}
-	principal := authz.EntityRef{Type: authz.EntityAgent, ID: agent.ID}
-	reqCtx := authz.RequestContext{ClientIP: agentClientIP, AuthMethod: authz.AuthMethodAgentToken}
+	var reqCtx authz.RequestContext
 	if exit != nil {
 		reqCtx.Exit = exit.ID
 	}
 	if host, _, err := net.SplitHostPort(target); err == nil && net.ParseIP(host) != nil {
 		reqCtx.ResolvedIP = host
 	}
-	if hasPrincipal {
-		principal = p.Ref
-		scope.TokenSessionID = p.SessionID
-		reqCtx.AuthMethod = p.AuthMethod
-		authTime := p.AuthTime.UTC()
-		reqCtx.AuthTime = &authTime
-	}
-	decideCtx, cancel := context.WithTimeout(ctx, decisionTimeout)
-	defer cancel()
-	d, err := h.deciders.Decider(scope).Decide(decideCtx, authz.DecisionRequest{
-		Principal: principal,
-		Action:    authz.ActionEgressConnect,
-		Resource:  authz.EntityRef{Type: authz.EntityDestination, ID: dest},
-		Context:   reqCtx,
-	})
+	d, err := connect.NewAgentDecision(agent, p, hasPrincipal, reqCtx).Decide(ctx, h.deciders, authz.ActionEgressConnect, authz.EntityRef{Type: authz.EntityDestination, ID: dest})
 	switch {
 	case err != nil || d.Reason == authz.ReasonUnavailable:
 		d.Allowed = false
@@ -441,10 +425,9 @@ func (h *Handler) refuse(stream net.Conn, rec *flowRecord, r *refusal) {
 }
 
 func (h *Handler) reply(stream net.Conn, reply tunnel.EgressReply) bool {
-	_ = stream.SetWriteDeadline(time.Now().Add(replyTimeout))
-	err := tunnel.WriteEgressReply(stream, reply)
-	_ = stream.SetWriteDeadline(time.Time{})
-	return err == nil
+	return tunnel.WriteWithDeadline(stream, replyTimeout, func() error {
+		return tunnel.WriteEgressReply(stream, reply)
+	}) == nil
 }
 
 func (h *Handler) record(rec *flowRecord) {
@@ -459,7 +442,7 @@ func (h *Handler) record(rec *flowRecord) {
 func egressClientIP(reported string) string {
 	addr, err := netip.ParseAddr(reported)
 	if err != nil {
-		return agentClientIP
+		return connect.AgentClientIP
 	}
 	return addr.Unmap().WithZone("").String()
 }
@@ -476,9 +459,5 @@ func policyIDs(d authz.Decision) []string {
 }
 
 func truncate(s string) string {
-	const maxLen = 300
-	if len(s) > maxLen {
-		return s[:maxLen]
-	}
-	return s
+	return tunnel.TruncateUTF8(s, 300)
 }

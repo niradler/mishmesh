@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,7 +45,7 @@ type API struct {
 	proxyGuard         *proxy.Guard
 	maxOrgsPerUser     int
 	services           ServiceControl
-	servicesMu         sync.Mutex
+	servicesSem        chan struct{}
 	serviceRegistry    *services.Registry
 	invalidateIngress  func()
 	decisionFlush      func(orgID string)
@@ -65,9 +63,15 @@ type API struct {
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
 	authzCache   map[string]authzEntry
+	authzGen     uint64
+	authzLoads   map[authzLoadKey]*authzLoad
 	denyAuthz    *authz.Authorizer
 	policies     *authz.Cache
 	now          func() time.Time
+
+	background     sync.WaitGroup
+	backgroundCtx  context.Context
+	stopBackground context.CancelFunc
 }
 
 func (a *API) SetDraining(draining bool) {
@@ -91,132 +95,39 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 	if log == nil {
 		log = slog.Default()
 	}
+	backgroundCtx, stopBackground := context.WithCancel(context.Background())
 	return &API{
-		data:         data,
-		conns:        conns,
-		log:          log,
-		adminToken:   adminToken,
-		limiter:      ratelimit.NewMemory(),
-		defaultAuthz: authz.Default(),
-		denyAuthz:    authz.DenyAll(),
-		policies:     authz.NewCache(authz.DefaultCacheSize),
-		authzCache:   make(map[string]authzEntry),
-		now:          time.Now,
+		serviceRegistry: services.NewBuiltinRegistry(),
+		backgroundCtx:   backgroundCtx,
+		stopBackground:  stopBackground,
+		data:            data,
+		conns:           conns,
+		log:             log,
+		adminToken:      adminToken,
+		limiter:         ratelimit.NewMemory(),
+		defaultAuthz:    authz.Default(),
+		denyAuthz:       authz.DenyAll(),
+		policies:        authz.NewCache(authz.DefaultCacheSize),
+		authzCache:      make(map[string]authzEntry),
+		authzLoads:      make(map[authzLoadKey]*authzLoad),
+		servicesSem:     make(chan struct{}, 1),
+		now:             time.Now,
 
 		maxOrgsPerUser: DefaultMaxOrgsPerUser,
 	}
 }
 
-func (a *API) authorizerFor(ctx context.Context, orgID string) *authz.Authorizer {
-	az, err := a.orgAuthorizer(ctx, orgID)
-	if err != nil {
-		a.log.Error("org policy lookup failed, denying", "org", orgID, "err", err)
-		return a.denyAuthz.WithOwner(orgID)
-	}
-	return az
+func (a *API) spawn(fn func(context.Context)) {
+	a.background.Add(1)
+	go func() {
+		defer a.background.Done()
+		fn(a.backgroundCtx)
+	}()
 }
 
-func (a *API) orgAuthorizer(ctx context.Context, orgID string) (*authz.Authorizer, error) {
-	a.authzMu.Lock()
-	defer a.authzMu.Unlock()
-	now := a.now()
-	if e, ok := a.authzCache[orgID]; ok && now.Before(e.expires) {
-		return e.az, nil
-	}
-	pol, err := a.data.GetOrgPolicy(ctx, orgID)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return nil, fmt.Errorf("load org policy: %w", err)
-	}
-	az := a.defaultAuthz
-	if err == nil && pol.CedarSrc != "" {
-		parsed, perr := a.policies.Get(authz.ForOrgSource([]byte(pol.CedarSrc)))
-		if perr != nil {
-			a.log.Error("org policy parse failed, denying", "org", orgID, "err", perr)
-			parsed = a.denyAuthz
-		}
-		az = parsed.WithOwner(orgID)
-	}
-	a.authzCache[orgID] = authzEntry{az: az, expires: now.Add(authzCacheTTL)}
-	return az, nil
-}
-
-const authzCacheTTL = 5 * time.Second
-
-type authzEntry struct {
-	az      *authz.Authorizer
-	expires time.Time
-}
-
-func (a *API) ClearAuthzCache(orgID string) {
-	a.authzMu.Lock()
-	if orgID == "" {
-		clear(a.authzCache)
-	} else {
-		delete(a.authzCache, orgID)
-	}
-	a.authzMu.Unlock()
-}
-
-func (a *API) invalidateAuthz(orgID string) {
-	a.authzMu.Lock()
-	delete(a.authzCache, orgID)
-	a.authzMu.Unlock()
-	a.flushDecisions(orgID)
-}
-
-func (a *API) SetDecisionFlusher(flush func(orgID string)) { a.decisionFlush = flush }
-
-func (a *API) flushDecisions(orgID string) {
-	if a.decisionFlush != nil {
-		a.decisionFlush(orgID)
-	}
-}
-
-type ctxKey int
-
-const (
-	ctxOrgID ctxKey = iota
-	ctxActor
-	ctxRole
-	ctxAdmin
-	ctxPrincipalType
-)
-
-func (a *API) orgScope(r *http.Request) string {
-	if v, ok := r.Context().Value(ctxOrgID).(string); ok && v != "" {
-		return v
-	}
-	if v := r.URL.Query().Get("org_id"); v != "" {
-		return v
-	}
-	return defaultOrgID
-}
-
-func (a *API) isAdmin(r *http.Request) bool {
-	v, _ := r.Context().Value(ctxAdmin).(bool)
-	return v
-}
-
-func (a *API) actor(r *http.Request) string {
-	if v, ok := r.Context().Value(ctxActor).(string); ok && v != "" {
-		return v
-	}
-	return "system"
-}
-
-func (a *API) audit(r *http.Request, action, target, detail string) {
-	ev := &store.AuditEvent{
-		ID:        store.NewID("aud"),
-		OrgID:     a.orgScope(r),
-		Actor:     a.actor(r),
-		Action:    action,
-		Target:    target,
-		Detail:    detail,
-		CreatedAt: time.Now(),
-	}
-	if err := a.data.AppendAudit(r.Context(), ev); err != nil {
-		a.log.Warn("append audit failed", "action", action, "err", err)
-	}
+func (a *API) Close() {
+	a.stopBackground()
+	a.background.Wait()
 }
 
 type route struct {
@@ -351,127 +262,6 @@ func apiNotFound(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusNotFound, "not found")
 }
 
-func (a *API) guard(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, ok := a.authorize(w, r)
-		if !ok {
-			return
-		}
-		h(w, r.WithContext(ctx))
-	}
-}
-
-var operatorOnlyActions = map[authz.Action]struct{}{
-	authz.ActionQuotaWrite: {},
-}
-
-func (a *API) require(action authz.Action, h http.HandlerFunc) http.HandlerFunc {
-	return a.guard(func(w http.ResponseWriter, r *http.Request) {
-		if !a.permitted(r, action) {
-			writeError(w, http.StatusForbidden, "permission denied: "+string(action))
-			return
-		}
-		h(w, r)
-	})
-}
-
-func (a *API) permitted(r *http.Request, action authz.Action) bool {
-	if a.isAdmin(r) {
-		return true
-	}
-	if _, restricted := operatorOnlyActions[action]; restricted {
-		return false
-	}
-	role, _ := r.Context().Value(ctxRole).(string)
-	principalType, _ := r.Context().Value(ctxPrincipalType).(authz.EntityType)
-	org := a.orgScope(r)
-	return a.authorizerFor(r.Context(), org).Authorize(authz.Principal{ID: a.actor(r), Type: principalType, Role: role, Org: org}, action)
-}
-
-func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context, bool) {
-	tok := bearerToken(r)
-	if a.adminToken != "" && tok != "" {
-		if !store.ConstantTimeEqualHash(tok, a.adminToken) {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return nil, false
-		}
-		return a.authContext(r, a.queryOrg(r), "admin", store.RoleOwner, true), true
-	}
-	if a.authEnabled() {
-		if err := a.csrfCheck(r); err != nil {
-			writeCSRFError(w, err)
-			return nil, false
-		}
-		su, err := a.lookupSession(r)
-		if err != nil {
-			if errors.Is(err, errNoSession) {
-				writeError(w, http.StatusUnauthorized, "unauthorized")
-			} else {
-				writeStoreUnavailable(w)
-			}
-			return nil, false
-		}
-		return a.authContext(r, su.orgID, su.user.Email, su.role, false), true
-	}
-	if a.adminToken != "" {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return nil, false
-	}
-	return a.authContext(r, a.queryOrg(r), "system", store.RoleOwner, true), true
-}
-
-func (a *API) authContext(r *http.Request, orgID, actor, role string, admin bool) context.Context {
-	ctx := context.WithValue(r.Context(), ctxOrgID, orgID)
-	ctx = context.WithValue(ctx, ctxActor, actor)
-	ctx = context.WithValue(ctx, ctxRole, role)
-	ctx = context.WithValue(ctx, ctxAdmin, admin)
-	return ctx
-}
-
-func (a *API) queryOrg(r *http.Request) string {
-	if v := r.URL.Query().Get("org_id"); v != "" {
-		return v
-	}
-	return defaultOrgID
-}
-
-func bearerToken(r *http.Request) string {
-	const prefix = "Bearer "
-	h := r.Header.Get("Authorization")
-	if strings.HasPrefix(h, prefix) {
-		return strings.TrimSpace(h[len(prefix):])
-	}
-	return ""
-}
-
-type agentDTO struct {
-	ID         string     `json:"id"`
-	OrgID      string     `json:"org_id"`
-	Name       string     `json:"name"`
-	Status     string     `json:"status"`
-	Connected  bool       `json:"connected"`
-	CreatedAt  time.Time  `json:"created_at"`
-	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
-}
-
-type tokenDTO struct {
-	ID        string     `json:"id"`
-	CreatedAt time.Time  `json:"created_at"`
-	RevokedAt *time.Time `json:"revoked_at,omitempty"`
-}
-
-func (a *API) toAgentDTO(ag *store.Agent) agentDTO {
-	return agentDTO{
-		ID:         ag.ID,
-		OrgID:      ag.OrgID,
-		Name:       ag.Name,
-		Status:     ag.Status,
-		Connected:  a.connected(ag.ID),
-		CreatedAt:  ag.CreatedAt,
-		LastSeenAt: ag.LastSeenAt,
-	}
-}
-
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -484,225 +274,12 @@ func (a *API) ready(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (a *API) createOrgHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name string `json:"name"`
+func (a *API) handleStoreErr(w http.ResponseWriter, err error, conflictMsg string) bool {
+	if errors.Is(err, store.ErrConflict) {
+		writeError(w, http.StatusConflict, conflictMsg)
+		return true
 	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name required")
-		return
-	}
-	su, hasSession := a.resolveSession(r)
-	if hasSession && !a.isAdmin(r) && a.maxOrgsPerUser > 0 {
-		owned, err := a.ownedOrgCount(r.Context(), su.user.ID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "create org failed")
-			return
-		}
-		if owned >= a.maxOrgsPerUser {
-			writeError(w, http.StatusConflict, "organization limit reached")
-			return
-		}
-	}
-	org, err := a.createOrg(r.Context(), req.Name)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create org failed")
-		return
-	}
-	if hasSession {
-		if err := a.data.CreateMembership(r.Context(), &store.Membership{OrgID: org.ID, UserID: su.user.ID, Role: store.RoleOwner, CreatedAt: time.Now()}); err != nil {
-			a.log.Warn("create owner membership", "org", org.ID, "err", err)
-			writeError(w, http.StatusInternalServerError, "create org failed")
-			return
-		}
-	}
-	a.audit(r, "org.create", org.ID, org.Name)
-	writeJSON(w, http.StatusCreated, toOrgDTO(org))
-}
-
-func (a *API) getOrgHandler(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if !a.isAdmin(r) {
-		su, ok := a.resolveSession(r)
-		if !ok {
-			writeError(w, http.StatusNotFound, "not found")
-			return
-		}
-		if _, err := a.data.GetMembership(r.Context(), id, su.user.ID); err != nil {
-			writeError(w, http.StatusNotFound, "not found")
-			return
-		}
-	}
-	org, err := a.data.GetOrg(r.Context(), id)
-	if a.handleErr(w, err) {
-		return
-	}
-	writeJSON(w, http.StatusOK, toOrgDTO(org))
-}
-
-func (a *API) createAgentHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name  string `json:"name"`
-		OrgID string `json:"org_id"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	orgID := a.orgScope(r)
-	if req.OrgID != "" && req.OrgID != orgID {
-		if !a.isAdmin(r) {
-			writeError(w, http.StatusNotFound, "not found")
-			return
-		}
-		orgID = req.OrgID
-	}
-	agent, raw, err := a.createAgent(r.Context(), orgID, req.Name)
-	if errors.Is(err, errQuotaAgents) {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if a.handleErr(w, err) {
-		return
-	}
-	a.audit(r, "agent.create", agent.ID, agent.Name)
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"agent": a.toAgentDTO(agent),
-		"token": raw,
-	})
-}
-
-func (a *API) listAgentsHandler(w http.ResponseWriter, r *http.Request) {
-	agents, err := a.data.ListAgents(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]agentDTO, 0, len(agents))
-	for _, ag := range agents {
-		out = append(out, a.toAgentDTO(ag))
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (a *API) getAgentHandler(w http.ResponseWriter, r *http.Request) {
-	ag, ok := a.scopedAgent(w, r, r.PathValue("id"))
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, a.toAgentDTO(ag))
-}
-
-func (a *API) patchAgentHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if _, ok := a.scopedAgent(w, r, r.PathValue("id")); !ok {
-		return
-	}
-	ag, err := a.updateAgent(r.Context(), r.PathValue("id"), req.Name, req.Status)
-	if a.handleErr(w, err) {
-		return
-	}
-	if req.Status != "" {
-		a.flushDecisions(ag.OrgID)
-	}
-	writeJSON(w, http.StatusOK, a.toAgentDTO(ag))
-}
-
-func (a *API) deleteAgentHandler(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.scopedAgent(w, r, r.PathValue("id")); !ok {
-		return
-	}
-	err := a.deleteAgent(r.Context(), r.PathValue("id"))
-	if errors.Is(err, errAgentNotRevoked) {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if a.handleErr(w, err) {
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (a *API) rotateTokenHandler(w http.ResponseWriter, r *http.Request) {
-	ag, ok := a.scopedAgent(w, r, r.PathValue("id"))
-	if !ok {
-		return
-	}
-	raw, err := a.rotateToken(r.Context(), ag)
-	if a.handleErr(w, err) {
-		return
-	}
-	a.audit(r, "agent.rotate", ag.ID, "")
-	writeJSON(w, http.StatusCreated, map[string]string{"token": raw})
-}
-
-func (a *API) revokeAgentHandler(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.scopedAgent(w, r, r.PathValue("id")); !ok {
-		return
-	}
-	if a.handleErr(w, a.revokeAgent(r.Context(), r.PathValue("id"))) {
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
-}
-
-func (a *API) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.scopedAgent(w, r, r.PathValue("id")); !ok {
-		return
-	}
-	eps, err := a.data.ListEndpointsByAgent(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]endpointDTO, 0, len(eps))
-	for _, ep := range eps {
-		out = append(out, a.toEndpointDTO(ep))
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (a *API) listTokensHandler(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.scopedAgent(w, r, r.PathValue("id")); !ok {
-		return
-	}
-	toks, err := a.data.ListTokensByAgent(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]tokenDTO, 0, len(toks))
-	for _, t := range toks {
-		out = append(out, tokenDTO{ID: t.ID, CreatedAt: t.CreatedAt, RevokedAt: t.RevokedAt})
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-type orgDTO struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-func toOrgDTO(o *store.Org) orgDTO {
-	return orgDTO{ID: o.ID, Name: o.Name, CreatedAt: o.CreatedAt}
-}
-
-func (a *API) scopedAgent(w http.ResponseWriter, r *http.Request, id string) (*store.Agent, bool) {
-	ag, err := a.data.GetAgent(r.Context(), id)
-	if a.handleErr(w, err) {
-		return nil, false
-	}
-	if !a.isAdmin(r) && ag.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
-		return nil, false
-	}
-	return ag, true
+	return a.handleErr(w, err)
 }
 
 func (a *API) handleErr(w http.ResponseWriter, err error) bool {
@@ -715,19 +292,6 @@ func (a *API) handleErr(w http.ResponseWriter, err error) bool {
 	}
 	a.log.Warn("control api error", "err", err)
 	writeError(w, http.StatusInternalServerError, "internal error")
-	return true
-}
-
-func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	if r.Body == nil || r.ContentLength == 0 {
-		return true
-	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return false
-	}
 	return true
 }
 

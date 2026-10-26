@@ -2,25 +2,58 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-func newStore(t *testing.T) *Store {
+func newStore(t testing.TB) *Store {
 	t.Helper()
 	return newStoreWithPool(t, PoolConfig{})
 }
 
-func newStoreWithPool(t *testing.T, pool PoolConfig) *Store {
+func isolatedSchemaDSN(t testing.TB) string {
 	t.Helper()
-	dsn := os.Getenv("MISHMESH_TEST_POSTGRES_DSN")
-	if dsn == "" {
+	baseDSN := os.Getenv("MISHMESH_TEST_POSTGRES_DSN")
+	if baseDSN == "" {
 		t.Skip("MISHMESH_TEST_POSTGRES_DSN not set")
 	}
+	admin, err := sql.Open("pgx", baseDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := strings.ToLower(store.NewID("t"))
+	if _, err := admin.Exec(`CREATE SCHEMA "` + name + `"`); err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec(`DROP SCHEMA IF EXISTS "` + name + `" CASCADE`)
+		_ = admin.Close()
+	})
+	parsed, err := url.Parse(baseDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	query.Set("search_path", name)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func newStoreWithPool(t testing.TB, pool PoolConfig) *Store {
+	t.Helper()
+	return openStoreOn(t, isolatedSchemaDSN(t), pool)
+}
+
+func openStoreOn(t testing.TB, dsn string, pool PoolConfig) *Store {
+	t.Helper()
 	s, err := Open(dsn, pool)
 	if err != nil {
 		t.Fatalf("open: %v", err)

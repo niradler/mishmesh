@@ -60,22 +60,47 @@ type Tracker struct {
 	epoch        uint64
 	flushedAt    map[string]uint64
 	idle         *sync.Cond
+
+	stop      chan struct{}
+	closeOnce sync.Once
+	unsubs    []func()
 }
 
 func NewTracker(log *slog.Logger, label string, revocations Revocations) *Tracker {
 	t := &Tracker{
 		log: log, label: label, sweepEvery: defaultSweepEvery, backoff: defaultBackoff,
 		flows: make(map[*Flow]struct{}), pending: make(map[string]struct{}), flushedAt: make(map[string]uint64),
+		stop: make(chan struct{}),
 	}
 	t.idle = sync.NewCond(&t.mu)
 	if revocations != nil {
-		revocations.Subscribe(t.Revoke)
+		t.unsubs = append(t.unsubs, revocations.Subscribe(t.Revoke))
 		t.checker, _ = revocations.(SessionChecker)
 		if flushes, ok := revocations.(Flushes); ok {
-			flushes.OnFlush(t.Reevaluate)
+			t.unsubs = append(t.unsubs, flushes.OnFlush(t.Reevaluate))
 		}
 	}
 	return t
+}
+
+func (t *Tracker) Close() {
+	t.closeOnce.Do(func() {
+		close(t.stop)
+		for _, unsub := range t.unsubs {
+			if unsub != nil {
+				unsub()
+			}
+		}
+	})
+}
+
+func (t *Tracker) stopped() bool {
+	select {
+	case <-t.stop:
+		return true
+	default:
+		return false
+	}
 }
 
 func (t *Tracker) Track(orgID, sessionID string, c net.Conn, recheck Recheck) (*Flow, func()) {
@@ -142,7 +167,15 @@ type sessionRef struct {
 func (t *Tracker) sweepLoop() {
 	ticker := time.NewTicker(t.sweepEvery)
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-ticker.C:
+		case <-t.stop:
+			t.mu.Lock()
+			t.sweeping = false
+			t.mu.Unlock()
+			return
+		}
 		refs, ok := t.liveSessions()
 		if !ok {
 			return
@@ -265,7 +298,7 @@ func (t *Tracker) reevaluateOnce(orgs map[string]struct{}) {
 
 func (t *Tracker) recheckFlow(f *Flow) {
 	err := t.recheckWithRetry(f)
-	if err == nil {
+	if err == nil || t.stopped() {
 		return
 	}
 	t.mu.Lock()
@@ -282,7 +315,13 @@ func (t *Tracker) recheckWithRetry(f *Flow) error {
 	var err error
 	for attempt := range recheckAttempts {
 		if attempt > 0 {
-			time.Sleep(t.backoff << (attempt - 1))
+			wait := time.NewTimer(t.backoff << (attempt - 1))
+			select {
+			case <-wait.C:
+			case <-t.stop:
+				wait.Stop()
+				return err
+			}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), recheckTimeout)
 		err = f.recheck(ctx)

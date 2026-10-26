@@ -20,7 +20,10 @@ type PortClaims interface {
 	Lookup(ctx context.Context, port int) (endpointID string, ok bool)
 }
 
-const claimOpTimeout = 2 * time.Second
+const (
+	claimOpTimeout    = 2 * time.Second
+	streamOpenTimeout = 15 * time.Second
+)
 
 type TCPOptions struct {
 	Claims   PortClaims
@@ -163,26 +166,19 @@ func (t *TCP) handle(client net.Conn, endpointID string) {
 	if !ok {
 		return
 	}
-	stream, err := agent.OpenStream(context.Background(), endpointID, store.KindTCP, withClientIP(nil, peerIP(client.RemoteAddr())))
+	openCtx, cancelOpen := context.WithTimeout(context.Background(), streamOpenTimeout)
+	stream, err := agent.OpenStream(openCtx, endpointID, store.KindTCP, withClientIP(nil, peerIP(client.RemoteAddr())))
 	if err != nil {
+		cancelOpen()
 		t.log.Warn("tcp open stream failed", "endpoint_id", endpointID, "err", err)
 		return
 	}
-	defer stream.Close()
+	orgID := endpointOrgID(openCtx, t.data, endpointID)
+	cancelOpen()
+	metered := meterStream(stream, t.conns, t.meter, orgID, store.KindTCP)
+	defer metered.Close()
 
-	up, down := tunnel.Splice(client, stream)
-	t.meterUsage(endpointID, up, down)
-}
-
-func (t *TCP) meterUsage(endpointID string, up, down int64) {
-	if t.data != nil {
-		if ep, err := t.data.GetEndpoint(context.Background(), endpointID); err == nil && ep.OrgID != "" {
-			t.conns.AddUsage(ep.OrgID, up+down)
-		}
-	}
-	if t.meter != nil {
-		t.meter.AddBytes(store.KindTCP, up, down)
-	}
+	tunnel.Splice(client, metered)
 }
 
 func (t *TCP) ListenCluster() error {

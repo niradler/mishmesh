@@ -5,8 +5,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
@@ -536,10 +539,6 @@ func (s *Store) beginNetworkWrite(ctx context.Context) (*sql.Tx, error) {
 	if err != nil {
 		return nil, wrap("begin network write", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE orgs SET name = name WHERE id = (SELECT id FROM orgs ORDER BY id LIMIT 1)`); err != nil {
-		tx.Rollback()
-		return nil, wrap("lock network write", err)
-	}
 	return tx, nil
 }
 
@@ -564,11 +563,13 @@ func endpointPolicies(ctx context.Context, tx *sql.Tx) ([]store.EndpointPolicy, 
 	return out, wrap("read endpoint references", rows.Err())
 }
 
-const cloudflareCols = `org_id, name, account_id, tunnel_id, tunnel_token_enc, api_token_enc, access_app_id, origin, connector, metrics_addr, prune, updated_at`
-
 func uniqueErr(op string, err error) error {
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
-		return store.ErrConflict
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() {
+		case sqlite3.SQLITE_CONSTRAINT_UNIQUE, sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY:
+			return store.ErrConflict
+		}
 	}
 	return wrap(op, err)
 }

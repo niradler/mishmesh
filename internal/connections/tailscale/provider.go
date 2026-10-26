@@ -26,6 +26,7 @@ type Options struct {
 type provider struct {
 	options Options
 	locks   targetLocks
+	claims  claimsCache
 }
 type configuration struct {
 	Level       string   `json:"level"`
@@ -128,11 +129,11 @@ func (p *provider) Detect(ctx context.Context, raw json.RawMessage) (json.RawMes
 	defer cancel()
 	local := p.options.NewLocalAPI(socket)
 	if local == nil {
-		return nil, errors.New("Tailscale LocalAPI unavailable")
+		return nil, errors.New("tailscale LocalAPI unavailable")
 	}
 	status, err := local.StatusWithoutPeers(ctx)
 	if err != nil || status == nil || status.CurrentTailnet == nil {
-		return nil, errors.New("Tailscale LocalAPI unavailable")
+		return nil, errors.New("tailscale LocalAPI unavailable")
 	}
 	return json.Marshal(map[string]any{"socket": socket, "tailnet": status.CurrentTailnet.Name, "version": status.Version, "tagged": status.Self != nil && status.Self.IsTagged()})
 }
@@ -143,16 +144,17 @@ func (p *provider) Open(input connections.Config, deps connections.Deps) (connec
 		return nil, err
 	}
 	if deps.Data == nil {
-		return nil, errors.New("Tailscale endpoint source is required")
+		return nil, errors.New("tailscale endpoint source is required")
 	}
 	origin, err := url.Parse(deps.Origin)
 	if err != nil || origin.Scheme != "http" && origin.Scheme != "https" || origin.Host == "" || origin.User != nil || origin.Path != "" && origin.Path != "/" || origin.RawQuery != "" || origin.Fragment != "" || origin.Opaque != "" {
-		return nil, errors.New("Tailscale ingress must be an HTTP origin")
+		return nil, errors.New("tailscale ingress must be an HTTP origin")
 	}
 	local := p.options.NewLocalAPI(cfg.Socket)
 	if local == nil {
-		return nil, errors.New("Tailscale LocalAPI is required")
+		return nil, errors.New("tailscale LocalAPI is required")
 	}
+	p.claims.invalidate()
 	i := &instance{provider: p, cfg: cfg, record: input.Record, deps: deps, local: local, api: newAPI(p.options.APIBaseURL, p.options.HTTPClient, input.Secrets["oauth_client_id"], input.Secrets["oauth_client_secret"]), origin: deps.Origin}
 	if _, err := i.loadState(input.Record.State, ""); err != nil {
 		return nil, err
@@ -230,7 +232,7 @@ func (i *instance) Sync(ctx context.Context) (connections.Status, error) {
 	status := connections.Status{Level: i.cfg.Level, Health: "degraded", LastSync: time.Now(), Hostnames: []connections.HostStatus{}}
 	var err error
 	if closed {
-		err = errors.New("Tailscale connection is closed")
+		err = errors.New("tailscale connection is closed")
 	} else {
 		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()

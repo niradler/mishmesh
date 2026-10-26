@@ -29,7 +29,7 @@ type decryptChainSpec struct {
 	rogueIssue bool
 }
 
-func mustKey(t *testing.T) *ecdsa.PrivateKey {
+func mustKey(t testing.TB) *ecdsa.PrivateKey {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -38,7 +38,7 @@ func mustKey(t *testing.T) *ecdsa.PrivateKey {
 	return k
 }
 
-func mustCert(t *testing.T, tmpl, parent *x509.Certificate, pub *ecdsa.PublicKey, signer *ecdsa.PrivateKey) *x509.Certificate {
+func mustCert(t testing.TB, tmpl, parent *x509.Certificate, pub *ecdsa.PublicKey, signer *ecdsa.PrivateKey) *x509.Certificate {
 	t.Helper()
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, signer)
 	if err != nil {
@@ -51,7 +51,7 @@ func mustCert(t *testing.T, tmpl, parent *x509.Certificate, pub *ecdsa.PublicKey
 	return c
 }
 
-func decryptCertResponse(t *testing.T, now time.Time, spec decryptChainSpec) tunnel.CertResponse {
+func decryptCertResponse(t testing.TB, now time.Time, spec decryptChainSpec) tunnel.CertResponse {
 	t.Helper()
 	rootKey := mustKey(t)
 	rootTmpl := &x509.Certificate{

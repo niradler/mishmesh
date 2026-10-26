@@ -51,6 +51,15 @@ type decisionKey struct {
 	exit      string
 }
 
+type scopeKey struct {
+	host      string
+	port      int
+	tls       bool
+	decrypted bool
+	auth      [sha256.Size]byte
+	exit      string
+}
+
 type injection struct {
 	header string
 	value  string
@@ -82,32 +91,31 @@ type sessionBinding struct {
 type remoteDecider struct {
 	now func() time.Time
 
-	mu         sync.Mutex
-	gen        uint64
-	epoch      uint64
-	ctrl       *tunnel.Control
-	seal       *credseal.Key
-	binding    sessionBinding
-	scope      tunnel.DecisionScope
-	scopeKnown bool
-	nextID     uint64
-	pending    map[uint64]chan tunnel.DecisionAnswer
-	certs      map[uint64]chan tunnel.CertResponse
-	cache      map[decisionKey]cachedDecision
-	onFlush    func()
+	mu      sync.Mutex
+	gen     uint64
+	epoch   uint64
+	ctrl    *tunnel.Control
+	seal    *credseal.Key
+	binding sessionBinding
+	nextID  uint64
+	pending rpcTable[tunnel.DecisionAnswer]
+	certs   rpcTable[tunnel.CertResponse]
+	cache   map[decisionKey]cachedDecision
+	scopes  map[scopeKey]tunnel.DecisionScope
+	onFlush func()
 }
 
 func newRemoteDecider(now func() time.Time) *remoteDecider {
 	return &remoteDecider{
-		now: now, pending: map[uint64]chan tunnel.DecisionAnswer{},
-		certs: map[uint64]chan tunnel.CertResponse{}, cache: map[decisionKey]cachedDecision{},
+		now: now, pending: newRPCTable[tunnel.DecisionAnswer](), certs: newRPCTable[tunnel.CertResponse](),
+		cache: map[decisionKey]cachedDecision{}, scopes: map[scopeKey]tunnel.DecisionScope{},
 	}
 }
 
-func (d *remoteDecider) attach(ctrl *tunnel.Control) uint64 {
+func (d *remoteDecider) attach(ctrl *tunnel.Control) (uint64, error) {
 	seal, err := credseal.NewKey()
 	if err != nil {
-		seal = nil
+		return 0, fmt.Errorf("generate session seal key: %w", err)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -116,7 +124,7 @@ func (d *remoteDecider) attach(ctrl *tunnel.Control) uint64 {
 	d.ctrl = ctrl
 	d.seal = seal
 	d.binding = sessionBinding{}
-	return d.gen
+	return d.gen, nil
 }
 
 func (d *remoteDecider) bind(gen uint64, orgID, agentID string) {
@@ -144,7 +152,7 @@ func (d *remoteDecider) flush() {
 	d.mu.Lock()
 	d.epoch++
 	clear(d.cache)
-	d.scopeKnown = false
+	clear(d.scopes)
 	hook := d.onFlush
 	d.mu.Unlock()
 	if hook != nil {
@@ -155,43 +163,17 @@ func (d *remoteDecider) flush() {
 func (d *remoteDecider) resetLocked() {
 	d.epoch++
 	clear(d.cache)
-	d.scopeKnown = false
-	for id, ch := range d.pending {
-		close(ch)
-		delete(d.pending, id)
-	}
-	for id, ch := range d.certs {
-		close(ch)
-		delete(d.certs, id)
-	}
+	clear(d.scopes)
+	d.pending.closeAll()
+	d.certs.closeAll()
 }
 
 func (d *remoteDecider) deliver(gen uint64, answer tunnel.DecisionAnswer) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.gen != gen {
-		return
-	}
-	ch, ok := d.pending[answer.ID]
-	if !ok {
-		return
-	}
-	delete(d.pending, answer.ID)
-	ch <- answer
+	rpcDeliver(d, gen, &d.pending, answer.ID, answer)
 }
 
 func (d *remoteDecider) deliverCert(gen uint64, resp tunnel.CertResponse) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.gen != gen {
-		return
-	}
-	ch, ok := d.certs[resp.ID]
-	if !ok {
-		return
-	}
-	delete(d.certs, resp.ID)
-	ch <- resp
+	rpcDeliver(d, gen, &d.certs, resp.ID, resp)
 }
 
 func (d *remoteDecider) requestCert(ctx context.Context, gen uint64, csr []byte) (tunnel.CertResponse, error) {
@@ -206,33 +188,14 @@ func (d *remoteDecider) requestCert(ctx context.Context, gen uint64, csr []byte)
 	}
 	d.nextID++
 	id, ctrl := d.nextID, d.ctrl
-	ch := make(chan tunnel.CertResponse, 1)
-	d.certs[id] = ch
+	ch := d.certs.register(id)
 	d.mu.Unlock()
 
-	forget := func() {
-		d.mu.Lock()
-		if d.gen == gen {
-			delete(d.certs, id)
-		}
-		d.mu.Unlock()
-	}
 	if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgCertRequest, CertRequest: &tunnel.CertRequest{ID: id, CSR: csr}}); err != nil {
-		forget()
+		rpcForget(d, gen, &d.certs, id)
 		return tunnel.CertResponse{}, fmt.Errorf("send cert request: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, decisionTimeout)
-	defer cancel()
-	select {
-	case resp, ok := <-ch:
-		if !ok {
-			return tunnel.CertResponse{}, errDecisionLost
-		}
-		return resp, nil
-	case <-ctx.Done():
-		forget()
-		return tunnel.CertResponse{}, fmt.Errorf("cert request: %w", ctx.Err())
-	}
+	return rpcAwait(ctx, d, gen, &d.certs, id, ch, "cert request")
 }
 
 func (d *remoteDecider) check(ctx context.Context, connect, kind string) error {
@@ -253,7 +216,7 @@ func (d *remoteDecider) check(ctx context.Context, connect, kind string) error {
 
 func (d *remoteDecider) checkRequest(ctx context.Context, req egressRequest) (*injection, error) {
 	d.mu.Lock()
-	if c, ok := d.lookupLocked(d.requestKeyLocked(req, d.scope, d.scopeKnown)); ok {
+	if c, ok := d.lookupLocked(d.requestKeyLocked(req)); ok {
 		d.mu.Unlock()
 		return c.inject, verdict(c.allowed, c.reason)
 	}
@@ -302,26 +265,18 @@ func (d *remoteDecider) ask(ctx context.Context, query tunnel.DecisionQuery, sea
 	d.nextID++
 	query.ID = d.nextID
 	gen, epoch, ctrl := d.gen, d.epoch, d.ctrl
-	ch := make(chan tunnel.DecisionAnswer, 1)
-	d.pending[query.ID] = ch
+	ch := d.pending.register(query.ID)
 	d.mu.Unlock()
 
 	if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgDecisionRequest, Decision: &query}); err != nil {
-		d.forget(gen, query.ID)
+		rpcForget(d, gen, &d.pending, query.ID)
 		return tunnel.DecisionAnswer{}, 0, 0, fmt.Errorf("send decision request: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, decisionTimeout)
-	defer cancel()
-	select {
-	case answer, ok := <-ch:
-		if !ok {
-			return tunnel.DecisionAnswer{}, 0, 0, errDecisionLost
-		}
-		return answer, gen, epoch, nil
-	case <-ctx.Done():
-		d.forget(gen, query.ID)
-		return tunnel.DecisionAnswer{}, 0, 0, fmt.Errorf("decision request: %w", ctx.Err())
+	answer, err := rpcAwait(ctx, d, gen, &d.pending, query.ID, ch, "decision request")
+	if err != nil {
+		return tunnel.DecisionAnswer{}, 0, 0, err
 	}
+	return answer, gen, epoch, nil
 }
 
 func (d *remoteDecider) open(gen uint64, cred *tunnel.SealedCredential) (*injection, error) {
@@ -348,14 +303,6 @@ func (d *remoteDecider) open(gen uint64, cred *tunnel.SealedCredential) (*inject
 	return inject, nil
 }
 
-func (d *remoteDecider) forget(gen, id uint64) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.gen == gen {
-		delete(d.pending, id)
-	}
-}
-
 func (d *remoteDecider) lookupLocked(key decisionKey) (cachedDecision, bool) {
 	c, ok := d.cache[key]
 	if !ok {
@@ -368,12 +315,26 @@ func (d *remoteDecider) lookupLocked(key decisionKey) (cachedDecision, bool) {
 	return c, true
 }
 
-func (d *remoteDecider) requestKeyLocked(req egressRequest, scope tunnel.DecisionScope, known bool) decisionKey {
-	key := decisionKey{
-		action: tunnel.DecisionActionEgressRequest,
-		host:   strings.ToLower(req.host), port: req.port,
+func scopeKeyOf(req egressRequest) scopeKey {
+	return scopeKey{
+		host: strings.ToLower(req.host), port: req.port,
 		tls: req.tls, decrypted: req.decrypted,
 		auth: sha256.Sum256([]byte(req.auth)), exit: req.exit,
+	}
+}
+
+func (d *remoteDecider) requestKeyLocked(req egressRequest) decisionKey {
+	sk := scopeKeyOf(req)
+	scope, known := d.scopes[sk]
+	return buildRequestKey(sk, req, scope, known)
+}
+
+func buildRequestKey(sk scopeKey, req egressRequest, scope tunnel.DecisionScope, known bool) decisionKey {
+	key := decisionKey{
+		action: tunnel.DecisionActionEgressRequest,
+		host:   sk.host, port: sk.port,
+		tls: sk.tls, decrypted: sk.decrypted,
+		auth: sk.auth, exit: sk.exit,
 	}
 	if !known || scope.Method {
 		key.method = req.method
@@ -389,11 +350,18 @@ func (d *remoteDecider) rememberRequest(gen, epoch uint64, req egressRequest, an
 	if answer.Scope != nil {
 		scope = *answer.Scope
 	}
+	sk := scopeKeyOf(req)
+	key := buildRequestKey(sk, req, scope, true)
 	d.mu.Lock()
 	if d.gen == gen && d.epoch == epoch {
-		d.scope, d.scopeKnown = scope, true
+		if _, known := d.scopes[sk]; !known && len(d.scopes) >= maxCachedDecisions {
+			for victim := range d.scopes {
+				delete(d.scopes, victim)
+				break
+			}
+		}
+		d.scopes[sk] = scope
 	}
-	key := d.requestKeyLocked(req, scope, true)
 	d.mu.Unlock()
 	d.remember(gen, epoch, key, answer, inject)
 }
@@ -421,9 +389,18 @@ func (d *remoteDecider) pruneLocked() {
 			delete(d.cache, k)
 		}
 	}
-	if len(d.cache) >= maxCachedDecisions {
-		clear(d.cache)
+	if len(d.cache) < maxCachedDecisions {
+		return
 	}
+	var oldest decisionKey
+	var oldestExpiry time.Time
+	first := true
+	for k, c := range d.cache {
+		if first || c.expires.Before(oldestExpiry) {
+			oldest, oldestExpiry, first = k, c.expires, false
+		}
+	}
+	delete(d.cache, oldest)
 }
 
 func validHeaderName(name string) bool {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 )
@@ -26,7 +25,7 @@ func (a *API) EnsureBootstrap(ctx context.Context, rawToken string) (string, err
 		return "", err
 	}
 	if _, err := a.data.GetAgent(ctx, bootstrapAgentID); errors.Is(err, store.ErrNotFound) {
-		agent := &store.Agent{ID: bootstrapAgentID, OrgID: org.ID, Name: "bootstrap", Status: store.AgentActive, CreatedAt: time.Now()}
+		agent := &store.Agent{ID: bootstrapAgentID, OrgID: org.ID, Name: "bootstrap", Status: store.AgentActive, CreatedAt: a.now()}
 		if err := a.data.CreateAgent(ctx, agent); err != nil {
 			existing, lookupErr := a.data.GetAgent(ctx, bootstrapAgentID)
 			if lookupErr != nil || existing.OrgID != org.ID || existing.Status != store.AgentActive {
@@ -36,7 +35,7 @@ func (a *API) EnsureBootstrap(ctx context.Context, rawToken string) (string, err
 	} else if err != nil {
 		return "", err
 	}
-	tok := &store.Token{ID: store.NewID("tok"), OrgID: org.ID, AgentID: bootstrapAgentID, Hash: hash, CreatedAt: time.Now()}
+	tok := &store.Token{ID: store.NewID("tok"), OrgID: org.ID, AgentID: bootstrapAgentID, Hash: hash, CreatedAt: a.now()}
 	if err := a.data.CreateToken(ctx, tok); err != nil {
 		existing, lookupErr := a.data.GetTokenByHash(ctx, hash)
 		if lookupErr != nil || existing.AgentID != bootstrapAgentID || existing.OrgID != org.ID {
@@ -64,7 +63,7 @@ func (a *API) ensureOrg(ctx context.Context, orgID string) (*store.Org, error) {
 	if orgID != defaultOrgID {
 		return nil, store.ErrNotFound
 	}
-	org = &store.Org{ID: defaultOrgID, Name: "default", CreatedAt: time.Now()}
+	org = &store.Org{ID: defaultOrgID, Name: "default", CreatedAt: a.now()}
 	if err := a.data.CreateOrg(ctx, org); err != nil {
 		if existing, getErr := a.data.GetOrg(ctx, defaultOrgID); getErr == nil {
 			return existing, nil
@@ -76,7 +75,7 @@ func (a *API) ensureOrg(ctx context.Context, orgID string) (*store.Org, error) {
 }
 
 func (a *API) createOrg(ctx context.Context, name string) (*store.Org, error) {
-	org := &store.Org{ID: store.NewID("org"), Name: name, CreatedAt: time.Now()}
+	org := &store.Org{ID: store.NewID("org"), Name: name, CreatedAt: a.now()}
 	if err := a.data.CreateOrg(ctx, org); err != nil {
 		return nil, err
 	}
@@ -100,7 +99,7 @@ func (a *API) createAgent(ctx context.Context, orgID, name string) (*store.Agent
 		OrgID:     org.ID,
 		Name:      name,
 		Status:    store.AgentActive,
-		CreatedAt: time.Now(),
+		CreatedAt: a.now(),
 	}
 	if err := a.data.CreateAgent(ctx, agent); err != nil {
 		return nil, "", err
@@ -122,7 +121,7 @@ func (a *API) issueToken(ctx context.Context, agent *store.Agent) (string, error
 		OrgID:     agent.OrgID,
 		AgentID:   agent.ID,
 		Hash:      hash,
-		CreatedAt: time.Now(),
+		CreatedAt: a.now(),
 	}
 	if err := a.data.CreateToken(ctx, tok); err != nil {
 		return "", err
@@ -147,11 +146,7 @@ func (a *API) rotateToken(ctx context.Context, agent *store.Agent) (string, erro
 			return "", fmt.Errorf("revoke previous token: %w", err)
 		}
 	}
-	if a.conns != nil {
-		if conn, ok := a.conns.GetAgent(agent.ID); ok {
-			_ = conn.Close()
-		}
-	}
+	a.closeAgentConn(agent.ID)
 	return raw, nil
 }
 
@@ -167,11 +162,7 @@ func (a *API) revokeAgent(ctx context.Context, agentID string) error {
 	if err := a.data.RevokeTokensByAgent(ctx, agentID); err != nil {
 		return err
 	}
-	if a.conns != nil {
-		if conn, ok := a.conns.GetAgent(agentID); ok {
-			_ = conn.Close()
-		}
-	}
+	a.closeAgentConn(agentID)
 	return nil
 }
 
@@ -199,19 +190,37 @@ func (a *API) updateAgent(ctx context.Context, agentID, name, status string) (*s
 	if err != nil {
 		return nil, err
 	}
+	switch status {
+	case "", store.AgentActive, store.AgentDisabled, store.AgentRevoked:
+	default:
+		return nil, fmt.Errorf("invalid status %q", status)
+	}
 	if name != "" {
 		agent.Name = name
 	}
-	if status != "" {
-		switch status {
-		case store.AgentActive, store.AgentDisabled, store.AgentRevoked:
-			agent.Status = status
-		default:
-			return nil, fmt.Errorf("invalid status %q", status)
-		}
+	if status != "" && status != store.AgentRevoked {
+		agent.Status = status
 	}
 	if err := a.data.UpdateAgent(ctx, agent); err != nil {
 		return nil, err
 	}
+	switch status {
+	case store.AgentRevoked:
+		if err := a.revokeAgent(ctx, agentID); err != nil {
+			return nil, err
+		}
+		agent.Status = store.AgentRevoked
+	case store.AgentDisabled:
+		a.closeAgentConn(agentID)
+	}
 	return agent, nil
+}
+
+func (a *API) closeAgentConn(agentID string) {
+	if a.conns == nil {
+		return
+	}
+	if conn, ok := a.conns.GetAgent(agentID); ok {
+		_ = conn.Close()
+	}
 }

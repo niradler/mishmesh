@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -27,43 +26,6 @@ type connectionInput struct {
 type connectionDetectInput struct {
 	Type  string          `json:"type"`
 	Input json.RawMessage `json:"input"`
-}
-
-func decodeConnectionJSON(w http.ResponseWriter, r *http.Request, value any) bool {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return false
-	}
-	object := json.NewDecoder(bytes.NewReader(raw))
-	token, err := object.Token()
-	if err != nil || token != json.Delim('{') {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return false
-	}
-	keys := map[string]bool{}
-	for object.More() {
-		token, err := object.Token()
-		key, ok := token.(string)
-		var field json.RawMessage
-		if err != nil || !ok || keys[key] || object.Decode(&field) != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
-			return false
-		}
-		keys[key] = true
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return false
-	}
-	var extra any
-	if decoder.Decode(&extra) != io.EOF {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return false
-	}
-	return true
 }
 
 func (a *API) connectionTypesHandler(w http.ResponseWriter, _ *http.Request) {
@@ -94,15 +56,7 @@ func (a *API) connectionProvider(w http.ResponseWriter, kind string) (connection
 }
 
 func (a *API) scopedConnection(w http.ResponseWriter, r *http.Request) (*store.Connection, bool) {
-	record, err := a.data.GetConnection(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return nil, false
-	}
-	if record.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
-		return nil, false
-	}
-	return record, true
+	return loadScoped(a, w, r, r.PathValue("id"), a.data.GetConnection, func(record *store.Connection) string { return record.OrgID })
 }
 
 func connectionFields(descriptor connections.Descriptor, secrets bool) []typedfields.Field {
@@ -115,10 +69,31 @@ func connectionFields(descriptor connections.Descriptor, secrets bool) []typedfi
 	return fields
 }
 
-func (a *API) connectionView(record *store.Connection, status connections.Status) (map[string]any, error) {
+type connectionView struct {
+	ID        string
+	Name      json.RawMessage
+	Type      string
+	Config    json.RawMessage
+	Status    connections.Status
+	Action    string
+	HasSecret map[string]bool
+}
+
+func (v connectionView) MarshalJSON() ([]byte, error) {
+	out := map[string]any{"id": v.ID, "name": v.Name, "type": v.Type, "config": v.Config, "status": v.Status}
+	if v.Action != "" {
+		out["action"] = v.Action
+	}
+	for key, present := range v.HasSecret {
+		out["has_"+key] = present
+	}
+	return json.Marshal(out)
+}
+
+func (a *API) buildConnectionView(record *store.Connection, status connections.Status) (connectionView, error) {
 	cfg, err := connections.OpenConfig(*record, a.secretBox, a.hostCommands)
 	if err != nil {
-		return nil, err
+		return connectionView{}, err
 	}
 	descriptor := connections.Descriptor{}
 	if a.connectionRegistry != nil {
@@ -140,25 +115,29 @@ func (a *API) connectionView(record *store.Connection, status connections.Status
 	}
 	safe, err := connections.SanitizeJSON(cfg, descriptor, record.Config)
 	if err != nil {
-		return nil, err
+		return connectionView{}, err
 	}
 	if descriptor.Type == "" {
 		safe = json.RawMessage(`{}`)
 	}
 	rawName, err := json.Marshal(record.Name)
 	if err != nil {
-		return nil, err
+		return connectionView{}, err
 	}
 	safeName, err := connections.SanitizeJSON(cfg, descriptor, rawName)
 	if err != nil {
-		return nil, err
+		return connectionView{}, err
 	}
-	view := map[string]any{"id": record.ID, "name": safeName, "type": record.Type, "config": safe, "status": connections.SanitizeStatus(cfg, descriptor, status)}
+	view := connectionView{
+		ID: record.ID, Name: safeName, Type: record.Type, Config: safe,
+		Status:    connections.SanitizeStatus(cfg, descriptor, status),
+		HasSecret: map[string]bool{},
+	}
 	if status.LastError != "" {
-		view["action"] = "Retry sync, or save and restart the server after correcting the provider configuration."
+		view.Action = "Retry sync, or save and restart the server after correcting the provider configuration."
 	}
 	for _, field := range connectionFields(descriptor, true) {
-		view["has_"+field.Key] = cfg.Secrets[field.Key] != ""
+		view.HasSecret[field.Key] = cfg.Secrets[field.Key] != ""
 	}
 	return view, nil
 }
@@ -178,7 +157,7 @@ func (a *API) connectionRecordStatus(record *store.Connection) connections.Statu
 }
 
 func (a *API) writeConnection(w http.ResponseWriter, record *store.Connection, status connections.Status, code int) {
-	view, err := a.connectionView(record, status)
+	view, err := a.buildConnectionView(record, status)
 	if a.handleErr(w, err) {
 		return
 	}
@@ -190,9 +169,9 @@ func (a *API) listConnectionsHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
-	views := make([]map[string]any, 0, len(records))
+	views := make([]connectionView, 0, len(records))
 	for _, record := range records {
-		view, err := a.connectionView(record, a.connectionRecordStatus(record))
+		view, err := a.buildConnectionView(record, a.connectionRecordStatus(record))
 		if a.handleErr(w, err) {
 			return
 		}
@@ -246,7 +225,7 @@ func (a *API) saveConnection(w http.ResponseWriter, r *http.Request, existing *s
 		return
 	}
 	var input connectionInput
-	if !decodeConnectionJSON(w, r, &input) {
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	record := store.Connection{ID: store.NewID("conn"), OrgID: a.orgScope(r), Type: input.Type, CreatedAt: a.now()}
@@ -358,12 +337,12 @@ func (a *API) saveConnection(w http.ResponseWriter, r *http.Request, existing *s
 			status = connections.WithHostDiagnostic(status, connections.HostSavedSyncFailed)
 		}
 	}
-	view, err := a.connectionView(&record, status)
+	view, err := a.buildConnectionView(&record, status)
 	if a.handleErr(w, err) {
 		return
 	}
 	if status.LastError != "" {
-		view["action"] = "Connection saved. Retry sync, or save and restart the server."
+		view.Action = "Connection saved. Retry sync, or save and restart the server."
 	}
 	writeJSON(w, code, view)
 }
@@ -466,7 +445,7 @@ func (a *API) syncConnectionHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) detectConnectionHandler(w http.ResponseWriter, r *http.Request) {
 	var input connectionDetectInput
-	if !decodeConnectionJSON(w, r, &input) {
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	provider, descriptor, ok := a.connectionProvider(w, input.Type)

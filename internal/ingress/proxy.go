@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/clientip"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
@@ -73,10 +74,10 @@ func (u *upstream) setAgentFailure(reason string) {
 	u.mu.Unlock()
 }
 
-func (u *upstream) snapshot() (openErr error, agentFailed bool, reason string, exceeded bool) {
+func (u *upstream) snapshot() (agentFailed bool, reason string, exceeded bool, openErr error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.openErr, u.agentFailed, u.agentReason, u.metered != nil && u.metered.exceeded.Load()
+	return u.agentFailed, u.agentReason, u.metered != nil && u.metered.exceeded.Load(), u.openErr
 }
 
 type upstreamConn struct {
@@ -155,22 +156,25 @@ func upstreamOf(r *http.Request) *upstream {
 
 func (i *Ingress) rewriteRequest(pr *httputil.ProxyRequest) {
 	u := upstreamOf(pr.In)
-	out := pr.Out
-	out.URL.Scheme = "http"
-	out.URL.Host = "tunnel.invalid"
-	applyOutboundPath(out, u.ep, u.outPath)
-	if ep := u.ep; ep.Policy != nil && ep.Policy.HostHeader != "" {
+	pr.Out.URL.Scheme = "http"
+	pr.Out.URL.Host = "tunnel.invalid"
+	rewriteOutbound(pr.In, pr.Out, u.ep, u.outPath, u.trusted)
+}
+
+func rewriteOutbound(in, out *http.Request, ep *store.Endpoint, outPath string, trusted []*net.IPNet) {
+	applyOutboundPath(out, ep, outPath)
+	if ep.Policy != nil && ep.Policy.HostHeader != "" {
 		out.Host = ep.Policy.HostHeader
 	}
-	sanitizeUpstreamRequest(out.Header, u.ep)
-	setForwardedHeaders(pr.In, out, u.trusted)
-	stripGateCredentials(out.Header, u.ep)
-	applyRequestPolicy(out, u.ep)
-	applyUpstreamCredential(out.Header, pr.In, u.ep)
+	sanitizeUpstreamRequest(out.Header, ep)
+	setForwardedHeaders(in, out, trusted)
+	stripGateCredentials(out.Header, ep)
+	applyRequestPolicy(out, ep)
+	applyUpstreamCredential(out.Header, in, ep)
 }
 
 func setForwardedHeaders(in, out *http.Request, trusted []*net.IPNet) {
-	peerTrusted := peerInNets(in.RemoteAddr, trusted)
+	peerTrusted := clientip.TrustedPeer(in.RemoteAddr, trusted)
 	clientHost := in.RemoteAddr
 	if h, _, err := net.SplitHostPort(in.RemoteAddr); err == nil {
 		clientHost = h
@@ -228,26 +232,6 @@ func ParseTrustedProxies(csv string) ([]*net.IPNet, error) {
 	return nets, nil
 }
 
-func peerInNets(remoteAddr string, nets []*net.IPNet) bool {
-	if len(nets) == 0 {
-		return false
-	}
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	for _, n := range nets {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
 func (i *Ingress) modifyResponse(resp *http.Response) error {
 	u := upstreamOf(resp.Request)
 	if u.clientHTTP1 && len(resp.Trailer) > 0 {
@@ -281,7 +265,7 @@ func (i *Ingress) proxyError(w http.ResponseWriter, r *http.Request, err error) 
 		case <-r.Context().Done():
 		}
 	}
-	openErr, agentFailed, reason, exceeded := u.snapshot()
+	agentFailed, reason, exceeded, openErr := u.snapshot()
 
 	var code int
 	var msg string

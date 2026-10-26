@@ -26,3 +26,23 @@ func TestEgressCredentials(t *testing.T) {
 func TestEgressDecrypt(t *testing.T) {
 	storetest.RunEgressDecrypt(t, func(t *testing.T) store.DataStore { return newStore(t) })
 }
+
+func TestMissingRowContract(t *testing.T) {
+	storetest.RunMissingRows(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}
+
+func TestNetworkContract(t *testing.T) {
+	storetest.RunNetwork(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}
+
+func TestAccessLogLargeBatch(t *testing.T) {
+	storetest.RunAccessLogLargeBatch(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}
+
+func TestAccessLogPruneMakesProgressUnderDeadline(t *testing.T) {
+	storetest.RunAccessLogPruneMakesProgressUnderDeadline(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}
+
+func BenchmarkAppendAccessEvents(b *testing.B) {
+	storetest.BenchAppendAccessEvents(b, func(tb testing.TB) store.DataStore { return newStore(tb) })
+}

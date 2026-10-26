@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -26,9 +27,23 @@ func (a *API) applyDefaultQuota(ctx context.Context, orgID string) {
 	_ = a.data.SetQuota(ctx, &q)
 }
 
-func (a *API) enforceAgentQuota(ctx context.Context, orgID string) error {
+func (a *API) orgQuota(ctx context.Context, orgID string) (*store.Quota, error) {
 	q, err := a.data.GetQuota(ctx, orgID)
-	if err != nil || q.MaxAgents <= 0 {
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load quota: %w", err)
+	}
+	return q, nil
+}
+
+func (a *API) enforceAgentQuota(ctx context.Context, orgID string) error {
+	q, err := a.orgQuota(ctx, orgID)
+	if err != nil {
+		return err
+	}
+	if q == nil || q.MaxAgents <= 0 {
 		return nil
 	}
 	n, err := a.data.CountAgents(ctx, orgID)
@@ -55,13 +70,23 @@ type quotaDTO struct {
 func (a *API) getQuotaHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := a.orgScope(r)
 	var dto quotaDTO
-	if q, err := a.data.GetQuota(r.Context(), orgID); err == nil {
+	q, err := a.orgQuota(r.Context(), orgID)
+	if a.handleErr(w, err) {
+		return
+	}
+	if q != nil {
 		dto.MaxAgents = q.MaxAgents
 		dto.MaxEndpoints = q.MaxEndpoints
 		dto.MaxBandwidthBytes = q.MaxBandwidthBytes
 	}
-	dto.Usage.Agents, _ = a.data.CountAgents(r.Context(), orgID)
-	dto.Usage.Endpoints, _ = a.data.CountEndpoints(r.Context(), orgID)
+	dto.Usage.Agents, err = a.data.CountAgents(r.Context(), orgID)
+	if a.handleErr(w, err) {
+		return
+	}
+	dto.Usage.Endpoints, err = a.data.CountEndpoints(r.Context(), orgID)
+	if a.handleErr(w, err) {
+		return
+	}
 	if a.conns != nil {
 		dto.Usage.BandwidthBytes = a.conns.Usage(orgID)
 	}
@@ -84,4 +109,23 @@ func (a *API) putQuotaHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "quota.update", orgID, "")
 	a.getQuotaHandler(w, r)
+}
+
+func (a *API) checkEndpointQuota(w http.ResponseWriter, r *http.Request, orgID string) bool {
+	q, err := a.orgQuota(r.Context(), orgID)
+	if a.handleErr(w, err) {
+		return false
+	}
+	if q == nil || q.MaxEndpoints <= 0 {
+		return true
+	}
+	n, err := a.data.CountEndpoints(r.Context(), orgID)
+	if a.handleErr(w, err) {
+		return false
+	}
+	if n >= q.MaxEndpoints {
+		writeError(w, http.StatusConflict, "endpoint quota exceeded")
+		return false
+	}
+	return true
 }

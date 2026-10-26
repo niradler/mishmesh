@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -54,6 +55,8 @@ func New() *Metrics {
 		}, []string{"code"}),
 	}
 	reg.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.agentsConnected,
 		m.streamsOpened,
 		m.streamsActive,
