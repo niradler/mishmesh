@@ -237,6 +237,7 @@ func serve() error {
 			Secrets:                 vault,
 		})
 		cp.SetIngressInvalidator(ing.InvalidateCaches)
+		gw.SetEndpointInvalidator(ing.InvalidateCaches)
 		network.invalidateIngress = ing.InvalidateCaches
 		ingressServers, err := env.ingressServers(ing)
 		if err != nil {

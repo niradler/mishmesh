@@ -70,6 +70,10 @@ func (g *Gateway) registerHostBased(ctx context.Context, agent *store.Agent, req
 	if sub != "" && domain != "" {
 		return tunnel.EndpointBinding{}, errors.New("subdomain and domain are mutually exclusive")
 	}
+	pol := decodePolicy(req.Policy, g.log)
+	if _, err := g.connectNameOwner(ctx, agent, connectName(pol)); err != nil {
+		return tunnel.EndpointBinding{}, err
+	}
 	if domain != "" {
 		return g.rebindDomain(ctx, agent, req, kind, domain)
 	}
@@ -94,7 +98,7 @@ func (g *Gateway) registerHostBased(ctx context.Context, agent *store.Agent, req
 			return tunnel.EndpointBinding{}, errors.New("internal error looking up subdomain")
 		}
 	}
-	ep, err := g.createEndpoint(ctx, agent, endpointSpec{kind: kind, lifecycle: lifecycle, subdomain: sub, policy: decodePolicy(req.Policy, g.log)}, nil)
+	ep, err := g.createEndpoint(ctx, agent, endpointSpec{kind: kind, lifecycle: lifecycle, subdomain: sub, policy: pol}, nil)
 	if err != nil {
 		if existing := g.ownSubdomainEndpoint(ctx, agent, sub, kind); existing != nil && !isQuotaError(err) {
 			return g.bindExisting(agent, req, existing), nil
@@ -141,6 +145,7 @@ func (g *Gateway) createEndpoint(ctx context.Context, agent *store.Agent, spec e
 		g.log.Warn("create endpoint failed", "agent_id", agent.ID, "kind", ep.Kind, "err", err)
 		return nil, errors.New("internal error creating endpoint")
 	}
+	g.notifyEndpointsChanged()
 	g.conns.BindEndpoint(ep.ID, agent.ID)
 	g.log.Info("endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "kind", ep.Kind, "url", g.publicURL(ep))
 	return ep, nil
@@ -250,7 +255,7 @@ func (g *Gateway) registerPrivate(ctx context.Context, agent *store.Agent, req t
 		if existing.Kind != kind || existing.Port != 0 {
 			return tunnel.EndpointBinding{}, fmt.Errorf("connect name %q is already registered as a public %s endpoint", name, existing.Kind)
 		}
-		existing.Policy = pol
+		existing.Policy = mergeAgentPolicy(existing.Policy, pol)
 		if err := g.data.UpdateEndpoint(ctx, existing); err != nil {
 			g.log.Warn("update private endpoint failed", "endpoint_id", existing.ID, "err", err)
 		}

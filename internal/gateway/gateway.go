@@ -102,9 +102,18 @@ type Gateway struct {
 	users              UserAuthenticator
 	certs              CertIssuer
 	unavailable        map[string]string
+	endpointsChanged   func()
 
 	liveMu sync.Mutex
 	live   map[*agentConn]struct{}
+}
+
+func (g *Gateway) SetEndpointInvalidator(invalidate func()) { g.endpointsChanged = invalidate }
+
+func (g *Gateway) notifyEndpointsChanged() {
+	if g.endpointsChanged != nil {
+		g.endpointsChanged()
+	}
 }
 
 func New(opts Options) *Gateway {
@@ -385,6 +394,7 @@ func (g *Gateway) cleanupEphemeral(ctx context.Context, agentID string) {
 		}
 		if ep.Lifecycle == store.LifecycleEphemeral {
 			_ = g.data.DeleteEndpoint(ctx, ep.ID)
+			g.notifyEndpointsChanged()
 		}
 	}
 }
@@ -599,4 +609,35 @@ func dropControlPlaneFields(p *store.EndpointPolicy) []string {
 		p.Identity.Credentials = nil
 	}
 	return dropped
+}
+
+func mergeAgentPolicy(stored, declared *store.EndpointPolicy) *store.EndpointPolicy {
+	if stored == nil {
+		return declared
+	}
+	if declared == nil {
+		declared = &store.EndpointPolicy{}
+	}
+	merged := *declared
+	mv, sv := reflect.ValueOf(&merged).Elem(), reflect.ValueOf(stored).Elem()
+	for i := 0; i < mv.NumField(); i++ {
+		if !agentSettablePolicyFields[mv.Type().Field(i).Name] {
+			mv.Field(i).Set(sv.Field(i))
+		}
+	}
+	merged.Identity = mergeAgentIdentity(stored.Identity, declared.Identity)
+	return &merged
+}
+
+func mergeAgentIdentity(stored, declared *store.EndpointIdentity) *store.EndpointIdentity {
+	if stored == nil {
+		return declared
+	}
+	merged := *stored
+	if declared != nil {
+		merged.Required = stored.Required || declared.Required
+		merged.AuthorizationHeader = declared.AuthorizationHeader
+		merged.BrowserLogin = declared.BrowserLogin
+	}
+	return &merged
 }
