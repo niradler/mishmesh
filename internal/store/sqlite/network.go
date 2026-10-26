@@ -536,10 +536,6 @@ func (s *Store) beginNetworkWrite(ctx context.Context) (*sql.Tx, error) {
 	if err != nil {
 		return nil, wrap("begin network write", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE orgs SET name = name WHERE id = (SELECT id FROM orgs ORDER BY id LIMIT 1)`); err != nil {
-		tx.Rollback()
-		return nil, wrap("lock network write", err)
-	}
 	return tx, nil
 }
 

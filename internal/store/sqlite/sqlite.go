@@ -28,6 +28,7 @@ func connectionDSN(dsn string) string {
 	return dsn + separator + strings.Join([]string{
 		"_pragma=busy_timeout(5000)",
 		"_pragma=foreign_keys(1)",
+		"_txlock=immediate",
 		"_pragma=synchronous(NORMAL)",
 	}, "&")
 }
