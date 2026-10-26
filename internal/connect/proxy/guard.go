@@ -164,14 +164,6 @@ func (g *Guard) ValidateTarget(target string) error {
 
 const maxResolvedAddrs = 8
 
-func (g *Guard) Resolve(ctx context.Context, target string) (string, error) {
-	addrs, err := g.ResolveAll(ctx, target)
-	if err != nil {
-		return "", err
-	}
-	return addrs[0], nil
-}
-
 func (g *Guard) ResolveAll(ctx context.Context, target string) ([]string, error) {
 	host, port, err := splitTarget(target)
 	if err != nil {

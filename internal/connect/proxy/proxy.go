@@ -33,8 +33,7 @@ type Connector struct {
 	log        *slog.Logger
 	guard      *Guard
 	counters   sync.Map
-	mu         sync.RWMutex
-	health     TargetHealth
+	health     atomic.Pointer[TargetHealth]
 	dialBudget time.Duration
 }
 
@@ -53,15 +52,14 @@ func newConn(data store.DataStore, log *slog.Logger, guard *Guard) *Connector {
 func (c *Connector) AgentID() string { return AgentID }
 
 func (c *Connector) SetTargetHealth(h TargetHealth) {
-	c.mu.Lock()
-	c.health = h
-	c.mu.Unlock()
+	c.health.Store(&h)
 }
 
 func (c *Connector) targetHealth() TargetHealth {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.health
+	if h := c.health.Load(); h != nil {
+		return *h
+	}
+	return nil
 }
 
 func (c *Connector) counter(endpointID string) *atomic.Uint64 {

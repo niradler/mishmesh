@@ -91,3 +91,8 @@ func TestAllowlistSkipsLookupForUnmatchableHost(t *testing.T) {
 		})
 	}
 }
+
+func (a *Allowlist) Allowed(target string) bool {
+	_, _, ok := a.Resolve(context.Background(), target)
+	return ok
+}

@@ -69,11 +69,6 @@ func isPortList(s string) bool {
 	return true
 }
 
-func (a *Allowlist) Allowed(target string) bool {
-	_, _, ok := a.Resolve(context.Background(), target)
-	return ok
-}
-
 func (a *Allowlist) Resolve(ctx context.Context, target string) (dialAddr, serverName string, ok bool) {
 	host, portStr, err := net.SplitHostPort(target)
 	if err != nil {
@@ -149,12 +144,8 @@ func (a *Allowlist) resolveIPs(ctx context.Context, host string) []net.IP {
 	return ips
 }
 
+var awsIPv6Metadata = net.ParseIP("fd00:ec2::254")
+
 func hardDenied(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-		return true
-	}
-	if ip.Equal(net.ParseIP("169.254.169.254")) || ip.Equal(net.ParseIP("fd00:ec2::254")) {
-		return true
-	}
-	return false
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.Equal(awsIPv6Metadata)
 }

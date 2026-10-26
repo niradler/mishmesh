@@ -100,9 +100,6 @@ func sessionOf(ctx context.Context) string {
 }
 
 func (b *Bridge) recheck(ctx context.Context, agent *store.Agent, init tunnel.StreamInit) flows.Recheck {
-	if b.deciders == nil {
-		return nil
-	}
 	p, hasPrincipal := identity.PrincipalFrom(ctx)
 	ref, kind := init.Meta[tunnel.MetaConnect], init.Kind
 	return func(ctx context.Context) error {
@@ -157,11 +154,7 @@ func (b *Bridge) decide(ctx context.Context, agent *store.Agent, ref, kind strin
 		return connectDecision{}, ErrMissingConnect
 	}
 	if b.deciders == nil {
-		ep, err := b.legacyAuthorize(ctx, agent, ref, kind)
-		if err != nil {
-			return connectDecision{}, err
-		}
-		return connectDecision{Decision: authz.Decision{Allowed: true, Reason: authz.ReasonAllow}, endpoint: ep}, nil
+		return connectDecision{}, fmt.Errorf("%w: no deciders configured", ErrUnavailable)
 	}
 	ep, err := b.lookup(ctx, agent, ref, kind)
 	if err != nil {
@@ -188,17 +181,6 @@ func (b *Bridge) lookup(ctx context.Context, agent *store.Agent, ref, kind strin
 	}
 	if ep.Kind != kind {
 		return nil, fmt.Errorf("%w: endpoint is %s, stream is %s", ErrKindMismatch, ep.Kind, kind)
-	}
-	return ep, nil
-}
-
-func (b *Bridge) legacyAuthorize(ctx context.Context, agent *store.Agent, ref, kind string) (*store.Endpoint, error) {
-	ep, err := b.lookup(ctx, agent, ref, kind)
-	if err != nil {
-		return nil, err
-	}
-	if ep.Policy == nil || !ep.Policy.Connect.Allows(agent) {
-		return nil, ErrNotAllowed
 	}
 	return ep, nil
 }
