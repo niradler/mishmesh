@@ -111,6 +111,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_endpoints_subdomain
   ON endpoints(subdomain) WHERE subdomain IS NOT NULL AND subdomain <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_endpoints_domain
   ON endpoints(domain) WHERE domain IS NOT NULL AND domain <> '';
+CREATE INDEX IF NOT EXISTS idx_endpoints_domain_normalized
+  ON endpoints(lower(rtrim(domain, '.'))) WHERE domain IS NOT NULL AND domain <> '';
 CREATE TABLE IF NOT EXISTS quotas (
   org_id              TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
   max_agents          INTEGER NOT NULL DEFAULT 0,
@@ -386,10 +388,18 @@ func (s *Store) GetEndpointBySubdomain(ctx context.Context, subdomain string) (*
 	return scanEndpoint(row.Scan)
 }
 
+const endpointByDomainQuery = `SELECT ` + endpointCols + ` FROM endpoints WHERE domain IS NOT NULL AND domain <> '' AND lower(rtrim(domain, '.')) = ? LIMIT 2`
+
 func (s *Store) GetEndpointByDomain(ctx context.Context, domain string) (*store.Endpoint, error) {
 	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
-	row := s.db.QueryRowContext(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE lower(rtrim(domain, '.')) = ? AND (SELECT COUNT(*) FROM endpoints WHERE lower(rtrim(domain, '.')) = ?) = 1`, domain, domain)
-	return scanEndpoint(row.Scan)
+	matches, err := s.queryEndpoints(ctx, endpointByDomainQuery, domain)
+	if err != nil {
+		return nil, err
+	}
+	if len(matches) != 1 {
+		return nil, store.ErrNotFound
+	}
+	return matches[0], nil
 }
 
 func (s *Store) ListEndpointsByAgent(ctx context.Context, agentID string) ([]*store.Endpoint, error) {
