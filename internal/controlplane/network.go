@@ -134,8 +134,17 @@ func (a *API) validateNetworkPolicy(ctx context.Context, orgID, endpointID, doma
 			return fmt.Errorf("service_id: %w", err)
 		}
 	}
+	if err := connections.NormalizeAccessPolicy(pol.AccessPolicy); err != nil {
+		return err
+	}
+	if pol.AccessPolicy != nil && len(pol.Access) == 0 {
+		return errors.New("access_policy needs at least one access connection")
+	}
 	seenConnections, seenHosts := map[string]bool{}, map[string]bool{}
 	for index, ref := range pol.Access {
+		if err := connections.NormalizeAccessPolicy(ref.Policy); err != nil {
+			return err
+		}
 		if a.connectionRegistry == nil {
 			return errors.New("access needs a registered connection provider")
 		}
@@ -167,6 +176,11 @@ func (a *API) validateNetworkPolicy(ctx context.Context, orgID, endpointID, doma
 				return errors.New("new or changed access needs a valid connection configuration")
 			}
 		}
+		if pol.EffectiveAccessPolicy(ref) != nil {
+			if err := validateAccessPolicySupport(provider, *record, a.secretBox, a.hostCommands); err != nil {
+				return err
+			}
+		}
 		for _, descriptor := range a.connectionRegistry.Descriptors() {
 			if descriptor.Type == record.Type && descriptor.Scope == "public" {
 				if _, status, message := a.authorizeDomainBinding(ctx, orgID, hostname); status != 0 {
@@ -176,6 +190,18 @@ func (a *API) validateNetworkPolicy(ctx context.Context, orgID, endpointID, doma
 		}
 	}
 	return nil
+}
+
+func validateAccessPolicySupport(provider connections.Provider, record store.Connection, box *secrets.Box, hostCommands bool) error {
+	enforcer, supported := provider.(connections.AccessPolicyProvider)
+	if !supported {
+		return fmt.Errorf("%s connections do not support access policies", record.Type)
+	}
+	cfg, err := connections.OpenConfig(record, box, hostCommands)
+	if err != nil {
+		return errors.New("access policy needs a valid connection configuration")
+	}
+	return enforcer.ValidateAccessPolicy(cfg)
 }
 
 func (a *API) previousAccess(ctx context.Context, endpoint *store.Endpoint) []store.AccessRef {

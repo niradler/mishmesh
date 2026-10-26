@@ -69,6 +69,8 @@ type HostStatus struct {
 	EndpointID          string `json:"endpoint_id"`
 	Detail              string `json:"detail"`
 	Fix                 string `json:"fix"`
+	AccessApp           string `json:"access_app,omitempty"`
+	AccessPolicy        string `json:"access_policy,omitempty"`
 	AccessHostname      string `json:"-"`
 	AccessHostnameKnown bool   `json:"-"`
 	EndpointKind        string `json:"-"`

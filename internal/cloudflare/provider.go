@@ -139,6 +139,17 @@ func (p *provider) Validate(input connections.Config) error {
 	return err
 }
 
+func (p *provider) ValidateAccessPolicy(input connections.Config) error {
+	cfg, err := p.configuration(input)
+	if err != nil {
+		return err
+	}
+	if cfg.APIToken == "" {
+		return errors.New("access policies need an API token (managed level)")
+	}
+	return nil
+}
+
 func (p *provider) UsesHostCommands(input connections.Config) bool {
 	var values providerConfigFields
 	return json.Unmarshal(input.Record.Config, &values) != nil || values.Connector == ConnectorManaged
@@ -324,7 +335,7 @@ func providerStatus(status Status) connections.Status {
 		} else if host.State == StateUnclaimed && strings.HasPrefix(detail, "routed to ") {
 			detail = "hostname is routed directly to another service"
 		}
-		result.Hostnames = append(result.Hostnames, connections.HostStatus{Host: host.Host, State: host.State, EndpointID: host.EndpointID, Detail: detail, Fix: host.Fix, AccessHostname: host.AccessHostname, AccessHostnameKnown: host.AccessHostnameKnown, EndpointKind: store.KindHTTP})
+		result.Hostnames = append(result.Hostnames, connections.HostStatus{Host: host.Host, State: host.State, EndpointID: host.EndpointID, Detail: detail, Fix: host.Fix, AccessApp: host.AccessApp, AccessPolicy: host.AccessPolicy, AccessHostname: host.AccessHostname, AccessHostnameKnown: host.AccessHostnameKnown, EndpointKind: store.KindHTTP})
 		if result.Health == "healthy" && (host.State == StateError || host.State == StateConflict || host.State == StatePending) {
 			result.Health = "degraded"
 		}

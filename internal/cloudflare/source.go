@@ -16,6 +16,7 @@ type Hostname struct {
 	Public              bool
 	AccessHostname      string
 	AccessHostnameKnown bool
+	Policy              *store.AccessPolicy
 }
 
 type Source interface {
@@ -46,7 +47,7 @@ func AccessHosts(connectionID string, endpoints []*store.Endpoint) []Hostname {
 				host = endpoint.Domain
 			}
 			if normalized, err := accessHostname(endpoint.Domain, host); err == nil {
-				out = append(out, Hostname{Host: normalized, EndpointID: endpoint.ID, OrgID: endpoint.OrgID, Public: true, AccessHostname: ref.Hostname, AccessHostnameKnown: true})
+				out = append(out, Hostname{Host: normalized, EndpointID: endpoint.ID, OrgID: endpoint.OrgID, Public: true, AccessHostname: ref.Hostname, AccessHostnameKnown: true, Policy: endpoint.Policy.EffectiveAccessPolicy(ref)})
 			}
 		}
 	}

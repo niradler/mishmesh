@@ -16,10 +16,30 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
+type ownedAccessApp struct {
+	AppID    string `json:"app_id,omitempty"`
+	PolicyID string `json:"policy_id,omitempty"`
+	App      string `json:"app,omitempty"`
+	Policy   string `json:"policy,omitempty"`
+}
+
 type ownedRoute struct {
-	Ingress string   `json:"ingress,omitempty"`
-	DNS     []string `json:"dns,omitempty"`
-	Access  string   `json:"access,omitempty"`
+	Ingress string          `json:"ingress,omitempty"`
+	DNS     []string        `json:"dns,omitempty"`
+	Access  string          `json:"access,omitempty"`
+	App     *ownedAccessApp `json:"app,omitempty"`
+}
+
+func (r ownedRoute) empty() bool {
+	return r.Ingress == "" && len(r.DNS) == 0 && r.Access == "" && r.App == nil
+}
+
+func validOwnedApp(app *ownedAccessApp) bool {
+	if app == nil {
+		return true
+	}
+	validID := func(id string) bool { return id == "" || providerIDPattern.MatchString(id) }
+	return *app != ownedAccessApp{} && validID(app.AppID) && validID(app.PolicyID) && validFingerprint(app.App) && validFingerprint(app.Policy)
 }
 
 type ownershipState struct {
@@ -47,7 +67,7 @@ func openOwnership(raw json.RawMessage, cfg *Config, data store.DataStore) (*rou
 			return nil, errors.New("invalid cloudflare ownership state")
 		}
 		for host, owned := range stored.Routes {
-			if host == "" || host != normalizeHost(host) || !validFingerprint(owned.Ingress) || !validFingerprint(owned.Access) {
+			if host == "" || host != normalizeHost(host) || !validFingerprint(owned.Ingress) || !validFingerprint(owned.Access) || !validOwnedApp(owned.App) {
 				return nil, errors.New("invalid cloudflare ownership state")
 			}
 			for _, fingerprint := range owned.DNS {
@@ -56,8 +76,15 @@ func openOwnership(raw json.RawMessage, cfg *Config, data store.DataStore) (*rou
 				}
 			}
 		}
-		if stored.AccountID == state.AccountID && stored.TunnelID == state.TunnelID && stored.AccessAppID == state.AccessAppID && stored.Origin == state.Origin {
+		switch {
+		case stored.AccountID == state.AccountID && stored.TunnelID == state.TunnelID && stored.AccessAppID == state.AccessAppID && stored.Origin == state.Origin:
 			state = stored
+		case stored.AccountID == state.AccountID:
+			for host, owned := range stored.Routes {
+				if owned.App != nil {
+					state.Routes[host] = ownedRoute{App: owned.App}
+				}
+			}
 		}
 	}
 	return &routeOwnership{state: state, data: data, cfg: cfg}, nil
@@ -229,6 +256,10 @@ func (o *routeOwnership) snapshot() ownershipState {
 	state.Routes = make(map[string]ownedRoute, len(o.state.Routes))
 	for host, owned := range o.state.Routes {
 		owned.DNS = append([]string(nil), owned.DNS...)
+		if owned.App != nil {
+			app := *owned.App
+			owned.App = &app
+		}
 		state.Routes[host] = owned
 	}
 	return state
@@ -241,7 +272,7 @@ func (o *routeOwnership) includeResiduals(plan *ingressPlan, routes map[string]s
 	for host, owned := range o.state.Routes {
 		_, claimed := protected[host]
 		_, routed := routes[host]
-		if wanted[host] || claimed || routed || owned.Ingress == "" && len(owned.DNS) == 0 && owned.Access == "" {
+		if wanted[host] || claimed || routed || owned.empty() {
 			continue
 		}
 		plan.orphans = append(plan.orphans, host)

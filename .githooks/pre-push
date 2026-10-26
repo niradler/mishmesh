@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "${MISHMESH_SKIP_PREPUSH:-}" = "1" ]; then
+  echo "pre-push: skipped by MISHMESH_SKIP_PREPUSH=1"
+  exit 0
+fi
+
+python=$(command -v python3 || command -v python || true)
+if [ -z "$python" ]; then
+  echo "pre-push: python is required to run .claude/scripts/ci-local.py"
+  exit 1
+fi
+
+zero=0000000000000000000000000000000000000000
+checked=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  case " $checked " in *" $local_sha "*) continue ;; esac
+  checked="$checked $local_sha"
+  echo "pre-push: local CI for $local_ref ($local_sha)"
+  "$python" .claude/scripts/ci-local.py --rev "$local_sha" --changed-since auto
+done

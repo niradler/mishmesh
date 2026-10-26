@@ -50,6 +50,8 @@ type HostStatus struct {
 	DNS                 string `json:"dns"`
 	DNSDetail           string `json:"dns_detail,omitempty"`
 	Access              string `json:"access"`
+	AccessApp           string `json:"access_app,omitempty"`
+	AccessPolicy        string `json:"access_policy,omitempty"`
 	State               string `json:"state"`
 	Detail              string `json:"detail,omitempty"`
 	Fix                 string `json:"fix,omitempty"`
@@ -378,10 +380,27 @@ func unclaimedRoutes(routes map[string]string, wanted map[string]bool, private m
 
 type hostEntry struct {
 	HostStatus
-	orphan        bool
-	conflict      bool
-	failed        bool
-	accessApplied bool
+	orphan         bool
+	conflict       bool
+	failed         bool
+	accessApplied  bool
+	accessReleased bool
+	own            *ownAccess
+}
+
+func (p *Publisher) describeAccess(e *hostEntry) {
+	switch {
+	case e.own != nil:
+		e.AccessApp, e.AccessPolicy, e.Access = AccessAppOwn, e.own.status, AccessOK
+		if e.own.status == AccessPolicyError {
+			e.Access = AccessError
+			if e.Detail == "" {
+				e.Detail = e.own.detail
+			}
+		}
+	case p.cfg.AccessAppID != "":
+		e.AccessApp = AccessAppShared
+	}
 }
 
 func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
@@ -414,13 +433,27 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 		return st, joined
 	}
 
-	names := make([]string, len(hosts))
-	wanted := make(map[string]bool, len(hosts))
-	for i, h := range hosts {
-		names[i] = h.Host
-		wanted[h.Host] = true
+	own, ownErr := p.reconcileOwnAccess(ctx, hosts)
+	if ownErr != nil {
+		errs = append(errs, ownErr)
 	}
 	routes := ingressRoutes(tcfg.Ingress)
+	names := make([]string, 0, len(hosts))
+	wanted := make(map[string]bool, len(hosts))
+	active := make([]Hostname, 0, len(hosts))
+	var blocked []HostStatus
+	for _, h := range hosts {
+		wanted[h.Host] = true
+		if result := own[h.Host]; result != nil && !result.exists {
+			if _, routed := routes[h.Host]; !routed {
+				blocked = append(blocked, HostStatus{Host: h.Host, EndpointID: h.EndpointID, DNS: DNSUnchecked, Access: AccessError, AccessApp: AccessAppOwn, AccessPolicy: result.status,
+					State: StateError, Detail: result.detail, AccessHostname: h.AccessHostname, AccessHostnameKnown: h.AccessHostnameKnown})
+				continue
+			}
+		}
+		names = append(names, h.Host)
+		active = append(active, h)
+	}
 	protected := private
 	if p.ownership != nil {
 		protected, err = p.ownership.protect(ctx, tcfg.Ingress, private)
@@ -451,9 +484,9 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 		}
 	}
 
-	entries := make([]*hostEntry, 0, len(hosts)+len(plan.orphans))
-	for _, h := range hosts {
-		e := &hostEntry{HostStatus: HostStatus{Host: h.Host, EndpointID: h.EndpointID, DNS: DNSMissing, Access: AccessNA, Service: routes[h.Host], AccessHostname: h.AccessHostname, AccessHostnameKnown: h.AccessHostnameKnown}}
+	entries := make([]*hostEntry, 0, len(active)+len(plan.orphans))
+	for _, h := range active {
+		e := &hostEntry{own: own[h.Host], HostStatus: HostStatus{Host: h.Host, EndpointID: h.EndpointID, DNS: DNSMissing, Access: AccessNA, Service: routes[h.Host], AccessHostname: h.AccessHostname, AccessHostnameKnown: h.AccessHostnameKnown}}
 		switch {
 		case plan.present[h.Host]:
 			e.Ingress = true
@@ -474,6 +507,7 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 		if p.ownership != nil && e.Ingress && !e.conflict && !e.failed {
 			p.ownership.recordIngress(h.Host, observedRules, plan.added[h.Host] && putErr == nil)
 		}
+		p.describeAccess(e)
 		entries = append(entries, e)
 	}
 	for _, h := range plan.orphans {
@@ -504,6 +538,9 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 			errs = append(errs, err)
 		}
 	}
+	if err := p.pruneOwnAccess(ctx, entries, own); err != nil {
+		errs = append(errs, err)
+	}
 
 	for _, e := range entries {
 		e.State = entryState(e)
@@ -512,7 +549,11 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 		if p.ownership != nil && e.orphan && !e.Ingress && !e.failed {
 			owned := p.ownership.state.Routes[e.Host]
 			owned.Ingress = ""
-			p.ownership.state.Routes[e.Host] = owned
+			if owned.empty() {
+				delete(p.ownership.state.Routes, e.Host)
+			} else {
+				p.ownership.state.Routes[e.Host] = owned
+			}
 		}
 		if e.State == StateError {
 			if p.cfg.ConnectionID != "" {
@@ -522,6 +563,7 @@ func (p *Publisher) reconcile(ctx context.Context) (Status, error) {
 			}
 		}
 	}
+	st.Hostnames = append(st.Hostnames, blocked...)
 	st.Hostnames = append(st.Hostnames, unclaimedRoutes(routes, wanted, private, normalizeService(p.cfg.Origin), DNSUnchecked, AccessNA)...)
 	if len(errs) == 0 {
 		return st, nil
@@ -700,6 +742,9 @@ func (p *Publisher) reconcileAccess(ctx context.Context, entries []*hostEntry) e
 	app, err := p.client.GetAccessApp(ctx, p.cfg.AccountID, p.cfg.AccessAppID)
 	if err != nil {
 		for _, e := range entries {
+			if e.own != nil {
+				continue
+			}
 			e.Access = AccessError
 			if e.Detail == "" {
 				e.Detail = err.Error()
@@ -710,6 +755,11 @@ func (p *Publisher) reconcileAccess(ctx context.Context, entries []*hostEntry) e
 	var touched []*hostEntry
 	for _, e := range entries {
 		switch {
+		case e.own != nil:
+			if e.own.exists && p.releasesSharedAccess(app, e.Host) && accessRemoveHost(app, e.Host) {
+				e.accessReleased = true
+				touched = append(touched, e)
+			}
 		case e.orphan && p.cfg.Prune && !e.Ingress && !e.failed:
 			if p.ownership != nil && p.ownership.state.Routes[e.Host].Access != accessFingerprint(app, e.Host) {
 				e.Access = accessLabel(accessHasHost(app, e.Host))
@@ -763,14 +813,22 @@ func (p *Publisher) recordAccess(entries []*hostEntry, app AccessApp) {
 		owned := p.ownership.state.Routes[entry.Host]
 		if !entry.orphan && !entry.conflict && !entry.failed && entry.Access == AccessOK && entry.accessApplied {
 			owned.Access = accessFingerprint(app, entry.Host)
-		} else if entry.orphan && entry.Access == AccessMissing && !entry.Ingress && !entry.failed {
+		} else if entry.accessReleased || entry.orphan && entry.Access == AccessMissing && !entry.Ingress && !entry.failed {
 			owned.Access = ""
 		}
 		p.ownership.state.Routes[entry.Host] = owned
-		if owned.Ingress == "" && len(owned.DNS) == 0 && owned.Access == "" {
+		if owned.empty() {
 			delete(p.ownership.state.Routes, entry.Host)
 		}
 	}
+}
+
+func (p *Publisher) releasesSharedAccess(app AccessApp, host string) bool {
+	if p.ownership == nil {
+		return false
+	}
+	recorded := p.ownership.state.Routes[host].Access
+	return recorded != "" && recorded == accessFingerprint(app, host)
 }
 
 func accessLabel(present bool) string {

@@ -55,7 +55,7 @@ The key lives in `MISHMESH_SECRET_KEY_FILE`, by default `mishmesh-secret.key` be
 | Account > Cloudflare Tunnel > Edit | Reading tunnel status and writing ingress rules |
 | Zone > DNS > Edit | Creating and pruning CNAME records, for every zone you publish into |
 | Zone > Zone > Read | Finding the zone for a hostname |
-| Account > Access: Apps and Policies > Edit | Only with `access_app_id` |
+| Account > Access: Apps and Policies > Edit | With `access_app_id`, or when an endpoint sets an access policy |
 
 The tunnel must be remotely managed (created in the dashboard or the API), since mishmesh edits its configuration through the API.
 
@@ -66,6 +66,7 @@ mishmesh changes only what it can prove is its own.
 - **Ingress rules.** A missing hostname gets a rule to the origin, inserted before the catch-all (`http_status:404` is added if there is none). A hostname already routed elsewhere is a `conflict` and is left alone. Unknown settings and fields are written back unchanged, and nothing is written when nothing changed.
 - **DNS.** The longest matching zone is selected. Created records have durable per-resource ownership. A matching pre-existing record is not silently adopted; foreign or operator-modified records remain intact.
 - **Access.** Added app domains/destinations are tracked separately. Pre-existing entries are retained.
+- **Access policies.** A host with an access policy (`policy.access_policy`, or `policy` on its access ref) gets its own self-hosted app and reusable policy named `mishmesh <host>`, instead of joining the shared app. mishmesh is the source of truth only for the fields it manages: email, email domain and group include rules, the MFA require rule, session duration, name, domain and the policy link. Other rules and settings edited in Cloudflare are kept. Changes to managed fields are restored on the next sync and reported as `access_policy: drift_fixed`. If the app cannot be created, the host is not routed or given DNS.
 - **Prune.** Removes only resources supported by durable ownership and matching observed fingerprints. Unknown settings, unclaimed hostnames and operator edits are preserved. Dropping an Access ref clears its local alias; it does not grant blanket ownership of the external hostname.
 
 Errors are per hostname: one failure does not stop the others.
