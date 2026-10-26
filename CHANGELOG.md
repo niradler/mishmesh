@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.15
+
+- Generate OpenAPI 3.1 from the registered API routes, serve it at `/api/v1/openapi.json`, and check the committed specification for drift.
+- Report a running service as unhealthy when its readiness probe fails, expose the probe error in the UI, and map unhealthy services to down routes. Ingress continues proxying requests to these services without attempting a wake.
+
 ## v0.1.9
 
 - The gateway now refuses agent decision queries larger than 8 KiB with `invalid_request` before any policy decision runs. Before, the cap was only enforced when decoding over the API.
