@@ -35,7 +35,18 @@ type Options struct {
 	Ports              PortOpener
 	Metrics            Metrics
 	HostKeyPEM         []byte
+	HandshakeTimeout   time.Duration
+	MaxHandshakes      int
+	AuthFailureLimit   int
+	AuthFailureWindow  time.Duration
 }
+
+const (
+	defaultHandshakeTimeout  = 10 * time.Second
+	defaultMaxHandshakes     = 128
+	defaultAuthFailureLimit  = 10
+	defaultAuthFailureWindow = time.Minute
+)
 
 type Server struct {
 	data               store.DataStore
@@ -47,10 +58,14 @@ type Server struct {
 	ports              PortOpener
 	metrics            Metrics
 	sshConfig          *ssh.ServerConfig
+	handshakeTimeout   time.Duration
+	handshakeSlots     chan struct{}
+	throttle           *failureThrottle
 
 	ln     net.Listener
 	mu     sync.Mutex
 	closed bool
+	live   map[net.Conn]struct{}
 }
 
 func New(opts Options) (*Server, error) {
@@ -71,11 +86,29 @@ func New(opts Options) (*Server, error) {
 		disablePathRouting: opts.DisablePathRouting,
 		ports:              opts.Ports,
 		metrics:            opts.Metrics,
+		handshakeTimeout:   durationOr(opts.HandshakeTimeout, defaultHandshakeTimeout),
+		handshakeSlots:     make(chan struct{}, intOr(opts.MaxHandshakes, defaultMaxHandshakes)),
+		throttle:           newFailureThrottle(intOr(opts.AuthFailureLimit, defaultAuthFailureLimit), durationOr(opts.AuthFailureWindow, defaultAuthFailureWindow)),
+		live:               make(map[net.Conn]struct{}),
 	}
 	cfg := &ssh.ServerConfig{PasswordCallback: s.authPassword}
 	cfg.AddHostKey(signer)
 	s.sshConfig = cfg
 	return s, nil
+}
+
+func durationOr(v, fallback time.Duration) time.Duration {
+	if v > 0 {
+		return v
+	}
+	return fallback
+}
+
+func intOr(v, fallback int) int {
+	if v > 0 {
+		return v
+	}
+	return fallback
 }
 
 func hostSigner(pemBytes []byte) (ssh.Signer, error) {
@@ -94,16 +127,23 @@ func hostSigner(pemBytes []byte) (ssh.Signer, error) {
 }
 
 func (s *Server) authPassword(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+	ip := remoteIP(c.RemoteAddr())
+	if s.throttle.blocked(ip) {
+		return nil, fmt.Errorf("sshfwd: too many failed attempts")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tok, err := s.data.GetTokenByHash(ctx, store.HashToken(string(pass)))
 	if err != nil {
+		s.throttle.fail(ip)
 		return nil, fmt.Errorf("sshfwd: invalid token")
 	}
 	agent, err := s.data.GetAgent(ctx, tok.AgentID)
 	if err != nil || agent.Status != store.AgentActive {
+		s.throttle.fail(ip)
 		return nil, fmt.Errorf("sshfwd: agent not active")
 	}
+	s.throttle.reset(ip)
 	return &ssh.Permissions{Extensions: map[string]string{"org_id": agent.OrgID}}, nil
 }
 
@@ -122,8 +162,37 @@ func (s *Server) Serve(ln net.Listener) error {
 			}
 			return err
 		}
+		if !s.admit(nConn) {
+			_ = nConn.Close()
+			continue
+		}
 		go s.handleConn(nConn)
 	}
+}
+
+func (s *Server) admit(nConn net.Conn) bool {
+	if s.throttle.blocked(remoteIP(nConn.RemoteAddr())) {
+		return false
+	}
+	select {
+	case s.handshakeSlots <- struct{}{}:
+	default:
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		<-s.handshakeSlots
+		return false
+	}
+	s.live[nConn] = struct{}{}
+	return true
+}
+
+func (s *Server) forget(nConn net.Conn) {
+	s.mu.Lock()
+	delete(s.live, nConn)
+	s.mu.Unlock()
 }
 
 func (s *Server) Listen(addr string) (net.Listener, error) {
@@ -139,18 +208,29 @@ func (s *Server) Shutdown() {
 	s.mu.Lock()
 	s.closed = true
 	ln := s.ln
+	live := make([]net.Conn, 0, len(s.live))
+	for c := range s.live {
+		live = append(live, c)
+	}
 	s.mu.Unlock()
 	if ln != nil {
 		_ = ln.Close()
 	}
+	for _, c := range live {
+		_ = c.Close()
+	}
 }
 
 func (s *Server) handleConn(nConn net.Conn) {
+	defer s.forget(nConn)
+	_ = nConn.SetDeadline(time.Now().Add(s.handshakeTimeout))
 	sshConn, chans, reqs, err := ssh.NewServerConn(nConn, s.sshConfig)
+	<-s.handshakeSlots
 	if err != nil {
 		_ = nConn.Close()
 		return
 	}
+	_ = nConn.SetDeadline(time.Time{})
 	orgID := sshConn.Permissions.Extensions["org_id"]
 	ctx := context.WithoutCancel(context.Background())
 
