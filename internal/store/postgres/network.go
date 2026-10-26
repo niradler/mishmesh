@@ -613,8 +613,6 @@ func endpointPolicies(ctx context.Context, tx *sql.Tx) ([]store.EndpointPolicy, 
 	return out, wrap("read endpoint references", rows.Err())
 }
 
-const cloudflareCols = `org_id, name, account_id, tunnel_id, tunnel_token_enc, api_token_enc, access_app_id, origin, connector, metrics_addr, prune, updated_at`
-
 func uniqueErr(op string, err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
