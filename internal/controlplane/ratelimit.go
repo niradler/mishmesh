@@ -27,7 +27,7 @@ func (a *API) SetTrustedProxies(nets []*net.IPNet) {
 func (a *API) authRateAllowed(r *http.Request, email string) bool {
 	ctx := r.Context()
 	ip := clientip.Resolve(r, a.trustedProxies)
-	ipKey := "cp:ip:" + r.RemoteAddr
+	ipKey := "cp:ip:" + peerHost(r.RemoteAddr)
 	if ip != nil {
 		ipKey = "cp:ip:" + ip.String()
 	}
@@ -42,6 +42,13 @@ func (a *API) authRateAllowed(r *http.Request, email string) bool {
 
 func (a *API) subjectRateAllowed(r *http.Request, subject string) bool {
 	return a.limiter.Allow(r.Context(), "cp:subject:"+hashKey(subject), pairLimit).Allowed
+}
+
+func peerHost(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	return remoteAddr
 }
 
 func hashKey(s string) string {
