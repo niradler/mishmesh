@@ -173,6 +173,6 @@ func (a *Authorizer) Authorize(p Principal, action Action) bool {
 		Resource:  orgUID,
 		Context:   types.NewRecord(nil),
 	}
-	decision, _ := a.policies.IsAuthorized(entities, req)
+	decision, _ := cedar.Authorize(a.policies, entities, req)
 	return decision == cedar.Allow
 }
