@@ -54,10 +54,7 @@ func DefaultCredentialsPath() (string, error) {
 }
 
 func NewCredentialStore(path string, client *http.Client) *CredentialStore {
-	if client == nil {
-		client = &http.Client{Timeout: tokenRequestTimeout}
-	}
-	return &CredentialStore{path: path, client: client, now: time.Now}
+	return &CredentialStore{path: path, client: httpClientOrDefault(client, tokenRequestTimeout), now: time.Now}
 }
 
 func (s *CredentialStore) Path() string { return s.path }
@@ -212,21 +209,33 @@ func postToken(ctx context.Context, client *http.Client, server string, form url
 
 func postForm(ctx context.Context, client *http.Client, endpoint string, form url.Values) (tokenResponse, int, error) {
 	var out tokenResponse
+	status, err := postFormInto(ctx, client, endpoint, form, "token", &out)
+	return out, status, err
+}
+
+func postFormInto(ctx context.Context, client *http.Client, endpoint string, form url.Values, what string, out any) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return out, 0, err
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return out, 0, fmt.Errorf("contact %s: %w", endpoint, err)
+		return 0, fmt.Errorf("contact %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
-	if err := decodeLimited(resp.Body, &out); err != nil && !errors.Is(err, io.EOF) && resp.StatusCode == http.StatusOK {
-		return out, resp.StatusCode, fmt.Errorf("decode token response: %w", err)
+	if err := decodeLimited(resp.Body, out); err != nil && !errors.Is(err, io.EOF) && resp.StatusCode == http.StatusOK {
+		return resp.StatusCode, fmt.Errorf("decode %s response: %w", what, err)
 	}
-	return out, resp.StatusCode, nil
+	return resp.StatusCode, nil
+}
+
+func httpClientOrDefault(client *http.Client, timeout time.Duration) *http.Client {
+	if client != nil {
+		return client
+	}
+	return &http.Client{Timeout: timeout}
 }
 
 func decodeLimited(r io.Reader, out any) error {

@@ -1,7 +1,7 @@
 package tunnel
 
 import (
-	"bufio"
+	"io"
 	"net"
 	"time"
 	"unicode/utf8"
@@ -36,7 +36,7 @@ func TruncateUTF8(s string, maxBytes int) string {
 
 type BufferedConn struct {
 	net.Conn
-	R *bufio.Reader
+	R io.Reader
 }
 
 func (c *BufferedConn) Read(p []byte) (int, error) {

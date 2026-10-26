@@ -24,9 +24,7 @@ func FetchEgressCA(ctx context.Context, gatewayURL, token string, client *http.C
 	if err != nil {
 		return tunnel.EgressCA{}, err
 	}
-	if client == nil {
-		client = &http.Client{Timeout: egressCAFetchTimeout}
-	}
+	client = httpClientOrDefault(client, egressCAFetchTimeout)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+tunnel.AgentEgressCAPath, nil)
 	if err != nil {
 		return tunnel.EgressCA{}, err
