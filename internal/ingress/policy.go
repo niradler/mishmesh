@@ -20,11 +20,12 @@ import (
 )
 
 type gateDeps struct {
-	oidc    *oidcGate
-	trusted []*net.IPNet
-	limiter ratelimit.Limiter
-	basic   *ttlCache[struct{}]
-	caPools *ttlCache[*x509.CertPool]
+	oidc         *oidcGate
+	trusted      []*net.IPNet
+	limiter      ratelimit.Limiter
+	basic        *ttlCache[struct{}]
+	basicLockout *ttlCache[time.Time]
+	caPools      *ttlCache[*x509.CertPool]
 }
 
 func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, deps gateDeps) bool {
@@ -54,20 +55,25 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 	}
 
 	if p.BasicAuthUser != "" {
-		var throttled ratelimit.Decision
-		var verifyLimiter func() ratelimit.Decision
-		if deps.limiter != nil {
-			verifyLimiter = func() ratelimit.Decision {
-				throttled = deps.limiter.Allow(r.Context(), basicAuthVerifyKey(ep.ID, ip), ratelimit.Limit{Requests: basicAuthVerifyRequests, Period: basicAuthVerifyPeriod})
-				return throttled
-			}
+		key := basicAuthVerifyKey(ep.ID, ip)
+		var lockedFor time.Duration
+		locked := func() bool {
+			until, ok := deps.basicLockout.get(key)
+			lockedFor = time.Until(until)
+			return ok && lockedFor > 0
 		}
-		switch checkBasicAuth(r, ep.ID, p.BasicAuthUser, p.BasicAuthHash, deps.basic, verifyLimiter) {
+		switch checkBasicAuth(r, ep.ID, p.BasicAuthUser, p.BasicAuthHash, deps.basic, locked) {
 		case basicAuthThrottled:
-			w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(throttled.RetryAfter)))
-			http.Error(w, "too many authentication attempts", http.StatusTooManyRequests)
+			writeBasicAuthThrottled(w, lockedFor)
 			return false
 		case basicAuthDenied:
+			if deps.limiter != nil {
+				if d := deps.limiter.Allow(r.Context(), key, ratelimit.Limit{Requests: basicAuthVerifyRequests, Period: basicAuthVerifyPeriod}); !d.Allowed {
+					deps.basicLockout.put(key, time.Now().Add(d.RetryAfter))
+					writeBasicAuthThrottled(w, d.RetryAfter)
+					return false
+				}
+			}
 			w.Header().Set("WWW-Authenticate", `Basic realm="mishmesh"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return false
@@ -294,7 +300,12 @@ func basicAuthVerifyKey(epID string, ip net.IP) string {
 	return "basic:" + epID + ":" + rateLimitIPKey(ip)
 }
 
-func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[struct{}], verifyLimiter func() ratelimit.Decision) basicAuthResult {
+func writeBasicAuthThrottled(w http.ResponseWriter, retryAfter time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(retryAfter)))
+	http.Error(w, "too many authentication attempts", http.StatusTooManyRequests)
+}
+
+func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[struct{}], locked func() bool) basicAuthResult {
 	u, pass, ok := r.BasicAuth()
 	if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 || hash == "" {
 		return basicAuthDenied
@@ -304,10 +315,8 @@ func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[st
 	if _, hit := cache.get(key); hit {
 		return basicAuthOK
 	}
-	if verifyLimiter != nil {
-		if d := verifyLimiter(); !d.Allowed {
-			return basicAuthThrottled
-		}
+	if locked != nil && locked() {
+		return basicAuthThrottled
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) != nil {
 		return basicAuthDenied
