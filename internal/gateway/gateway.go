@@ -153,7 +153,7 @@ func (g *Gateway) revoke(rev identity.Revocation) {
 
 func (g *Gateway) authenticateAgent(w http.ResponseWriter, r *http.Request) (*store.Agent, bool) {
 	ctx := r.Context()
-	raw := bearerToken(r)
+	raw := token.Bearer(r.Header.Get("Authorization"))
 	if raw == "" {
 		http.Error(w, "missing bearer token", http.StatusUnauthorized)
 		return nil, false
@@ -367,7 +367,6 @@ func (g *Gateway) serve(ctx context.Context, agent *store.Agent, ac *agentConn) 
 			if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgPong}); err != nil {
 				return
 			}
-		default:
 		}
 	}
 }
@@ -580,7 +579,7 @@ var agentSettablePolicyFields = map[string]bool{
 	"RequestHeadersAdd": true, "RequestHeadersRemove": true, "ResponseHeadersAdd": true, "ResponseHeadersRemove": true,
 	"HostHeader": true, "StripPathPrefix": true, "AddPathPrefix": true, "BasicAuthUser": true, "BasicAuthHash": true,
 	"IPAllow": true, "IPDeny": true, "ForceHTTPS": true, "MaxBodyBytes": true, "Compression": true,
-	"OIDC": true, "MTLS": true, "RateLimit": true, "Connect": true,
+	"OIDC": true, "MTLS": true, "RateLimit": true, "Connect": true, "Identity": true,
 }
 
 func dropControlPlaneFields(p *store.EndpointPolicy) []string {
@@ -595,14 +594,9 @@ func dropControlPlaneFields(p *store.EndpointPolicy) []string {
 		dropped = append(dropped, name)
 		v.Field(i).SetZero()
 	}
-	return dropped
-}
-
-func bearerToken(r *http.Request) string {
-	const prefix = "Bearer "
-	h := r.Header.Get("Authorization")
-	if strings.HasPrefix(h, prefix) {
-		return strings.TrimSpace(h[len(prefix):])
+	if p.Identity != nil && len(p.Identity.Credentials) > 0 {
+		dropped = append(dropped, "identity.credentials")
+		p.Identity.Credentials = nil
 	}
-	return ""
+	return dropped
 }

@@ -47,6 +47,7 @@ func TestDecodePolicyKeepsOnlyAgentSettableFields(t *testing.T) {
 		"IPAllow": true, "IPDeny": true, "ForceHTTPS": true, "MaxBodyBytes": true, "Compression": true,
 		"OIDC": true, "MTLS": true, "RateLimit": true, "Connect": true,
 	}
+	wantIdentity := &store.EndpointIdentity{Required: true}
 	raw, err := json.Marshal(populated)
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +59,12 @@ func TestDecodePolicyKeepsOnlyAgentSettableFields(t *testing.T) {
 	gv, wv := reflect.ValueOf(*got), reflect.ValueOf(populated)
 	for i := 0; i < gv.NumField(); i++ {
 		name := gv.Type().Field(i).Name
+		if name == "Identity" {
+			if !reflect.DeepEqual(gv.Field(i).Interface(), wantIdentity) {
+				t.Errorf("identity must keep its gating flags and lose its credentials, got %+v", gv.Field(i).Interface())
+			}
+			continue
+		}
 		if agentSettable[name] {
 			if !reflect.DeepEqual(gv.Field(i).Interface(), wv.Field(i).Interface()) {
 				t.Errorf("agent-settable field %s was altered: %v", name, gv.Field(i).Interface())
