@@ -26,3 +26,7 @@ func TestEgressCredentials(t *testing.T) {
 func TestEgressDecrypt(t *testing.T) {
 	storetest.RunEgressDecrypt(t, func(t *testing.T) store.DataStore { return newStore(t) })
 }
+
+func TestMissingRowContract(t *testing.T) {
+	storetest.RunMissingRows(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}

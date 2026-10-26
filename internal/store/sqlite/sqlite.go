@@ -261,18 +261,27 @@ func (s *Store) ListAgents(ctx context.Context, orgID string) ([]*store.Agent, e
 }
 
 func (s *Store) UpdateAgent(ctx context.Context, a *store.Agent) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE agents SET name = ?, status = ? WHERE id = ?`, a.Name, a.Status, a.ID)
-	return wrap("update agent", err)
+	res, err := s.db.ExecContext(ctx, `UPDATE agents SET name = ?, status = ? WHERE id = ?`, a.Name, a.Status, a.ID)
+	if err != nil {
+		return wrap("update agent", err)
+	}
+	return affected("update agent", res)
 }
 
 func (s *Store) DeleteAgent(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = ?`, id)
-	return wrap("delete agent", err)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = ?`, id)
+	if err != nil {
+		return wrap("delete agent", err)
+	}
+	return affected("delete agent", res)
 }
 
 func (s *Store) TouchAgent(ctx context.Context, id string, seenAt time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE agents SET last_seen_at = ? WHERE id = ?`, ns(seenAt), id)
-	return wrap("touch agent", err)
+	res, err := s.db.ExecContext(ctx, `UPDATE agents SET last_seen_at = ? WHERE id = ?`, ns(seenAt), id)
+	if err != nil {
+		return wrap("touch agent", err)
+	}
+	return affected("touch agent", res)
 }
 
 func (s *Store) CountAgents(ctx context.Context, orgID string) (int, error) {
@@ -454,8 +463,11 @@ func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
 }
 
 func (s *Store) DeleteEndpoint(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM endpoints WHERE id = ?`, id)
-	return wrap("delete endpoint", err)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM endpoints WHERE id = ?`, id)
+	if err != nil {
+		return wrap("delete endpoint", err)
+	}
+	return affected("delete endpoint", res)
 }
 
 func (s *Store) CountEndpoints(ctx context.Context, orgID string) (int, error) {
@@ -545,10 +557,13 @@ func (s *Store) GetUserByGoogleSub(ctx context.Context, sub string) (*store.User
 }
 
 func (s *Store) UpdateUser(ctx context.Context, u *store.User) error {
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE users SET email = ?, name = ?, password_hash = ?, google_sub = ? WHERE id = ?`,
 		strings.ToLower(u.Email), u.Name, nullStr(u.PasswordHash), nullStr(u.GoogleSub), u.ID)
-	return wrap("update user", err)
+	if err != nil {
+		return wrap("update user", err)
+	}
+	return affected("update user", res)
 }
 
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
@@ -608,8 +623,11 @@ func (s *Store) queryMemberships(ctx context.Context, query string, args ...any)
 }
 
 func (s *Store) UpdateMembership(ctx context.Context, m *store.Membership) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE memberships SET role = ? WHERE org_id = ? AND user_id = ?`, m.Role, m.OrgID, m.UserID)
-	return wrap("update membership", err)
+	res, err := s.db.ExecContext(ctx, `UPDATE memberships SET role = ? WHERE org_id = ? AND user_id = ?`, m.Role, m.OrgID, m.UserID)
+	if err != nil {
+		return wrap("update membership", err)
+	}
+	return affected("update membership", res)
 }
 
 func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) error {
@@ -621,8 +639,12 @@ func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) erro
 	if _, err := tx.ExecContext(ctx, `DELETE FROM group_members WHERE org_id = ? AND member_type = ? AND member_id = ?`, orgID, store.GroupMemberUser, userID); err != nil {
 		return wrap("delete membership groups", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = ? AND user_id = ?`, orgID, userID); err != nil {
+	res, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = ? AND user_id = ?`, orgID, userID)
+	if err != nil {
 		return wrap("delete membership", err)
+	}
+	if err := affected("delete membership", res); err != nil {
+		return err
 	}
 	return wrap("delete membership", tx.Commit())
 }

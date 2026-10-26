@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -22,7 +23,9 @@ func (g *Gateway) SweepOrphanedEphemeral(ctx context.Context) (int, error) {
 			if ep.Lifecycle != store.LifecycleEphemeral || g.agentHasLiveSession(ep.AgentID) {
 				continue
 			}
-			if err := g.data.DeleteEndpoint(ctx, ep.ID); err != nil {
+			if err := g.data.DeleteEndpoint(ctx, ep.ID); errors.Is(err, store.ErrNotFound) {
+				continue
+			} else if err != nil {
 				return swept, fmt.Errorf("delete endpoint %s: %w", ep.ID, err)
 			}
 			g.log.Info("swept orphaned ephemeral endpoint", "endpoint_id", ep.ID, "agent_id", ep.AgentID, "kind", ep.Kind)

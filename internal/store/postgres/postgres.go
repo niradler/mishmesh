@@ -303,22 +303,31 @@ func (s *Store) ListAgents(ctx context.Context, orgID string) ([]*store.Agent, e
 func (s *Store) UpdateAgent(ctx context.Context, a *store.Agent) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `UPDATE agents SET name = $1, status = $2 WHERE id = $3`, a.Name, a.Status, a.ID)
-	return wrap("update agent", err)
+	res, err := s.db.ExecContext(ctx, `UPDATE agents SET name = $1, status = $2 WHERE id = $3`, a.Name, a.Status, a.ID)
+	if err != nil {
+		return wrap("update agent", err)
+	}
+	return affected("update agent", res)
 }
 
 func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = $1`, id)
-	return wrap("delete agent", err)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = $1`, id)
+	if err != nil {
+		return wrap("delete agent", err)
+	}
+	return affected("delete agent", res)
 }
 
 func (s *Store) TouchAgent(ctx context.Context, id string, seenAt time.Time) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `UPDATE agents SET last_seen_at = $1 WHERE id = $2`, ns(seenAt), id)
-	return wrap("touch agent", err)
+	res, err := s.db.ExecContext(ctx, `UPDATE agents SET last_seen_at = $1 WHERE id = $2`, ns(seenAt), id)
+	if err != nil {
+		return wrap("touch agent", err)
+	}
+	return affected("touch agent", res)
 }
 
 func (s *Store) CountAgents(ctx context.Context, orgID string) (int, error) {
@@ -524,8 +533,11 @@ func (s *Store) UpdateEndpoint(ctx context.Context, e *store.Endpoint) error {
 func (s *Store) DeleteEndpoint(ctx context.Context, id string) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM endpoints WHERE id = $1`, id)
-	return wrap("delete endpoint", err)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM endpoints WHERE id = $1`, id)
+	if err != nil {
+		return wrap("delete endpoint", err)
+	}
+	return affected("delete endpoint", res)
 }
 
 func (s *Store) CountEndpoints(ctx context.Context, orgID string) (int, error) {
@@ -612,10 +624,13 @@ func (s *Store) GetUserByGoogleSub(ctx context.Context, sub string) (*store.User
 func (s *Store) UpdateUser(ctx context.Context, u *store.User) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE users SET email = $1, name = $2, password_hash = $3, google_sub = $4 WHERE id = $5`,
 		strings.ToLower(u.Email), u.Name, nullStr(u.PasswordHash), nullStr(u.GoogleSub), u.ID)
-	return wrap("update user", err)
+	if err != nil {
+		return wrap("update user", err)
+	}
+	return affected("update user", res)
 }
 
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
@@ -686,8 +701,11 @@ func (s *Store) queryMemberships(ctx context.Context, query string, args ...any)
 func (s *Store) UpdateMembership(ctx context.Context, m *store.Membership) error {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `UPDATE memberships SET role = $1 WHERE org_id = $2 AND user_id = $3`, m.Role, m.OrgID, m.UserID)
-	return wrap("update membership", err)
+	res, err := s.db.ExecContext(ctx, `UPDATE memberships SET role = $1 WHERE org_id = $2 AND user_id = $3`, m.Role, m.OrgID, m.UserID)
+	if err != nil {
+		return wrap("update membership", err)
+	}
+	return affected("update membership", res)
 }
 
 func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) error {
@@ -701,8 +719,12 @@ func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) erro
 	if _, err := tx.ExecContext(ctx, `DELETE FROM group_members WHERE org_id = $1 AND member_type = $2 AND member_id = $3`, orgID, store.GroupMemberUser, userID); err != nil {
 		return wrap("delete membership groups", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID); err != nil {
+	res, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID)
+	if err != nil {
 		return wrap("delete membership", err)
+	}
+	if err := affected("delete membership", res); err != nil {
+		return err
 	}
 	return wrap("delete membership", tx.Commit())
 }
