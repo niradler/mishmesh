@@ -24,6 +24,7 @@ type gateDeps struct {
 	trusted []*net.IPNet
 	limiter ratelimit.Limiter
 	basic   *ttlCache[struct{}]
+	caPools *ttlCache[*x509.CertPool]
 }
 
 func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, deps gateDeps) bool {
@@ -61,7 +62,7 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 	}
 
 	if p.MTLS != nil {
-		if !checkMTLS(r, p.MTLS) {
+		if !checkMTLS(r, p.MTLS, deps.caPools) {
 			http.Error(w, "client certificate required", http.StatusForbidden)
 			return false
 		}
@@ -213,12 +214,26 @@ func shouldCompress(ep *store.Endpoint, r *http.Request, resp *http.Response) bo
 	return strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip")
 }
 
-func checkMTLS(r *http.Request, m *store.MTLSConfig) bool {
+const clientCAPoolCacheTTL = 10 * time.Minute
+
+func clientCAPool(cache *ttlCache[*x509.CertPool], caPEM string) *x509.CertPool {
+	if roots, ok := cache.get(caPEM); ok {
+		return roots
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM([]byte(caPEM)) {
+		return nil
+	}
+	cache.put(caPEM, roots)
+	return roots
+}
+
+func checkMTLS(r *http.Request, m *store.MTLSConfig, pools *ttlCache[*x509.CertPool]) bool {
 	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 		return false
 	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM([]byte(m.ClientCAPEM)) {
+	roots := clientCAPool(pools, m.ClientCAPEM)
+	if roots == nil {
 		return false
 	}
 	leaf := r.TLS.PeerCertificates[0]

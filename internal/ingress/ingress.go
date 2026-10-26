@@ -3,6 +3,7 @@ package ingress
 import (
 	"bufio"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -74,6 +75,7 @@ type Ingress struct {
 	quotas    *ttlCache[*store.Quota]
 	misses    *ttlCache[struct{}]
 	basicAuth *ttlCache[struct{}]
+	caPools   *ttlCache[*x509.CertPool]
 }
 
 func New(opts Options) *Ingress {
@@ -102,6 +104,7 @@ func New(opts Options) *Ingress {
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
 		misses:    newTTLCache[struct{}](min(opts.LookupCacheTTL, negativeCacheTTL)),
 		basicAuth: newTTLCache[struct{}](basicAuthCacheTTL),
+		caPools:   newTTLCache[*x509.CertPool](clientCAPoolCacheTTL),
 	}
 	if i.limiter == nil {
 		i.limiter = ratelimit.NewMemory()
@@ -178,7 +181,7 @@ func (i *Ingress) serveEndpoint(w http.ResponseWriter, r *http.Request, ep *stor
 }
 
 func (i *Ingress) gateDeps() gateDeps {
-	return gateDeps{oidc: i.oidc, trusted: i.trusted, limiter: i.limiter, basic: i.basicAuth}
+	return gateDeps{oidc: i.oidc, trusted: i.trusted, limiter: i.limiter, basic: i.basicAuth, caPools: i.caPools}
 }
 
 var (
