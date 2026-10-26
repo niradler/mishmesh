@@ -1,27 +1,16 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
-	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"math/big"
-	"net"
-	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -48,98 +37,6 @@ var (
 	errDecryptSNI         = errors.New("decrypt: tls server name does not match the CONNECT host")
 	errEgressCAInvalid    = errors.New("egress ca: server returned an invalid certificate")
 )
-
-type decryptSigner struct {
-	cert *x509.Certificate
-	pool *x509.CertPool
-}
-
-type decryptState struct {
-	key       *ecdsa.PrivateKey
-	leafKey   *ecdsa.PrivateKey
-	signers   []decryptSigner
-	notBefore time.Time
-	notAfter  time.Time
-	roots     *x509.CertPool
-	allow     []string
-	bypass    []string
-
-	mu     sync.Mutex
-	leaves map[string]*tls.Certificate
-	order  []string
-}
-
-func (s *decryptState) usable(now time.Time) bool {
-	return now.Add(decryptExpiryMargin).Before(s.notAfter) && !now.Before(s.notBefore)
-}
-
-func (s *decryptState) leaf(host string, now time.Time) (*tls.Certificate, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if c, ok := s.leaves[host]; ok && now.Add(decryptExpiryMargin).Before(c.Leaf.NotAfter) {
-		return c, nil
-	}
-	c, err := s.mint(host, now)
-	if err != nil {
-		return nil, err
-	}
-	if _, ok := s.leaves[host]; !ok {
-		if len(s.order) >= maxDecryptLeaves {
-			delete(s.leaves, s.order[0])
-			s.order = s.order[1:]
-		}
-		s.order = append(s.order, host)
-	}
-	s.leaves[host] = c
-	return c, nil
-}
-
-func (s *decryptState) mint(host string, now time.Time) (*tls.Certificate, error) {
-	err := errDecryptLeaf
-	for _, signer := range s.signers {
-		var c *tls.Certificate
-		if c, err = s.mintWith(signer, host, now); err == nil {
-			return c, nil
-		}
-	}
-	return nil, err
-}
-
-func (s *decryptState) mintWith(signer decryptSigner, host string, now time.Time) (*tls.Certificate, error) {
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), decryptSerialBits))
-	if err != nil {
-		return nil, fmt.Errorf("decrypt leaf serial: %w", err)
-	}
-	notBefore := now.Add(-decryptLeafBackdate)
-	if notBefore.Before(signer.cert.NotBefore) {
-		notBefore = signer.cert.NotBefore
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber:          serial.Add(serial, big.NewInt(1)),
-		Subject:               pkix.Name{CommonName: host},
-		DNSNames:              []string{host},
-		NotBefore:             notBefore,
-		NotAfter:              signer.cert.NotAfter,
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, signer.cert, &s.leafKey.PublicKey, s.key)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt leaf: %w", err)
-	}
-	leaf, err := x509.ParseCertificate(der)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt leaf: %w", err)
-	}
-	if _, err := leaf.Verify(x509.VerifyOptions{
-		DNSName: host, Roots: s.roots, Intermediates: signer.pool, CurrentTime: now,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}); err != nil {
-		return nil, fmt.Errorf("%w: %w", errDecryptLeaf, err)
-	}
-	return &tls.Certificate{Certificate: [][]byte{der, signer.cert.Raw}, PrivateKey: s.leafKey, Leaf: leaf}, nil
-}
 
 type decryptor struct {
 	dec *remoteDecider
@@ -420,123 +317,4 @@ func (d *decryptor) verifiedIntermediate(key *ecdsa.PrivateKey, roots *x509.Cert
 		return nil, fmt.Errorf("%w: %w", errDecryptChain, err)
 	}
 	return inter, nil
-}
-
-func (a *Agent) serveDecrypted(client net.Conn, br *bufio.Reader, dest string, creds egressCreds) bool {
-	host, portText, err := net.SplitHostPort(dest)
-	if err != nil {
-		return false
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil || port < 1 || port > 65535 {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), egressHandshakeTimeout)
-	plan := a.decrypt.classify(ctx, host)
-	cancel()
-	switch plan.verdict {
-	case decryptPassthrough:
-		return false
-	case decryptRefuse:
-		writeProxyError(client, http.StatusServiceUnavailable, errDecryptUnavailable.Error())
-		return true
-	}
-	cert, canonical := plan.cert, plan.canonical
-	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		return true
-	}
-	clientIP := remoteHost(client.RemoteAddr().String())
-	_ = client.SetDeadline(time.Now().Add(egressHandshakeTimeout))
-	first, err := br.Peek(1)
-	if err != nil {
-		return true
-	}
-	raw := &bufferedConn{Conn: client, r: br}
-	if first[0] != tlsRecordHandshake {
-		a.log.Info("egress refused: decrypt-scoped CONNECT did not start with tls", "destination", truncateLog(dest))
-		return true
-	}
-	ln := &oneConnListener{done: make(chan struct{})}
-	conn := tls.Server(&notifyCloseConn{Conn: raw, closed: ln.done}, decryptTLSConfig(cert, canonical))
-	ln.conn = conn
-	if err := conn.Handshake(); err != nil {
-		a.log.Info("egress decrypt handshake failed", "destination", truncateLog(dest), "err", err)
-		return true
-	}
-	_ = client.SetDeadline(time.Time{})
-	target := originTarget{scheme: "https", host: canonical, port: port}
-	srv := a.origin.server(a.origin.decryptedHandler(target, creds, clientIP))
-	_ = srv.Serve(ln)
-	return true
-}
-
-func (o *originator) decryptedHandler(target originTarget, creds egressCreds, clientIP string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodConnect || isConnectUDP(r) {
-			http.Error(w, "egress refused: tunnels inside a decrypted connection are not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		o.serve(w, r, target, creds, clientIP, true)
-	})
-}
-
-func decryptTLSConfig(cert *tls.Certificate, host string) *tls.Config {
-	return &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		NextProtos: []string{"h2", "http/1.1"},
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if hello.ServerName != "" && !strings.EqualFold(strings.TrimSuffix(hello.ServerName, "."), host) {
-				return nil, errDecryptSNI
-			}
-			return cert, nil
-		},
-	}
-}
-
-func FetchEgressCA(ctx context.Context, gatewayURL, token string, client *http.Client) (tunnel.EgressCA, error) {
-	gateway, err := NormalizeGatewayURL(gatewayURL)
-	if err != nil {
-		return tunnel.EgressCA{}, err
-	}
-	base, err := APIBaseFromGateway(gateway)
-	if err != nil {
-		return tunnel.EgressCA{}, err
-	}
-	if client == nil {
-		client = &http.Client{Timeout: egressCAFetchTimeout}
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+tunnel.AgentEgressCAPath, nil)
-	if err != nil {
-		return tunnel.EgressCA{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := client.Do(req)
-	if err != nil {
-		return tunnel.EgressCA{}, fmt.Errorf("fetch egress ca: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEgressCAResponse))
-	if err != nil {
-		return tunnel.EgressCA{}, fmt.Errorf("fetch egress ca: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return tunnel.EgressCA{}, fmt.Errorf("fetch egress ca: %s: %s", resp.Status, printable(strings.TrimSpace(string(body)), "no detail"))
-	}
-	var ca tunnel.EgressCA
-	if err := json.Unmarshal(body, &ca); err != nil {
-		return tunnel.EgressCA{}, errEgressCAInvalid
-	}
-	block, _ := pem.Decode([]byte(ca.PEM))
-	if block == nil || block.Type != "CERTIFICATE" {
-		return tunnel.EgressCA{}, errEgressCAInvalid
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil || !cert.IsCA {
-		return tunnel.EgressCA{}, errEgressCAInvalid
-	}
-	sum := sha256.Sum256(block.Bytes)
-	if fingerprint := hex.EncodeToString(sum[:]); !strings.EqualFold(fingerprint, ca.SHA256) {
-		return tunnel.EgressCA{}, errEgressCAInvalid
-	}
-	return ca, nil
 }
