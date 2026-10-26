@@ -15,9 +15,16 @@ import (
 
 const defaultDialTimeout = 3 * time.Second
 
-type peer struct {
-	mu   sync.Mutex
+type dialFlight struct {
+	done chan struct{}
 	sess *yamux.Session
+	err  error
+}
+
+type peer struct {
+	mu      sync.Mutex
+	sess    *yamux.Session
+	dialing *dialFlight
 }
 
 type Client struct {
@@ -54,16 +61,46 @@ func (c *Client) session(ctx context.Context, addr string) (*yamux.Session, erro
 		return nil, err
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.sess != nil && !p.sess.IsClosed() {
-		return p.sess, nil
+		sess := p.sess
+		p.mu.Unlock()
+		return sess, nil
 	}
-	sess, err := c.connect(ctx, addr)
-	if err != nil {
-		return nil, err
+	flight := p.dialing
+	if flight == nil {
+		flight = &dialFlight{done: make(chan struct{})}
+		p.dialing = flight
+		go c.dial(p, flight, addr)
 	}
-	p.sess = sess
-	return sess, nil
+	p.mu.Unlock()
+	select {
+	case <-flight.done:
+		return flight.sess, flight.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (c *Client) dial(p *peer, flight *dialFlight, addr string) {
+	sess, err := c.connect(context.Background(), addr)
+	p.mu.Lock()
+	if err == nil && c.isClosed() {
+		_ = sess.Close()
+		sess, err = nil, fmt.Errorf("cluster: client closed")
+	}
+	if err == nil {
+		p.sess = sess
+	}
+	p.dialing = nil
+	flight.sess, flight.err = sess, err
+	p.mu.Unlock()
+	close(flight.done)
+}
+
+func (c *Client) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 func (c *Client) drop(addr string, sess *yamux.Session) {

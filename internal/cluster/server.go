@@ -17,6 +17,8 @@ import (
 const (
 	headerReadTimeout = 10 * time.Second
 	openStreamTimeout = 10 * time.Second
+
+	defaultMaxSessionStreams = 4096
 )
 
 type LocalResolver interface {
@@ -28,6 +30,8 @@ type ServerOptions struct {
 	Local  LocalResolver
 	Log    *slog.Logger
 	Now    func() time.Time
+
+	MaxSessionStreams int
 }
 
 type Server struct {
@@ -42,6 +46,8 @@ type Server struct {
 	closed bool
 	wg     sync.WaitGroup
 	nonces *nonceCache
+
+	maxSessionStreams int
 }
 
 func NewServer(opts ServerOptions) *Server {
@@ -53,13 +59,18 @@ func NewServer(opts ServerOptions) *Server {
 	if now == nil {
 		now = time.Now
 	}
+	maxStreams := opts.MaxSessionStreams
+	if maxStreams <= 0 {
+		maxStreams = defaultMaxSessionStreams
+	}
 	return &Server{
-		secret: opts.Secret,
-		local:  opts.Local,
-		log:    log,
-		now:    now,
-		active: make(map[net.Conn]struct{}),
-		nonces: newNonceCache(),
+		secret:            opts.Secret,
+		local:             opts.Local,
+		log:               log,
+		now:               now,
+		active:            make(map[net.Conn]struct{}),
+		nonces:            newNonceCache(),
+		maxSessionStreams: maxStreams,
 	}
 }
 
@@ -159,14 +170,23 @@ func (s *Server) serveSession(conn net.Conn) {
 	defer sess.Close()
 	var streams sync.WaitGroup
 	defer streams.Wait()
+	slots := make(chan struct{}, s.maxSessionStreams)
 	for {
 		stream, err := sess.AcceptStream()
 		if err != nil {
 			return
 		}
+		select {
+		case slots <- struct{}{}:
+		default:
+			s.log.Warn("relay session stream limit reached", "remote", conn.RemoteAddr().String(), "limit", s.maxSessionStreams)
+			_ = stream.Close()
+			continue
+		}
 		streams.Add(1)
 		go func() {
 			defer streams.Done()
+			defer func() { <-slots }()
 			defer stream.Close()
 			s.handle(stream)
 		}()
