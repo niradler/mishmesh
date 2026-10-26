@@ -4,7 +4,7 @@ set -eu
 staged_go=$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
 [ -z "$staged_go" ] && exit 0
 
-unformatted=$(echo "$staged_go" | xargs gofmt -l)
+unformatted=$(echo "$staged_go" | xargs "$(go env GOROOT)/bin/gofmt" -l)
 if [ -n "$unformatted" ]; then
   echo "pre-commit: gofmt needed on:"
   echo "$unformatted"

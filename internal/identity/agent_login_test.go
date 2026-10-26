@@ -36,16 +36,16 @@ func newClockedService(t *testing.T, now func() time.Time) *Service {
 
 func TestLoopbackRedirect(t *testing.T) {
 	cases := map[string]bool{
-		"http://127.0.0.1:5000/cb":      true,
-		"http://[::1]:5000/cb":          true,
-		"http://127.0.0.1/cb":           false,
-		"https://127.0.0.1:5000/cb":     false,
-		"http://localhost:5000/cb":      false,
-		"http://example.com:5000/cb":    false,
-		"http://u:p@127.0.0.1:5000/cb":  false,
-		"http://127.0.0.1:5000/cb#frag": false,
-		"http://10.0.0.1:5000/cb":       false,
-		"":                              false,
+		"http://127.0.0.1:5000/cb":                          true,
+		"http://[::1]:5000/cb":                              true,
+		"http://127.0.0.1/cb":                               false,
+		"https://127.0.0.1:5000/cb":                         false,
+		"http://localhost:5000/cb":                          false,
+		"http://example.com:5000/cb":                        false,
+		"http://u:p@127.0.0.1:5000/cb":                      false,
+		"http://127.0.0.1:5000/cb#frag":                     false,
+		"http://10.0.0.1:5000/cb":                           false,
+		"":                                                  false,
 		"http://127.0.0.1:5000/" + strings.Repeat("a", 600): false,
 	}
 	for raw, want := range cases {
