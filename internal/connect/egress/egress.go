@@ -359,15 +359,15 @@ func validExitTargets(targets []string) bool {
 }
 
 func confirmExit(stream net.Conn, targets []string) (net.Conn, *refusal) {
-	_ = stream.SetWriteDeadline(time.Now().Add(replyTimeout))
-	err := tunnel.WriteExitTargets(stream, targets)
-	_ = stream.SetWriteDeadline(time.Time{})
+	err := tunnel.WriteWithDeadline(stream, replyTimeout, func() error {
+		return tunnel.WriteExitTargets(stream, targets)
+	})
 	if err != nil {
 		return nil, &refusal{tunnel.EgressUnavailable, reasonExitOffline}
 	}
-	_ = stream.SetReadDeadline(time.Now().Add(tunnel.EgressReplyTimeout))
-	reply, err := tunnel.ReadEgressReply(stream)
-	_ = stream.SetReadDeadline(time.Time{})
+	reply, err := tunnel.ReadWithDeadline(stream, tunnel.EgressReplyTimeout, func() (tunnel.EgressReply, error) {
+		return tunnel.ReadEgressReply(stream)
+	})
 	if err != nil {
 		return nil, &refusal{tunnel.EgressDialFailed, reasonDial}
 	}
@@ -425,10 +425,9 @@ func (h *Handler) refuse(stream net.Conn, rec *flowRecord, r *refusal) {
 }
 
 func (h *Handler) reply(stream net.Conn, reply tunnel.EgressReply) bool {
-	_ = stream.SetWriteDeadline(time.Now().Add(replyTimeout))
-	err := tunnel.WriteEgressReply(stream, reply)
-	_ = stream.SetWriteDeadline(time.Time{})
-	return err == nil
+	return tunnel.WriteWithDeadline(stream, replyTimeout, func() error {
+		return tunnel.WriteEgressReply(stream, reply)
+	}) == nil
 }
 
 func (h *Handler) record(rec *flowRecord) {
@@ -460,9 +459,5 @@ func policyIDs(d authz.Decision) []string {
 }
 
 func truncate(s string) string {
-	const maxLen = 300
-	if len(s) > maxLen {
-		return s[:maxLen]
-	}
-	return s
+	return tunnel.TruncateUTF8(s, 300)
 }

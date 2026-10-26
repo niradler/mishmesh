@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
 func (a *Agent) serveDecrypted(client net.Conn, br *bufio.Reader, dest string, creds egressCreds) bool {
@@ -41,8 +43,8 @@ func (a *Agent) serveDecrypted(client net.Conn, br *bufio.Reader, dest string, c
 	if err != nil {
 		return true
 	}
-	raw := &bufferedConn{Conn: client, r: br}
-	if first[0] != tlsRecordHandshake {
+	raw := &tunnel.BufferedConn{Conn: client, R: br}
+	if first[0] != tunnel.TLSHandshakeRecord {
 		a.log.Info("egress refused: decrypt-scoped CONNECT did not start with tls", "destination", truncateLog(dest))
 		return true
 	}

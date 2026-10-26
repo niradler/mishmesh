@@ -229,7 +229,7 @@ func (a *Agent) serveConnect(ctx context.Context, client net.Conn, br *bufio.Rea
 		return
 	}
 	_ = client.SetDeadline(time.Time{})
-	tunnel.Splice(&bufferedConn{Conn: client, r: br}, stream)
+	tunnel.Splice(&tunnel.BufferedConn{Conn: client, R: br}, stream)
 }
 
 func (a *Agent) serveProxyHTTP(client net.Conn, head []byte) {
@@ -323,8 +323,9 @@ func exitGuard(allow []string, log *slog.Logger) ExitDialer {
 
 func (a *Agent) serveExit(ctx context.Context, stream net.Conn, dest string, reportResolved bool) {
 	refuse := func(status tunnel.EgressStatus, reason string) {
-		_ = stream.SetWriteDeadline(time.Now().Add(egressHandshakeTimeout))
-		_ = tunnel.WriteEgressReply(stream, tunnel.EgressReply{Status: status, Reason: reason})
+		_ = tunnel.WriteWithDeadline(stream, egressHandshakeTimeout, func() error {
+			return tunnel.WriteEgressReply(stream, tunnel.EgressReply{Status: status, Reason: reason})
+		})
 	}
 	if a.opts.Egress == nil || !a.opts.Egress.ServeExit {
 		a.log.Warn("egress exit request refused: serve_exit is off")
@@ -359,11 +360,11 @@ func (a *Agent) serveExit(ctx context.Context, stream net.Conn, dest string, rep
 		return
 	}
 	defer upstream.Close()
-	_ = stream.SetWriteDeadline(time.Now().Add(egressHandshakeTimeout))
-	if err := tunnel.WriteEgressReply(stream, tunnel.EgressReply{Status: tunnel.EgressOK}); err != nil {
+	if err := tunnel.WriteWithDeadline(stream, egressHandshakeTimeout, func() error {
+		return tunnel.WriteEgressReply(stream, tunnel.EgressReply{Status: tunnel.EgressOK})
+	}); err != nil {
 		return
 	}
-	_ = stream.SetWriteDeadline(time.Time{})
 	tunnel.Splice(stream, upstream)
 }
 
@@ -377,15 +378,15 @@ func dialApprovedExit(ctx context.Context, stream net.Conn, dialer ExitDialer, d
 	if len(resolved) > tunnel.MaxExitTargets {
 		resolved = resolved[:tunnel.MaxExitTargets]
 	}
-	_ = stream.SetWriteDeadline(time.Now().Add(egressHandshakeTimeout))
-	err = tunnel.WriteExitTargets(stream, resolved)
-	_ = stream.SetWriteDeadline(time.Time{})
+	err = tunnel.WriteWithDeadline(stream, egressHandshakeTimeout, func() error {
+		return tunnel.WriteExitTargets(stream, resolved)
+	})
 	if err != nil {
 		return nil, errExitAborted
 	}
-	_ = stream.SetReadDeadline(time.Now().Add(tunnel.EgressReplyTimeout))
-	approved, err := tunnel.ReadExitTargets(stream)
-	_ = stream.SetReadDeadline(time.Time{})
+	approved, err := tunnel.ReadWithDeadline(stream, tunnel.EgressReplyTimeout, func() ([]string, error) {
+		return tunnel.ReadExitTargets(stream)
+	})
 	if err != nil {
 		return nil, errExitAborted
 	}
@@ -441,22 +442,5 @@ func printable(s, fallback string) string {
 }
 
 func truncateLog(s string) string {
-	const maxLen = 256
-	if len(s) > maxLen {
-		return s[:maxLen]
-	}
-	return s
-}
-
-type bufferedConn struct {
-	net.Conn
-	r *bufio.Reader
-}
-
-func (c *bufferedConn) Read(p []byte) (int, error) {
-	return c.r.Read(p)
-}
-
-func (c *bufferedConn) CloseWrite() error {
-	return tunnel.CloseWrite(c.Conn)
+	return tunnel.TruncateUTF8(s, 256)
 }

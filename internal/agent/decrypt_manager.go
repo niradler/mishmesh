@@ -24,7 +24,6 @@ const (
 	decryptExpiryMargin   = time.Minute
 	decryptLeafBackdate   = 5 * time.Minute
 	decryptSerialBits     = 128
-	tlsRecordHandshake    = 0x16
 	maxEgressCAResponse   = 64 << 10
 	egressCAFetchTimeout  = 15 * time.Second
 	decryptRefreshDivisor = 3

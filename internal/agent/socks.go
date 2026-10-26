@@ -73,7 +73,7 @@ func (a *Agent) serveSocksClient(ctx context.Context, client net.Conn) {
 		return
 	}
 	_ = client.SetDeadline(time.Time{})
-	tunnel.Splice(&bufferedConn{Conn: client, r: bufio.NewReader(io.MultiReader(br, client))}, stream)
+	tunnel.Splice(&tunnel.BufferedConn{Conn: client, R: bufio.NewReader(io.MultiReader(br, client))}, stream)
 }
 
 func (a *Agent) socksHandshake(client net.Conn, br *bufio.Reader) (egressCreds, error) {
