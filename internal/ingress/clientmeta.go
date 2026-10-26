@@ -1,6 +1,7 @@
 package ingress
 
 import (
+	"maps"
 	"net"
 	"net/http"
 
@@ -13,9 +14,7 @@ func withClientIP(meta map[string]string, ip string) map[string]string {
 		return meta
 	}
 	out := make(map[string]string, len(meta)+1)
-	for k, v := range meta {
-		out[k] = v
-	}
+	maps.Copy(out, meta)
 	out[tunnel.MetaClientIP] = ip
 	return out
 }
