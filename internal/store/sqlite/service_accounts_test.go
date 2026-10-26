@@ -22,6 +22,10 @@ func TestListAllEndpoints(t *testing.T) {
 	storetest.RunListAllEndpoints(t, func(t *testing.T) store.DataStore { return newStore(t) })
 }
 
+func TestGetUsersByIDs(t *testing.T) {
+	storetest.RunGetUsersByIDs(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}
+
 func TestKeepOwner(t *testing.T) {
 	storetest.RunKeepOwner(t, func(t *testing.T) store.DataStore { return newStore(t) })
 }

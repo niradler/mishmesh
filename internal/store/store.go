@@ -430,6 +430,7 @@ type QuotaStore interface {
 type UserStore interface {
 	CreateUser(ctx context.Context, u *User) error
 	GetUserByID(ctx context.Context, id string) (*User, error)
+	GetUsersByIDs(ctx context.Context, ids []string) ([]*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserByGoogleSub(ctx context.Context, sub string) (*User, error)
 	UpdateUser(ctx context.Context, u *User) error

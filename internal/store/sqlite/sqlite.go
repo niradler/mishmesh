@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -550,6 +551,36 @@ func (s *Store) CreateUser(ctx context.Context, u *store.User) error {
 
 func (s *Store) GetUserByID(ctx context.Context, id string) (*store.User, error) {
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE id = ?`, id).Scan)
+}
+
+func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) ([]*store.User, error) {
+	var out []*store.User
+	for chunk := range slices.Chunk(slices.Compact(slices.Sorted(slices.Values(ids))), 500) {
+		args := make([]any, len(chunk))
+		marks := make([]string, len(chunk))
+		for i, id := range chunk {
+			args[i], marks[i] = id, "?"
+		}
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE id IN (`+strings.Join(marks, ", ")+`)`, args...)
+		if err != nil {
+			return nil, wrap("get users", err)
+		}
+		for rows.Next() {
+			u, err := scanUser(rows.Scan)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, u)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, wrap("get users", err)
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*store.User, error) {

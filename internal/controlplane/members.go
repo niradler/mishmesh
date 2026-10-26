@@ -30,6 +30,18 @@ func (a *API) listOrgsHandler(w http.ResponseWriter, r *http.Request) {
 	writeList(a, w, orgs, err, toOrgDTO)
 }
 
+func (a *API) usersByID(ctx context.Context, ids []string) (map[string]*store.User, error) {
+	users, err := a.data.GetUsersByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]*store.User, len(users))
+	for _, u := range users {
+		byID[u.ID] = u
+	}
+	return byID, nil
+}
+
 type memberDTO struct {
 	User      map[string]string `json:"user"`
 	Role      string            `json:"role"`
@@ -42,10 +54,18 @@ func (a *API) listMembersHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
+	userIDs := make([]string, len(memberships))
+	for i, m := range memberships {
+		userIDs[i] = m.UserID
+	}
+	users, err := a.usersByID(r.Context(), userIDs)
+	if a.handleErr(w, err) {
+		return
+	}
 	out := make([]memberDTO, 0, len(memberships))
 	for _, m := range memberships {
-		user, err := a.data.GetUserByID(r.Context(), m.UserID)
-		if err != nil {
+		user, ok := users[m.UserID]
+		if !ok {
 			continue
 		}
 		out = append(out, memberDTO{User: userDTO(user), Role: m.Role, Disabled: m.DisabledAt != nil, CreatedAt: m.CreatedAt})
