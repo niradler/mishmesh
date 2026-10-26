@@ -249,7 +249,7 @@ export const HELP = {
   },
   loadBalancing: {
     title: "Load balancing",
-    body: "Round robin spreads requests across healthy targets. Failover uses the first healthy target in order.",
+    body: "Round robin spreads requests across healthy targets. Failover uses the first healthy target in order. Sticky keeps each client IP on the same healthy target.",
   },
   originTls: {
     title: "Origin TLS",

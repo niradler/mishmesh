@@ -163,7 +163,7 @@ func (t *TCP) handle(client net.Conn, endpointID string) {
 	if !ok {
 		return
 	}
-	stream, err := agent.OpenStream(context.Background(), endpointID, store.KindTCP, nil)
+	stream, err := agent.OpenStream(context.Background(), endpointID, store.KindTCP, withClientIP(nil, peerIP(client.RemoteAddr())))
 	if err != nil {
 		t.log.Warn("tcp open stream failed", "endpoint_id", endpointID, "err", err)
 		return

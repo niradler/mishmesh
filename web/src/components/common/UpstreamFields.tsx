@@ -149,6 +149,7 @@ export function UpstreamAdvancedFields({
             <SelectContent>
               <SelectItem value="round_robin">Round robin</SelectItem>
               <SelectItem value="failover">Failover (first healthy target)</SelectItem>
+              <SelectItem value="sticky">Sticky (by client IP)</SelectItem>
             </SelectContent>
           </Select>
         </div>

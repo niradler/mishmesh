@@ -8,7 +8,7 @@ export type EndpointLifecycle = "ephemeral" | "reserved";
 
 export type EndpointMethod = "native" | "ssh" | "proxy";
 
-export type LoadBalanceMode = "" | "round_robin" | "failover";
+export type LoadBalanceMode = "" | "round_robin" | "failover" | "sticky";
 
 export type HealthState =
   "up" | "down" | "degraded" | "sleeping" | "waking" | "offline" | "unknown";

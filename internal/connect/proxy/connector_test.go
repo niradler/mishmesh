@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"slices"
 	"testing"
@@ -46,12 +47,96 @@ func TestOrderTargets(t *testing.T) {
 				c.SetTargetHealth(tc.health)
 			}
 			for i, want := range tc.want {
-				got := c.orderTargets("ep_1", &tc.policy)
+				got := c.orderTargets("ep_1", "", &tc.policy)
 				if !slices.Equal(got, want) {
 					t.Fatalf("call %d: got %v want %v", i, got, want)
 				}
 			}
 		})
+	}
+}
+
+func stickyPolicy(targets ...string) *store.EndpointPolicy {
+	return &store.EndpointPolicy{LoadBalance: store.LoadBalanceSticky, ProxyTargets: targets}
+}
+
+func TestStickySameIPSameTarget(t *testing.T) {
+	c := newConn(nil, nil, nil)
+	pol := stickyPolicy("a:1", "b:1", "c:1", "d:1")
+	for _, ip := range []string{"192.0.2.1", "198.51.100.7", "2001:db8::1"} {
+		first := c.orderTargets("ep_1", ip, pol)
+		for i := 0; i < 200; i++ {
+			if got := c.orderTargets("ep_1", ip, pol); !slices.Equal(got, first) {
+				t.Fatalf("ip %s call %d: got %v want %v", ip, i, got, first)
+			}
+		}
+	}
+}
+
+func TestStickySpreadsAcrossTargets(t *testing.T) {
+	c := newConn(nil, nil, nil)
+	pol := stickyPolicy("a:1", "b:1", "c:1")
+	counts := map[string]int{}
+	for i := 0; i < 600; i++ {
+		counts[c.orderTargets("ep_1", fmt.Sprintf("10.0.%d.%d", i/250, i%250), pol)[0]]++
+	}
+	for _, target := range pol.ProxyTargets {
+		if counts[target] < 100 {
+			t.Fatalf("target %s got %d of 600 clients: %v", target, counts[target], counts)
+		}
+	}
+}
+
+func TestStickyUnhealthyTargetMovesOnlyItsClients(t *testing.T) {
+	targets := []string{"a:1", "b:1", "c:1", "d:1"}
+	pol := stickyPolicy(targets...)
+	c := newConn(nil, nil, nil)
+	before := map[string][]string{}
+	for i := 0; i < 400; i++ {
+		ip := fmt.Sprintf("172.16.%d.%d", i/250, i%250)
+		before[ip] = c.orderTargets("ep_1", ip, pol)
+	}
+	down := "b:1"
+	c.SetTargetHealth(fakeHealth{down: false})
+	moved := 0
+	for ip, was := range before {
+		now := c.orderTargets("ep_1", ip, pol)
+		if now[len(now)-1] != down {
+			t.Fatalf("ip %s: unhealthy target not last: %v", ip, now)
+		}
+		if was[0] == down {
+			moved++
+			if now[0] != was[1] {
+				t.Fatalf("ip %s: moved to %s, want next-ranked %s", ip, now[0], was[1])
+			}
+			continue
+		}
+		if now[0] != was[0] {
+			t.Fatalf("ip %s pinned to %s moved to %s", ip, was[0], now[0])
+		}
+	}
+	if moved == 0 {
+		t.Fatal("no client was pinned to the downed target")
+	}
+}
+
+func TestStickyWithoutClientIPRoundRobins(t *testing.T) {
+	c := newConn(nil, nil, nil)
+	pol := stickyPolicy("a:1", "b:1", "c:1")
+	want := [][]string{{"a:1", "b:1", "c:1"}, {"b:1", "c:1", "a:1"}, {"c:1", "a:1", "b:1"}}
+	for i, w := range want {
+		if got := c.orderTargets("ep_1", "", pol); !slices.Equal(got, w) {
+			t.Fatalf("call %d: got %v want %v", i, got, w)
+		}
+	}
+}
+
+func TestStickyAllUnhealthyKeepsConfiguredOrder(t *testing.T) {
+	c := newConn(nil, nil, nil)
+	c.SetTargetHealth(fakeHealth{"a:1": false, "b:1": false})
+	got := c.orderTargets("ep_1", "192.0.2.1", stickyPolicy("a:1", "b:1"))
+	if !slices.Equal(got, []string{"a:1", "b:1"}) {
+		t.Fatalf("got %v", got)
 	}
 }
 

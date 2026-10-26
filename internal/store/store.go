@@ -150,6 +150,7 @@ func PortKind(kind string) bool {
 const (
 	LoadBalanceRoundRobin = "round_robin"
 	LoadBalanceFailover   = "failover"
+	LoadBalanceSticky     = "sticky"
 )
 
 type OriginTLS struct {

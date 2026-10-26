@@ -290,6 +290,7 @@ func (i *Ingress) proxyHTTP(w http.ResponseWriter, r *http.Request, conn store.A
 		outPath:     outPath,
 		target:      i.meterTargetFor(ep, store.KindHTTP, limit),
 		trusted:     i.trusted,
+		clientIP:    requestClientIP(r, i.trusted),
 		clientHTTP1: r.ProtoMajor == 1,
 	}
 	i.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), upstreamKey{}, u)))
@@ -301,7 +302,7 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 		http.Error(w, "upgrade unsupported", http.StatusInternalServerError)
 		return
 	}
-	raw, err := conn.OpenStream(r.Context(), ep.ID, store.KindHTTP, nil)
+	raw, err := conn.OpenStream(r.Context(), ep.ID, store.KindHTTP, withClientIP(nil, requestClientIP(r, i.trusted)))
 	if err != nil {
 		http.Error(w, "tunnel offline: could not open a stream to the agent", http.StatusServiceUnavailable)
 		i.recordCode(http.StatusServiceUnavailable)

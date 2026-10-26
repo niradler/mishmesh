@@ -1,10 +1,13 @@
 package proxy
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,7 +67,7 @@ func (c *Connector) counter(endpointID string) *atomic.Uint64 {
 	return v.(*atomic.Uint64)
 }
 
-func (c *Connector) orderTargets(endpointID string, pol *store.EndpointPolicy) []string {
+func (c *Connector) orderTargets(endpointID, clientIP string, pol *store.EndpointPolicy) []string {
 	targets := pol.ProxyTargets
 	if len(targets) < 2 {
 		return targets
@@ -81,7 +84,11 @@ func (c *Connector) orderTargets(endpointID string, pol *store.EndpointPolicy) [
 		}
 		preferred = append(preferred, t)
 	}
-	if pol.LoadBalance != store.LoadBalanceFailover && len(preferred) > 1 {
+	switch {
+	case len(preferred) < 2 || pol.LoadBalance == store.LoadBalanceFailover:
+	case pol.LoadBalance == store.LoadBalanceSticky && clientIP != "":
+		preferred = rendezvousOrder(clientIP, preferred)
+	default:
 		offset := int((c.counter(endpointID).Add(1) - 1) % uint64(len(preferred)))
 		rotated := make([]string, 0, len(preferred))
 		rotated = append(rotated, preferred[offset:]...)
@@ -89,6 +96,26 @@ func (c *Connector) orderTargets(endpointID string, pol *store.EndpointPolicy) [
 		preferred = rotated
 	}
 	return append(preferred, fallback...)
+}
+
+func rendezvousScore(clientIP, target string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(clientIP))
+	_, _ = h.Write([]byte{'|'})
+	_, _ = h.Write([]byte(target))
+	return h.Sum64()
+}
+
+func rendezvousOrder(clientIP string, targets []string) []string {
+	ordered := slices.Clone(targets)
+	scores := make(map[string]uint64, len(ordered))
+	for _, t := range ordered {
+		scores[t] = rendezvousScore(clientIP, t)
+	}
+	slices.SortStableFunc(ordered, func(a, b string) int {
+		return cmp.Compare(scores[b], scores[a])
+	})
+	return ordered
 }
 
 func targetMatchesKind(target, kind string) bool {
@@ -108,7 +135,7 @@ func (c *Connector) OpenStream(ctx context.Context, endpointID, kind string, met
 		return nil, fmt.Errorf("proxy: endpoint %s has no proxy_targets", endpointID)
 	}
 	var lastErr error
-	for _, target := range c.orderTargets(endpointID, ep.Policy) {
+	for _, target := range c.orderTargets(endpointID, meta[tunnel.MetaClientIP], ep.Policy) {
 		if !targetMatchesKind(target, kind) {
 			lastErr = fmt.Errorf("target %s does not carry %s traffic", target, kind)
 			continue

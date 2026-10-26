@@ -67,7 +67,7 @@ Stored in the existing JSON `policy` column, so no migration on SQLite or Postgr
 
 ## 5. Load balancing (B)
 
-- Targets come from `proxy_targets`. `round_robin` (default when there is more than one target) rotates across healthy targets. `failover` always takes the first healthy target in order.
+- Targets come from `proxy_targets`. `round_robin` (default when there is more than one target) rotates across healthy targets. `failover` always takes the first healthy target in order. `sticky` picks a healthy target by client IP (rendezvous hashing).
 - Unknown health counts as healthy. When every target is unhealthy, all of them are tried in order.
 - A dial error moves on to the next target in the same request. This is safe because nothing has been written yet.
 - HTTP only for v1. TCP and TLS-passthrough endpoints use the first target.
