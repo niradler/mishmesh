@@ -66,6 +66,8 @@ type API struct {
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
 	authzCache   map[string]authzEntry
+	authzGen     uint64
+	authzLoads   map[authzLoadKey]*authzLoad
 	denyAuthz    *authz.Authorizer
 	policies     *authz.Cache
 	now          func() time.Time
@@ -102,6 +104,7 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 		denyAuthz:    authz.DenyAll(),
 		policies:     authz.NewCache(authz.DefaultCacheSize),
 		authzCache:   make(map[string]authzEntry),
+		authzLoads:   make(map[authzLoadKey]*authzLoad),
 		now:          time.Now,
 
 		maxOrgsPerUser: DefaultMaxOrgsPerUser,
@@ -119,11 +122,40 @@ func (a *API) authorizerFor(ctx context.Context, orgID string) *authz.Authorizer
 
 func (a *API) orgAuthorizer(ctx context.Context, orgID string) (*authz.Authorizer, error) {
 	a.authzMu.Lock()
-	defer a.authzMu.Unlock()
-	now := a.now()
-	if e, ok := a.authzCache[orgID]; ok && now.Before(e.expires) {
+	if e, ok := a.authzCache[orgID]; ok && a.now().Before(e.expires) {
+		a.authzMu.Unlock()
 		return e.az, nil
 	}
+	key := authzLoadKey{orgID: orgID, gen: a.authzGen}
+	call, inflight := a.authzLoads[key]
+	if !inflight {
+		call = &authzLoad{done: make(chan struct{})}
+		a.authzLoads[key] = call
+		go a.runAuthzLoad(context.WithoutCancel(ctx), key, call)
+	}
+	a.authzMu.Unlock()
+	select {
+	case <-call.done:
+		return call.az, call.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (a *API) runAuthzLoad(ctx context.Context, key authzLoadKey, call *authzLoad) {
+	ctx, cancel := context.WithTimeout(ctx, authzLoadTimeout)
+	defer cancel()
+	call.az, call.err = a.loadOrgAuthorizer(ctx, key.orgID)
+	a.authzMu.Lock()
+	delete(a.authzLoads, key)
+	if call.err == nil && a.authzGen == key.gen {
+		a.authzCache[key.orgID] = authzEntry{az: call.az, expires: a.now().Add(authzCacheTTL)}
+	}
+	a.authzMu.Unlock()
+	close(call.done)
+}
+
+func (a *API) loadOrgAuthorizer(ctx context.Context, orgID string) (*authz.Authorizer, error) {
 	pol, err := a.data.GetOrgPolicy(ctx, orgID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, fmt.Errorf("load org policy: %w", err)
@@ -137,11 +169,24 @@ func (a *API) orgAuthorizer(ctx context.Context, orgID string) (*authz.Authorize
 		}
 		az = parsed.WithOwner(orgID)
 	}
-	a.authzCache[orgID] = authzEntry{az: az, expires: now.Add(authzCacheTTL)}
 	return az, nil
 }
 
-const authzCacheTTL = 5 * time.Second
+type authzLoadKey struct {
+	orgID string
+	gen   uint64
+}
+
+type authzLoad struct {
+	done chan struct{}
+	az   *authz.Authorizer
+	err  error
+}
+
+const (
+	authzCacheTTL    = 5 * time.Second
+	authzLoadTimeout = 10 * time.Second
+)
 
 type authzEntry struct {
 	az      *authz.Authorizer
@@ -150,6 +195,7 @@ type authzEntry struct {
 
 func (a *API) ClearAuthzCache(orgID string) {
 	a.authzMu.Lock()
+	a.authzGen++
 	if orgID == "" {
 		clear(a.authzCache)
 	} else {
@@ -160,6 +206,7 @@ func (a *API) ClearAuthzCache(orgID string) {
 
 func (a *API) invalidateAuthz(orgID string) {
 	a.authzMu.Lock()
+	a.authzGen++
 	delete(a.authzCache, orgID)
 	a.authzMu.Unlock()
 	a.flushDecisions(orgID)
