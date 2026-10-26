@@ -24,50 +24,54 @@ func (c *ClusterConnStore) PortClaims(portMin, portMax int) *PortClaims {
 	return &PortClaims{rdb: c.rdb, portMin: portMin, portMax: portMax}
 }
 
-func (p *PortClaims) Claim(ctx context.Context, endpointID string, requested int) (int, error) {
-	if existing, err := p.rdb.Get(ctx, endpointPortKeyPrefix+endpointID).Int(); err == nil {
-		return existing, nil
-	} else if !errors.Is(err, goredis.Nil) {
-		return 0, fmt.Errorf("redis: read port claim: %w", err)
-	}
-	if requested != 0 {
-		if requested < p.portMin || requested > p.portMax {
-			return 0, fmt.Errorf("tcp port %d outside cluster range %d-%d", requested, p.portMin, p.portMax)
-		}
-		ok, err := p.tryClaim(ctx, endpointID, requested)
-		if err != nil {
-			return 0, err
-		}
-		if !ok {
-			return 0, fmt.Errorf("tcp port %d already in use", requested)
-		}
-		return requested, nil
-	}
-	for port := p.portMin; port <= p.portMax; port++ {
-		ok, err := p.tryClaim(ctx, endpointID, port)
-		if err != nil {
-			return 0, err
-		}
-		if ok {
-			return port, nil
-		}
-	}
-	return 0, fmt.Errorf("no free tcp port in range %d-%d", p.portMin, p.portMax)
-}
+var claimPortScript = goredis.NewScript(`
+local existing = redis.call('GET', KEYS[1])
+if existing then
+  return tonumber(existing)
+end
+local id = ARGV[1]
+local requested = tonumber(ARGV[2])
+local first = tonumber(ARGV[3])
+local last = tonumber(ARGV[4])
+local prefix = ARGV[5]
+local function claim(port)
+  if redis.call('SET', prefix .. port, id, 'NX') then
+    redis.call('SET', KEYS[1], port)
+    return true
+  end
+  return false
+end
+if requested ~= 0 then
+  if requested < first or requested > last then
+    return -2
+  end
+  if claim(requested) then
+    return requested
+  end
+  return -1
+end
+for port = first, last do
+  if claim(port) then
+    return port
+  end
+end
+return 0
+`)
 
-func (p *PortClaims) tryClaim(ctx context.Context, endpointID string, port int) (bool, error) {
-	ok, err := p.rdb.SetNX(ctx, portKeyPrefix+strconv.Itoa(port), endpointID, 0).Result()
+func (p *PortClaims) Claim(ctx context.Context, endpointID string, requested int) (int, error) {
+	port, err := claimPortScript.Run(ctx, p.rdb, []string{endpointPortKeyPrefix + endpointID}, endpointID, requested, p.portMin, p.portMax, portKeyPrefix).Int()
 	if err != nil {
-		return false, fmt.Errorf("redis: claim port %d: %w", port, err)
+		return 0, fmt.Errorf("redis: claim port: %w", err)
 	}
-	if !ok {
-		return false, nil
+	switch {
+	case port == -2:
+		return 0, fmt.Errorf("tcp port %d outside cluster range %d-%d", requested, p.portMin, p.portMax)
+	case port == -1:
+		return 0, fmt.Errorf("tcp port %d already in use", requested)
+	case port == 0:
+		return 0, fmt.Errorf("no free tcp port in range %d-%d", p.portMin, p.portMax)
 	}
-	if err := p.rdb.Set(ctx, endpointPortKeyPrefix+endpointID, port, 0).Err(); err != nil {
-		p.rdb.Del(ctx, portKeyPrefix+strconv.Itoa(port))
-		return false, fmt.Errorf("redis: record port claim: %w", err)
-	}
-	return true, nil
+	return port, nil
 }
 
 func (p *PortClaims) Release(ctx context.Context, endpointID string) error {
