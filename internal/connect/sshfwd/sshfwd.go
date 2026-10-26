@@ -326,7 +326,7 @@ func (s *Server) serveGlobalRequests(ctx context.Context, ag *store.Agent, orgID
 				continue
 			}
 			ac.setForward(ep.ID, fr.BindAddr, boundPort)
-			ac.announce(s.publicURL(ep))
+			ac.announce(ep.ID, s.publicURL(ep))
 			s.log.Info("ssh remote forward bound", "agent_id", ag.ID, "endpoint_id", ep.ID, "url", s.publicURL(ep))
 			if req.WantReply {
 				_ = req.Reply(true, ssh.Marshal(forwardReply{BoundPort: uint32(boundPort)}))

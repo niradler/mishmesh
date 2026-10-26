@@ -23,6 +23,11 @@ type forwardedTCPIP struct {
 	OriginPort uint32
 }
 
+type announcement struct {
+	endpointID string
+	url        string
+}
+
 type agentConn struct {
 	agentID  string
 	user     string
@@ -31,7 +36,7 @@ type agentConn struct {
 	mu       sync.Mutex
 	forwards map[string]forwardSpec
 	sessions map[ssh.Channel]struct{}
-	urls     []string
+	urls     []announcement
 }
 
 var _ store.AgentConn = (*agentConn)(nil)
@@ -50,10 +55,10 @@ func newAgentConn(agentID string, conn *ssh.ServerConn, metrics Metrics) *agentC
 func (a *agentConn) addSession(ch ssh.Channel) {
 	a.mu.Lock()
 	a.sessions[ch] = struct{}{}
-	known := append([]string(nil), a.urls...)
+	known := append([]announcement(nil), a.urls...)
 	a.mu.Unlock()
 	for _, u := range known {
-		_, _ = ch.Write([]byte("  " + u + "\r\n"))
+		_, _ = ch.Write([]byte("  " + u.url + "\r\n"))
 	}
 }
 
@@ -63,9 +68,9 @@ func (a *agentConn) removeSession(ch ssh.Channel) {
 	a.mu.Unlock()
 }
 
-func (a *agentConn) announce(url string) {
+func (a *agentConn) announce(endpointID, url string) {
 	a.mu.Lock()
-	a.urls = append(a.urls, url)
+	a.urls = append(a.urls, announcement{endpointID: endpointID, url: url})
 	sessions := make([]ssh.Channel, 0, len(a.sessions))
 	for ch := range a.sessions {
 		sessions = append(sessions, ch)
@@ -87,6 +92,13 @@ func (a *agentConn) setForward(endpointID, bindAddr string, bindPort int) {
 func (a *agentConn) dropForward(endpointID string) {
 	a.mu.Lock()
 	delete(a.forwards, endpointID)
+	kept := a.urls[:0]
+	for _, u := range a.urls {
+		if u.endpointID != endpointID {
+			kept = append(kept, u)
+		}
+	}
+	a.urls = kept
 	a.mu.Unlock()
 }
 
