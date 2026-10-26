@@ -265,8 +265,7 @@ func (a *API) authorizeMachine(w http.ResponseWriter, r *http.Request, raw strin
 		writeStoreUnavailable(w)
 		return nil, false
 	}
-	ctx := a.authContext(r, p.OrgID, "service_account:"+sa.ID, sa.Role, false)
-	return context.WithValue(ctx, ctxPrincipalType, authz.EntityServiceAccount), true
+	return a.authContext(r, caller{orgID: p.OrgID, actor: "service_account:" + sa.ID, role: sa.Role, kind: authz.EntityServiceAccount}), true
 }
 
 func (a *API) tokenAuthMethods() []string {

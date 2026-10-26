@@ -74,8 +74,7 @@ func (a *API) addMemberHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "cannot grant a role above your own")
 		return
 	}
-	actor, _ := r.Context().Value(ctxActor).(string)
-	inv, token, err := a.createInvite(r.Context(), a.orgScope(r), email, req.Role, actor)
+	inv, token, err := a.createInvite(r.Context(), a.orgScope(r), email, req.Role, a.actor(r))
 	if err != nil {
 		a.log.Warn("create invite failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

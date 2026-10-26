@@ -221,18 +221,23 @@ func (a *API) flushDecisions(orgID string) {
 	}
 }
 
-type ctxKey int
+type callerKey struct{}
 
-const (
-	ctxOrgID ctxKey = iota
-	ctxActor
-	ctxRole
-	ctxAdmin
-	ctxPrincipalType
-)
+type caller struct {
+	orgID string
+	actor string
+	role  string
+	admin bool
+	kind  authz.EntityType
+}
+
+func callerOf(r *http.Request) caller {
+	c, _ := r.Context().Value(callerKey{}).(caller)
+	return c
+}
 
 func (a *API) orgScope(r *http.Request) string {
-	if v, ok := r.Context().Value(ctxOrgID).(string); ok && v != "" {
+	if v := callerOf(r).orgID; v != "" {
 		return v
 	}
 	if v := r.URL.Query().Get("org_id"); v != "" {
@@ -242,12 +247,11 @@ func (a *API) orgScope(r *http.Request) string {
 }
 
 func (a *API) isAdmin(r *http.Request) bool {
-	v, _ := r.Context().Value(ctxAdmin).(bool)
-	return v
+	return callerOf(r).admin
 }
 
 func (a *API) actor(r *http.Request) string {
-	if v, ok := r.Context().Value(ctxActor).(string); ok && v != "" {
+	if v := callerOf(r).actor; v != "" {
 		return v
 	}
 	return "system"
@@ -420,10 +424,9 @@ func (a *API) permitted(r *http.Request, action authz.Action) bool {
 	if _, restricted := operatorOnlyActions[action]; restricted {
 		return false
 	}
-	role, _ := r.Context().Value(ctxRole).(string)
-	principalType, _ := r.Context().Value(ctxPrincipalType).(authz.EntityType)
+	c := callerOf(r)
 	org := a.orgScope(r)
-	return a.authorizerFor(r.Context(), org).Authorize(authz.Principal{ID: a.actor(r), Type: principalType, Role: role, Org: org}, action)
+	return a.authorizerFor(r.Context(), org).Authorize(authz.Principal{ID: a.actor(r), Type: c.kind, Role: c.role, Org: org}, action)
 }
 
 func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context, bool) {
@@ -433,7 +436,7 @@ func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return nil, false
 		}
-		return a.authContext(r, a.queryOrg(r), "admin", store.RoleOwner, true), true
+		return a.authContext(r, caller{orgID: a.queryOrg(r), actor: "admin", role: store.RoleOwner, admin: true}), true
 	}
 	if a.authEnabled() {
 		if err := a.csrfCheck(r); err != nil {
@@ -449,21 +452,17 @@ func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context
 			}
 			return nil, false
 		}
-		return a.authContext(r, su.orgID, su.user.Email, su.role, false), true
+		return a.authContext(r, caller{orgID: su.orgID, actor: su.user.Email, role: su.role}), true
 	}
 	if a.adminToken != "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return nil, false
 	}
-	return a.authContext(r, a.queryOrg(r), "system", store.RoleOwner, true), true
+	return a.authContext(r, caller{orgID: a.queryOrg(r), actor: "system", role: store.RoleOwner, admin: true}), true
 }
 
-func (a *API) authContext(r *http.Request, orgID, actor, role string, admin bool) context.Context {
-	ctx := context.WithValue(r.Context(), ctxOrgID, orgID)
-	ctx = context.WithValue(ctx, ctxActor, actor)
-	ctx = context.WithValue(ctx, ctxRole, role)
-	ctx = context.WithValue(ctx, ctxAdmin, admin)
-	return ctx
+func (a *API) authContext(r *http.Request, c caller) context.Context {
+	return context.WithValue(r.Context(), callerKey{}, c)
 }
 
 func (a *API) queryOrg(r *http.Request) string {

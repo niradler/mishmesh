@@ -33,8 +33,7 @@ func (a *API) callerRole(r *http.Request) string {
 	if a.isAdmin(r) {
 		return store.RoleOwner
 	}
-	role, _ := r.Context().Value(ctxRole).(string)
-	return role
+	return callerOf(r).role
 }
 
 func (a *API) canGrant(r *http.Request, role string) bool {
