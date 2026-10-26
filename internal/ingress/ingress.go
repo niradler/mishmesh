@@ -72,6 +72,7 @@ type Ingress struct {
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
+	misses    *ttlCache[struct{}]
 	basicAuth *ttlCache[struct{}]
 }
 
@@ -99,6 +100,7 @@ func New(opts Options) *Ingress {
 
 		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
+		misses:    newTTLCache[struct{}](min(opts.LookupCacheTTL, negativeCacheTTL)),
 		basicAuth: newTTLCache[struct{}](basicAuthCacheTTL),
 	}
 	if i.limiter == nil {
