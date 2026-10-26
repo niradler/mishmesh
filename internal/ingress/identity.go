@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -152,6 +153,14 @@ func reauthWouldRepeat(p *identity.Principal) bool {
 	return !p.AuthTime.IsZero() && time.Since(p.AuthTime) <= identity.EndpointReauthMaxAge
 }
 
+func canonicalDecisionPath(p string) string {
+	clean := path.Clean("/" + p)
+	if clean != "/" && strings.HasSuffix(p, "/") {
+		return clean + "/"
+	}
+	return clean
+}
+
 func (i *Ingress) decideEndpoint(r *http.Request, ep *store.Endpoint, outPath string, principal *identity.Principal) (authz.Decision, error) {
 	ref := authz.EntityRef{Type: authz.EntityAnonymous, ID: authz.AnonymousID}
 	scope := identity.Scope{OrgID: ep.OrgID}
@@ -160,7 +169,7 @@ func (i *Ingress) decideEndpoint(r *http.Request, ep *store.Endpoint, outPath st
 		Host:       hostOnly(r.Host),
 		TLS:        requestIsHTTPS(r, i.trusted),
 		Method:     r.Method,
-		Path:       outPath,
+		Path:       canonicalDecisionPath(outPath),
 		AuthMethod: authz.AuthMethodNone,
 	}
 	if ip := clientip.Resolve(r, i.trusted); ip != nil {
