@@ -60,9 +60,6 @@ func RunAccessLogPruneMakesProgressUnderDeadline(t *testing.T, open func(t *test
 		_, err := ds.PruneAccessEvents(ctx, cutoff)
 		cancel()
 		if err == nil {
-			if attempt == 1 {
-				t.Skipf("prune of %d rows finished inside the deadline", total)
-			}
 			t.Logf("backlog of %d rows drained after %d deadline-limited prune attempts", total, attempt)
 			return
 		}
