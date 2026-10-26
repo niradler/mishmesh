@@ -150,10 +150,8 @@ func (u *UDP) openStream(endpointID string, client net.Addr) (net.Conn, error) {
 }
 
 func (u *UDP) meterUsage(endpointID string, up, down int64) {
-	if u.data != nil {
-		if ep, err := u.data.GetEndpoint(context.Background(), endpointID); err == nil && ep.OrgID != "" {
-			u.conns.AddUsage(ep.OrgID, up+down)
-		}
+	if orgID := endpointOrgID(context.Background(), u.data, endpointID); orgID != "" {
+		u.conns.AddUsage(orgID, up+down)
 	}
 	if u.meter != nil {
 		u.meter.AddBytes(store.KindUDP, up, down)

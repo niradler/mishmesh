@@ -105,18 +105,13 @@ func (t *TLSPassthrough) handle(client net.Conn) {
 		t.log.Warn("tls passthrough: open stream failed", "endpoint_id", ep.ID, "err", err)
 		return
 	}
-	defer stream.Close()
+	metered := meterStream(stream, t.conns, t.meter, ep.OrgID, store.KindTLS)
+	defer metered.Close()
 
-	if _, err := stream.Write(hello); err != nil {
+	if _, err := metered.Write(hello); err != nil {
 		return
 	}
-	up, down := tunnel.Splice(client, stream)
-	if ep.OrgID != "" {
-		t.conns.AddUsage(ep.OrgID, up+down+int64(len(hello)))
-	}
-	if t.meter != nil {
-		t.meter.AddBytes(store.KindTLS, up+int64(len(hello)), down)
-	}
+	tunnel.Splice(client, metered)
 }
 
 func (t *TLSPassthrough) resolveSNI(sni string) *store.Endpoint {
