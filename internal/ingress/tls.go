@@ -125,12 +125,12 @@ func (t *TLSPassthrough) resolveSNI(sni string) *store.Endpoint {
 	suffix := "." + t.apexHost
 	if label, ok := strings.CutSuffix(host, suffix); ok {
 		if label != "" && !strings.Contains(label, ".") {
-			if ep, err := t.data.GetEndpointBySubdomain(context.Background(), label); err == nil {
+			if ep, err := t.data.GetEndpointBySubdomain(context.Background(), label); err == nil && ep.Kind == store.KindTLS {
 				return ep
 			}
 		}
 	}
-	if ep, err := t.data.GetEndpointByDomain(context.Background(), host); err == nil {
+	if ep, err := t.data.GetEndpointByDomain(context.Background(), host); err == nil && ep.Kind == store.KindTLS {
 		return ep
 	}
 	return nil
