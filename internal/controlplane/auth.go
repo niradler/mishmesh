@@ -472,9 +472,11 @@ func (a *API) registerPasswordUser(ctx context.Context, email, name, hash, invit
 		return nil, err
 	}
 	if err := a.data.CreateUser(ctx, user); err != nil {
+		a.releaseInvite(ctx, inv)
 		return nil, fmt.Errorf("create user: %w", err)
 	}
 	if err := a.grantInviteMembership(ctx, user.ID, inv); err != nil {
+		a.releaseInvite(ctx, inv)
 		return nil, err
 	}
 	return user, nil
@@ -648,7 +650,7 @@ func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, 
 	verified := p.EmailVerified != nil && *p.EmailVerified
 	if u, err := a.data.GetUserByGoogleSub(ctx, p.Sub); err == nil {
 		if verified && normalizeEmail(p.Email) == u.Email {
-			if _, err := a.redeemVerifiedEmailInvites(ctx, u); err != nil {
+			if err := a.redeemVerifiedEmailInvites(ctx, u); err != nil {
 				return nil, err
 			}
 		}
@@ -666,8 +668,10 @@ func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, 
 			return nil, errPasswordAccountExists
 		}
 		u.GoogleSub = p.Sub
-		_ = a.data.UpdateUser(ctx, u)
-		if _, err := a.redeemVerifiedEmailInvites(ctx, u); err != nil {
+		if err := a.data.UpdateUser(ctx, u); err != nil {
+			return nil, fmt.Errorf("link google account: %w", err)
+		}
+		if err := a.redeemVerifiedEmailInvites(ctx, u); err != nil {
 			return nil, err
 		}
 		return u, nil
@@ -677,7 +681,7 @@ func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, 
 		if err := a.data.CreateUser(ctx, user); err != nil {
 			return nil, fmt.Errorf("create user: %w", err)
 		}
-		if _, err := a.redeemVerifiedEmailInvites(ctx, user); err != nil {
+		if err := a.redeemVerifiedEmailInvites(ctx, user); err != nil {
 			return nil, err
 		}
 		return user, nil

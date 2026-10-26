@@ -113,9 +113,19 @@ func (a *API) claimInvite(ctx context.Context, inv *store.Invite) error {
 	return nil
 }
 
+func (a *API) releaseInvite(ctx context.Context, inv *store.Invite) {
+	if err := a.data.CreateInvite(ctx, inv); err != nil {
+		a.log.Warn("restore claimed invite failed", "invite", inv.ID, "err", err)
+	}
+}
+
 func (a *API) grantInviteMembership(ctx context.Context, userID string, inv *store.Invite) error {
-	if _, err := a.data.GetMembership(ctx, inv.OrgID, userID); err == nil {
+	_, err := a.data.GetMembership(ctx, inv.OrgID, userID)
+	if err == nil {
 		return nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("lookup membership: %w", err)
 	}
 	if err := a.data.CreateMembership(ctx, &store.Membership{OrgID: inv.OrgID, UserID: userID, Role: inv.Role, CreatedAt: time.Now()}); err != nil {
 		return fmt.Errorf("create membership: %w", err)
@@ -123,26 +133,27 @@ func (a *API) grantInviteMembership(ctx context.Context, userID string, inv *sto
 	return nil
 }
 
-func (a *API) redeemVerifiedEmailInvites(ctx context.Context, user *store.User) (int, error) {
+func (a *API) redeemVerifiedEmailInvites(ctx context.Context, user *store.User) error {
 	invites, err := a.data.ListInvitesByEmail(ctx, user.Email)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	joined := 0
 	now := time.Now()
 	for _, inv := range invites {
-		if err := a.claimInvite(ctx, inv); err != nil {
+		if err := a.claimInvite(ctx, inv); errors.Is(err, errInvalidInvite) {
 			continue
+		} else if err != nil {
+			return err
 		}
 		if now.After(inv.ExpiresAt) {
 			continue
 		}
 		if err := a.grantInviteMembership(ctx, user.ID, inv); err != nil {
-			return joined, err
+			a.releaseInvite(ctx, inv)
+			return err
 		}
-		joined++
 	}
-	return joined, nil
+	return nil
 }
 
 func (a *API) hasLiveInviteFor(ctx context.Context, email string) bool {
@@ -211,6 +222,7 @@ func (a *API) acceptInviteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.grantInviteMembership(r.Context(), su.user.ID, inv); err != nil {
+		a.releaseInvite(r.Context(), inv)
 		a.log.Warn("accept invite failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
