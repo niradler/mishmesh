@@ -48,13 +48,12 @@ type ConnectionSnapshotStatus interface {
 
 func (a *API) SetServices(s ServiceControl) {
 	a.services = s
-	if a.serviceRegistry == nil {
-		a.serviceRegistry = services.NewBuiltinRegistry()
-	}
 }
 
 func (a *API) SetServiceRegistry(registry *services.Registry) {
-	a.serviceRegistry = registry
+	if registry != nil {
+		a.serviceRegistry = registry
+	}
 }
 
 func (a *API) SetIngressInvalidator(invalidate func()) { a.invalidateIngress = invalidate }

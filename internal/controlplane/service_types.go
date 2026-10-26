@@ -15,10 +15,7 @@ import (
 )
 
 func (a *API) driverRegistry() *services.Registry {
-	if a.serviceRegistry != nil {
-		return a.serviceRegistry
-	}
-	return services.NewBuiltinRegistry()
+	return a.serviceRegistry
 }
 
 func (a *API) lockServiceMutation(ctx context.Context) error {
