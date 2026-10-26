@@ -56,12 +56,24 @@ func (c *ttlCache[V]) put(key string, v V) {
 				delete(c.entries, k)
 			}
 		}
-		if len(c.entries) >= maxCacheEntries {
-			c.entries = make(map[string]cacheEntry[V])
+		if _, known := c.entries[key]; !known && len(c.entries) >= maxCacheEntries {
+			c.evictSoonestExpiringLocked()
 		}
 	}
 	c.entries[key] = cacheEntry[V]{value: v, expires: now.Add(c.ttl)}
 	c.mu.Unlock()
+}
+
+func (c *ttlCache[V]) evictSoonestExpiringLocked() {
+	var victim string
+	var soonest time.Time
+	first := true
+	for k, e := range c.entries {
+		if first || e.expires.Before(soonest) {
+			victim, soonest, first = k, e.expires, false
+		}
+	}
+	delete(c.entries, victim)
 }
 
 func (c *ttlCache[V]) clear() {

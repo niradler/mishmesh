@@ -9,50 +9,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/mishmesh/mishmesh/internal/netblock"
 )
 
 var ErrBlocked = errors.New("proxy: blocked target")
 
-var (
-	alwaysBlockedNets = mustCIDRs(
-		"0.0.0.0/8",
-		"169.254.0.0/16",
-		"224.0.0.0/4",
-		"255.255.255.255/32",
-		"fe80::/10",
-		"ff00::/8",
-		"fd00:ec2::254/128",
-	)
-	privateNets = mustCIDRs(
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"100.64.0.0/10",
-		"192.0.0.0/24",
-		"198.18.0.0/15",
-		"240.0.0.0/4",
-		"fc00::/7",
-		"64:ff9b::/96",
-		"64:ff9b:1::/48",
-		"fec0::/10",
-		"2001::/32",
-		"2002::/16",
-	)
-	embeddedIPv4Nets     = mustCIDRs("64:ff9b::/96", "::/96")
-	internalNameSuffixes = []string{".localhost", ".svc", ".cluster.local", ".local", ".internal"}
-)
-
-func mustCIDRs(cidrs ...string) []*net.IPNet {
-	out := make([]*net.IPNet, 0, len(cidrs))
-	for _, c := range cidrs {
-		_, n, err := net.ParseCIDR(c)
-		if err != nil {
-			panic(err)
-		}
-		out = append(out, n)
-	}
-	return out
-}
+var internalNameSuffixes = []string{".localhost", ".svc", ".cluster.local", ".local", ".internal"}
 
 type Guard struct {
 	allowLoopback bool
@@ -79,44 +42,8 @@ func DefaultGuard() *Guard {
 	return &Guard{}
 }
 
-func inAny(nets []*net.IPNet, ip net.IP) bool {
-	for _, n := range nets {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
-func normalizeIP(ip net.IP) net.IP {
-	if v4 := ip.To4(); v4 != nil {
-		return v4
-	}
-	return ip
-}
-
 func (g *Guard) IPAllowed(ip net.IP) bool {
-	ip = normalizeIP(ip)
-	if ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || inAny(alwaysBlockedNets, ip) {
-		return false
-	}
-	if ip.IsLoopback() {
-		return g.allowLoopback
-	}
-	if v4 := embeddedIPv4(ip); v4 != nil && !g.IPAllowed(v4) {
-		return false
-	}
-	if ip.IsPrivate() || inAny(privateNets, ip) {
-		return g.allowPrivate || inAny(g.allowed, ip)
-	}
-	return true
-}
-
-func embeddedIPv4(ip net.IP) net.IP {
-	if len(ip) != net.IPv6len || !inAny(embeddedIPv4Nets, ip) {
-		return nil
-	}
-	return net.IPv4(ip[12], ip[13], ip[14], ip[15]).To4()
+	return netblock.Policy{AllowLoopback: g.allowLoopback, AllowPrivate: g.allowPrivate, AllowedCIDRs: g.allowed}.IPAllowed(ip)
 }
 
 func (g *Guard) nameAllowed(host string) bool {
@@ -173,7 +100,7 @@ func (g *Guard) ResolveAll(ctx context.Context, target string) ([]string, error)
 		if !g.IPAllowed(ip) {
 			return nil, fmt.Errorf("%w: target %q resolves to a blocked address", ErrBlocked, target)
 		}
-		return []string{net.JoinHostPort(normalizeIP(ip).String(), port)}, nil
+		return []string{net.JoinHostPort(netblock.Normalize(ip).String(), port)}, nil
 	}
 	if !g.nameAllowed(host) {
 		return nil, fmt.Errorf("%w: target %q is an internal name", ErrBlocked, target)
@@ -194,7 +121,7 @@ func (g *Guard) ResolveAll(ctx context.Context, target string) ([]string, error)
 		if !g.IPAllowed(a.IP) {
 			return nil, fmt.Errorf("%w: target %q resolves to a blocked address", ErrBlocked, target)
 		}
-		addr := net.JoinHostPort(normalizeIP(a.IP).String(), port)
+		addr := net.JoinHostPort(netblock.Normalize(a.IP).String(), port)
 		if len(out) < maxResolvedAddrs && !slices.Contains(out, addr) {
 			out = append(out, addr)
 		}

@@ -36,7 +36,7 @@ func canonicalSocket(socket string) (string, error) {
 		return strings.ToLower(socket), nil
 	}
 	if !filepath.IsAbs(socket) {
-		return "", errors.New("Tailscale socket must be absolute")
+		return "", errors.New("tailscale socket must be absolute")
 	}
 	if resolved, err := filepath.EvalSymlinks(socket); err == nil {
 		socket = resolved

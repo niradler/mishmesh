@@ -115,14 +115,14 @@ func (d DockerType) New(config json.RawMessage, deps Deps) (Driver, error) {
 		return nil, err
 	}
 	if deps.Docker == nil {
-		return nil, errors.New("Docker client resolver is required")
+		return nil, errors.New("docker client resolver is required")
 	}
 	client, err := deps.Docker()
 	if err != nil {
 		return nil, err
 	}
 	if client == nil {
-		return nil, errors.New("Docker client resolver returned no client")
+		return nil, errors.New("docker client resolver returned no client")
 	}
 	var spec DockerSpec
 	if err := json.Unmarshal(config, &spec); err != nil {
@@ -139,14 +139,14 @@ func (d ComposeType) New(config json.RawMessage, deps Deps) (Driver, error) {
 		return nil, err
 	}
 	if deps.Docker == nil {
-		return nil, errors.New("Docker client resolver is required")
+		return nil, errors.New("docker client resolver is required")
 	}
 	client, err := deps.Docker()
 	if err != nil {
 		return nil, err
 	}
 	if client == nil {
-		return nil, errors.New("Docker client resolver returned no client")
+		return nil, errors.New("docker client resolver returned no client")
 	}
 	var spec ComposeSpec
 	if err := json.Unmarshal(config, &spec); err != nil {

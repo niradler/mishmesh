@@ -22,7 +22,7 @@ import (
 	"tailscale.com/tailcfg"
 )
 
-var errClaimsUnavailable = errors.New("Tailscale ownership claims unavailable")
+var errClaimsUnavailable = errors.New("tailscale ownership claims unavailable")
 
 const claimsTTL = 10 * time.Second
 
@@ -32,7 +32,7 @@ func AccessHostname(endpointDomain, requested string) (string, error) {
 		label = strings.SplitN(strings.ToLower(strings.TrimSpace(endpointDomain)), ".", 2)[0]
 	}
 	if tailcfg.ServiceName("svc:"+label).Validate() != nil {
-		return "", errors.New("Tailscale access name must be a DNS service label")
+		return "", errors.New("tailscale access name must be a DNS service label")
 	}
 	return label, nil
 }
@@ -86,7 +86,7 @@ func (i *instance) saveState(ctx context.Context, state *ownershipState) error {
 	raw, err := json.Marshal(state)
 	i.provider.claims.invalidate()
 	if err != nil || i.deps.Data.UpdateConnectionState(ctx, i.record.OrgID, i.record.ID, raw) != nil {
-		return errors.New("Tailscale ownership could not be saved")
+		return errors.New("tailscale ownership could not be saved")
 	}
 	i.provider.claims.invalidate()
 	return nil
@@ -121,7 +121,7 @@ func (l *targetLocks) acquire(ctx context.Context, keys ...string) (func(), erro
 			held = append(held, lock)
 		case <-ctx.Done():
 			release()
-			return nil, errors.New("Tailscale target lock cancelled")
+			return nil, errors.New("tailscale target lock cancelled")
 		}
 	}
 	return release, nil
@@ -129,25 +129,25 @@ func (l *targetLocks) acquire(ctx context.Context, keys ...string) (func(), erro
 
 func localIdentity(status *ipnstate.Status, configured string) (string, string, error) {
 	if status == nil || status.Self == nil || status.CurrentTailnet == nil || status.BackendState != "Running" {
-		return "", "", errors.New("Tailscale node is not running")
+		return "", "", errors.New("tailscale node is not running")
 	}
 	version := strings.SplitN(strings.SplitN(status.Version, "-", 2)[0], ".", 3)
 	if len(version) != 3 {
-		return "", "", errors.New("Tailscale daemon version is unsupported")
+		return "", "", errors.New("tailscale daemon version is unsupported")
 	}
 	major, first := strconv.Atoi(version[0])
 	minor, second := strconv.Atoi(version[1])
 	patch, third := strconv.Atoi(version[2])
 	if first != nil || second != nil || third != nil || patch < 0 || major < 1 || major == 1 && minor < 86 {
-		return "", "", errors.New("Tailscale daemon must be version 1.86 or later")
+		return "", "", errors.New("tailscale daemon must be version 1.86 or later")
 	}
 	if !status.Self.IsTagged() {
-		return "", "", errors.New("Tailscale Service host requires a tagged node")
+		return "", "", errors.New("tailscale Service host requires a tagged node")
 	}
 	tailnet := strings.ToLower(status.CurrentTailnet.Name)
 	suffix := strings.ToLower(status.CurrentTailnet.MagicDNSSuffix)
 	if tailnet == "" || suffix == "" || !strings.HasSuffix(suffix, ".ts.net") || strings.ContainsAny(tailnet, "/\\?#\r\n\x00") || configured != "-" && !strings.EqualFold(configured, tailnet) {
-		return "", "", errors.New("Tailscale tailnet does not match the local node")
+		return "", "", errors.New("tailscale tailnet does not match the local node")
 	}
 	return tailnet, suffix, nil
 }
@@ -168,7 +168,7 @@ func desiredServices(connectionID string, endpoints []*store.Endpoint) (map[stri
 			}
 			name := "svc:" + label
 			if other := desired[name]; other != "" && other != endpoint.ID {
-				return nil, errors.New("Tailscale service name is claimed by multiple endpoints")
+				return nil, errors.New("tailscale service name is claimed by multiple endpoints")
 			}
 			desired[name] = endpoint.ID
 		}
@@ -305,7 +305,7 @@ func serviceApproved(status *ipnstate.Status, name string) bool {
 func (i *instance) observeIdentity(ctx context.Context) (*ipnstate.Status, string, string, error) {
 	observed, err := i.local.StatusWithoutPeers(ctx)
 	if err != nil {
-		return nil, "", "", errors.New("Tailscale LocalAPI unavailable")
+		return nil, "", "", errors.New("tailscale LocalAPI unavailable")
 	}
 	tailnet, suffix, err := localIdentity(observed, i.cfg.Tailnet)
 	if err != nil {
@@ -317,7 +317,7 @@ func (i *instance) observeIdentity(ctx context.Context) (*ipnstate.Status, strin
 func (i *instance) loadDesired(ctx context.Context, tailnet string) (*ownershipState, []*store.Endpoint, map[string]string, error) {
 	record, err := i.deps.Data.GetConnection(ctx, i.record.ID)
 	if err != nil || record == nil || record.OrgID != i.record.OrgID || record.Type != i.record.Type || !reflect.DeepEqual(record.Config, i.record.Config) {
-		return nil, nil, nil, errors.New("Tailscale connection configuration changed")
+		return nil, nil, nil, errors.New("tailscale connection configuration changed")
 	}
 	state, err := i.loadState(record.State, tailnet)
 	if err != nil {
@@ -325,11 +325,11 @@ func (i *instance) loadDesired(ctx context.Context, tailnet string) (*ownershipS
 	}
 	endpoints, err := i.deps.Data.ListEndpointsByOrg(ctx, i.record.OrgID)
 	if err != nil {
-		return nil, nil, nil, errors.New("Tailscale endpoints unavailable")
+		return nil, nil, nil, errors.New("tailscale endpoints unavailable")
 	}
 	for _, endpoint := range endpoints {
 		if endpoint != nil && endpoint.OrgID != i.record.OrgID {
-			return nil, nil, nil, errors.New("Tailscale endpoint ownership mismatch")
+			return nil, nil, nil, errors.New("tailscale endpoint ownership mismatch")
 		}
 	}
 	desired, err := desiredServices(i.record.ID, endpoints)
@@ -346,19 +346,19 @@ func (i *instance) rejectClaimed(ctx context.Context, tailnet string, state *own
 	}
 	for name := range desired {
 		if claims[name] {
-			return errors.New("Tailscale service name is claimed by another connection")
+			return errors.New("tailscale service name is claimed by another connection")
 		}
 	}
 	for name := range state.OwnedServices {
 		if claims[name] {
-			return errors.New("Tailscale owned service is claimed by another connection")
+			return errors.New("tailscale owned service is claimed by another connection")
 		}
 	}
 	return nil
 }
 
 func (i *instance) sync(ctx context.Context, status *connections.Status) error {
-	observed, tailnet, suffix, err := i.observeIdentity(ctx)
+	_, tailnet, suffix, err := i.observeIdentity(ctx)
 	if err != nil {
 		return err
 	}
@@ -372,7 +372,7 @@ func (i *instance) sync(ctx context.Context, status *connections.Status) error {
 		return err
 	}
 	if tailnet != actualTailnet || suffix != actualSuffix {
-		return errors.New("Tailscale local identity changed during reconciliation")
+		return errors.New("tailscale local identity changed during reconciliation")
 	}
 	state, endpoints, desired, err := i.loadDesired(ctx, tailnet)
 	if err != nil {
@@ -391,18 +391,18 @@ func (i *instance) sync(ctx context.Context, status *connections.Status) error {
 	}
 	serve, err := i.local.GetServeConfig(ctx)
 	if err != nil || serve == nil {
-		return errors.New("Tailscale Serve observation failed")
+		return errors.New("tailscale Serve observation failed")
 	}
 	prefs, err := i.local.GetPrefs(ctx)
 	if err != nil || prefs == nil {
-		return errors.New("Tailscale Service advertisement observation failed")
+		return errors.New("tailscale Service advertisement observation failed")
 	}
 	observed, finalTailnet, finalSuffix, err := i.observeIdentity(ctx)
 	if err != nil {
 		return err
 	}
 	if finalTailnet != tailnet || finalSuffix != suffix {
-		return errors.New("Tailscale local identity changed during reconciliation")
+		return errors.New("tailscale local identity changed during reconciliation")
 	}
 	status.Health = "healthy"
 	for _, name := range slices.Sorted(maps.Keys(desired)) {
@@ -441,22 +441,22 @@ func (i *instance) hostStatus(name, suffix string, desired map[string]string, en
 func (i *instance) manage(ctx context.Context, state *ownershipState, desired map[string]string, tailnet, suffix, stableID string) error {
 	serve, err := i.local.GetServeConfig(ctx)
 	if err != nil || serve == nil {
-		return errors.New("Tailscale Serve observation failed")
+		return errors.New("tailscale Serve observation failed")
 	}
 	prefs, err := i.local.GetPrefs(ctx)
 	if err != nil || prefs == nil {
-		return errors.New("Tailscale Service advertisement observation failed")
+		return errors.New("tailscale Service advertisement observation failed")
 	}
 	if err := protectAdvertisements(prefs, state, desired); err != nil {
 		return err
 	}
 	for name, endpoint := range desired {
 		if owned := state.OwnedServices[name]; owned != "" && owned != endpoint {
-			return errors.New("Tailscale service belongs to another endpoint")
+			return errors.New("tailscale service belongs to another endpoint")
 		}
 		current := serve.Services[tailcfg.ServiceName(name)]
 		if current != nil && (state.Serve[name] == "" || state.Serve[name] != fingerprint(current)) {
-			return errors.New("Tailscale Serve entry is owned externally or was edited externally")
+			return errors.New("tailscale Serve entry is owned externally or was edited externally")
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(desired)) {
@@ -502,7 +502,7 @@ func (i *instance) verifyOrphan(ctx context.Context, state *ownershipState, tail
 		return nil, nil
 	}
 	if state.API[name] == "" || state.API[name] != fingerprint(current) {
-		return nil, errors.New("Tailscale Service changed externally; cleanup refused")
+		return nil, errors.New("tailscale Service changed externally; cleanup refused")
 	}
 	if err := i.api.CheckServiceHosts(ctx, tailnet, name, stableID); err != nil {
 		return nil, err
@@ -523,7 +523,7 @@ func (i *instance) removeOrphan(ctx context.Context, state *ownershipState, desi
 			return err
 		}
 		if observed, err := i.api.GetService(ctx, tailnet, name); err != nil || observed != nil {
-			return errors.New("Tailscale Service deletion was not observed")
+			return errors.New("tailscale Service deletion was not observed")
 		}
 	}
 	delete(state.OwnedServices, name)
@@ -550,12 +550,12 @@ func (i *instance) ensureService(ctx context.Context, state *ownershipState, des
 		return err
 	}
 	if created == nil {
-		return errors.New("Tailscale Service creation was not observed")
+		return errors.New("tailscale Service creation was not observed")
 	}
 	comparison := *created
 	comparison.Addrs = nil
 	if !reflect.DeepEqual(comparison, resource) {
-		return errors.New("Tailscale Service changed after creation")
+		return errors.New("tailscale Service changed after creation")
 	}
 	state.OwnedServices[name], state.API[name] = desired[name], fingerprint(created)
 	return i.saveState(ctx, state)
@@ -563,7 +563,7 @@ func (i *instance) ensureService(ctx context.Context, state *ownershipState, des
 
 func (i *instance) retagService(ctx context.Context, state *ownershipState, tailnet, name string, current *Service) error {
 	if state.API[name] == "" || state.API[name] != fingerprint(current) {
-		return errors.New("Tailscale Service is owned externally or was edited externally")
+		return errors.New("tailscale Service is owned externally or was edited externally")
 	}
 	if slices.Equal(current.Tags, i.cfg.ServiceTags) {
 		return nil
@@ -575,7 +575,7 @@ func (i *instance) retagService(ctx context.Context, state *ownershipState, tail
 	}
 	observed, err := i.api.GetService(ctx, tailnet, name)
 	if err != nil || observed == nil || !reflect.DeepEqual(*observed, updated) {
-		return errors.New("Tailscale Service changed after update")
+		return errors.New("tailscale Service changed after update")
 	}
 	state.API[name] = fingerprint(observed)
 	return i.saveState(ctx, state)
@@ -585,10 +585,10 @@ func (i *instance) applyServe(ctx context.Context, state *ownershipState, desire
 	for attempt := 0; attempt < 3; attempt++ {
 		current, err := i.local.GetServeConfig(ctx)
 		if err != nil || current == nil {
-			return errors.New("Tailscale Serve observation failed")
+			return errors.New("tailscale Serve observation failed")
 		}
 		if current.ETag == "" {
-			return errors.New("Tailscale Serve ETag is required")
+			return errors.New("tailscale Serve ETag is required")
 		}
 		if err := i.protectAdvertisements(ctx, state, desired); err != nil {
 			return err
@@ -601,7 +601,7 @@ func (i *instance) applyServe(ctx context.Context, state *ownershipState, desire
 		for _, name := range slices.Sorted(maps.Keys(state.OwnedServices)) {
 			existing := current.Services[tailcfg.ServiceName(name)]
 			if existing != nil && (state.Serve[name] == "" || state.Serve[name] != fingerprint(existing)) {
-				return errors.New("Tailscale Serve entry changed externally")
+				return errors.New("tailscale Serve entry changed externally")
 			}
 			if desired[name] == "" {
 				if existing != nil {
@@ -623,16 +623,16 @@ func (i *instance) applyServe(ctx context.Context, state *ownershipState, desire
 			if isETagConflict(err) {
 				continue
 			}
-			return errors.New("Tailscale Serve update failed")
+			return errors.New("tailscale Serve update failed")
 		}
 		observed, err := i.local.GetServeConfig(ctx)
 		if err != nil || observed == nil {
-			return errors.New("Tailscale Serve update was not observed")
+			return errors.New("tailscale Serve update was not observed")
 		}
 		for _, name := range changed {
 			actual, wanted := observed.Services[tailcfg.ServiceName(name)], next.Services[tailcfg.ServiceName(name)]
 			if !reflect.DeepEqual(actual, wanted) {
-				return errors.New("Tailscale Serve entry changed after update")
+				return errors.New("tailscale Serve entry changed after update")
 			}
 			if wanted != nil {
 				state.Serve[name] = fingerprint(actual)
@@ -645,13 +645,13 @@ func (i *instance) applyServe(ctx context.Context, state *ownershipState, desire
 		}
 		return nil
 	}
-	return errors.New("Tailscale Serve changed concurrently after three attempts")
+	return errors.New("tailscale Serve changed concurrently after three attempts")
 }
 
 func (i *instance) applyAdvertisements(ctx context.Context, state *ownershipState, desired map[string]string) error {
 	current, err := i.local.GetPrefs(ctx)
 	if err != nil || current == nil {
-		return errors.New("Tailscale Service advertisement observation failed")
+		return errors.New("tailscale Service advertisement observation failed")
 	}
 	if err := protectAdvertisements(current, state, desired); err != nil {
 		return err
@@ -669,18 +669,18 @@ func (i *instance) applyAdvertisements(ctx context.Context, state *ownershipStat
 			next = append(next, name)
 			added = append(added, name)
 		} else if !state.Advertised[name] {
-			return errors.New("Tailscale Service advertisement is owned externally")
+			return errors.New("tailscale Service advertisement is owned externally")
 		}
 	}
 	if len(added) == 0 && len(removed) == 0 {
 		return nil
 	}
 	if _, err := i.local.EditPrefs(ctx, &ipn.MaskedPrefs{AdvertiseServicesSet: true, Prefs: ipn.Prefs{AdvertiseServices: next}}); err != nil {
-		return errors.New("Tailscale Service advertisement update failed")
+		return errors.New("tailscale Service advertisement update failed")
 	}
 	observed, err := i.local.GetPrefs(ctx)
 	if err != nil || observed == nil || !slices.Equal(observed.AdvertiseServices, next) {
-		return errors.New("Tailscale Service advertisement changed after update")
+		return errors.New("tailscale Service advertisement changed after update")
 	}
 	for _, name := range added {
 		state.Advertised[name] = true
@@ -702,7 +702,7 @@ func protectAdvertisements(prefs *ipn.Prefs, state *ownershipState, desired map[
 		_, owned := state.OwnedServices[name]
 		_, wanted := desired[name]
 		if (owned || wanted) && !state.Advertised[name] {
-			return errors.New("Tailscale Service advertisement is owned externally; resolve its ownership in Tailscale before publication or cleanup")
+			return errors.New("tailscale Service advertisement is owned externally; resolve its ownership in Tailscale before publication or cleanup")
 		}
 	}
 	return nil
@@ -711,7 +711,7 @@ func protectAdvertisements(prefs *ipn.Prefs, state *ownershipState, desired map[
 func (i *instance) protectAdvertisements(ctx context.Context, state *ownershipState, desired map[string]string) error {
 	prefs, err := i.local.GetPrefs(ctx)
 	if err != nil || prefs == nil {
-		return errors.New("Tailscale Service advertisement observation failed")
+		return errors.New("tailscale Service advertisement observation failed")
 	}
 	return protectAdvertisements(prefs, state, desired)
 }

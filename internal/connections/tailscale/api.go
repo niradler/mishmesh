@@ -71,7 +71,7 @@ type ServiceHost struct {
 
 func (a *API) CheckServiceHosts(ctx context.Context, tailnet, name, stableID string) error {
 	if stableID == "" {
-		return errors.New("Tailscale local node identity is unavailable; Service cleanup refused")
+		return errors.New("tailscale local node identity is unavailable; Service cleanup refused")
 	}
 	var response struct {
 		Hosts []ServiceHost `json:"hosts"`
@@ -80,14 +80,14 @@ func (a *API) CheckServiceHosts(ctx context.Context, tailnet, name, stableID str
 		return err
 	}
 	if response.Hosts == nil {
-		return errors.New("Tailscale Service host membership is unknown; cleanup refused")
+		return errors.New("tailscale Service host membership is unknown; cleanup refused")
 	}
 	for _, host := range response.Hosts {
 		if host.StableNodeID == "" || host.Configured == "" || host.ApprovalLevel != "not-approved" && host.ApprovalLevel != "approved:auto" && host.ApprovalLevel != "approved:manual" {
-			return errors.New("Tailscale Service host membership is unknown; cleanup refused")
+			return errors.New("tailscale Service host membership is unknown; cleanup refused")
 		}
 		if host.StableNodeID != stableID {
-			return errors.New("Tailscale Service has another host; resolve shared ownership in Tailscale before cleanup")
+			return errors.New("tailscale Service has another host; resolve shared ownership in Tailscale before cleanup")
 		}
 	}
 	return nil
@@ -130,16 +130,16 @@ func (a *API) accessToken(ctx context.Context) (string, error) {
 	body := url.Values{"grant_type": {"client_credentials"}, "client_id": {a.id}, "client_secret": {a.secret}}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.base+"/api/v2/oauth/token", strings.NewReader(body))
 	if err != nil {
-		return "", errors.New("Tailscale OAuth request failed")
+		return "", errors.New("tailscale OAuth request failed")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	res, err := a.client.Do(req)
 	if err != nil {
-		return "", errors.New("Tailscale OAuth request failed")
+		return "", errors.New("tailscale OAuth request failed")
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return "", errors.New("Tailscale OAuth authentication failed")
+		return "", errors.New("tailscale OAuth authentication failed")
 	}
 	var token struct {
 		AccessToken string `json:"access_token"`
@@ -156,7 +156,7 @@ func (a *API) accessToken(ctx context.Context) (string, error) {
 func decodeBounded(body io.Reader, result any) error {
 	raw, err := io.ReadAll(io.LimitReader(body, (1<<20)+1))
 	if err != nil || len(raw) > 1<<20 {
-		return errors.New("Tailscale response too large")
+		return errors.New("tailscale response too large")
 	}
 	return json.Unmarshal(raw, result)
 }
@@ -175,13 +175,13 @@ func (a *API) request(ctx context.Context, method, path string, input, output an
 	}
 	req, err := http.NewRequestWithContext(ctx, method, a.base+"/api/v2/"+path, bytes.NewReader(body))
 	if err != nil {
-		return errors.New("Tailscale API request failed")
+		return errors.New("tailscale API request failed")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	res, err := a.client.Do(req)
 	if err != nil {
-		return errors.New("Tailscale API request failed")
+		return errors.New("tailscale API request failed")
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
@@ -232,5 +232,5 @@ func (a *API) ValidateNode(ctx context.Context, tailnet, stableID string, numeri
 			return nil
 		}
 	}
-	return errors.New("Tailscale API tailnet does not contain this node")
+	return errors.New("tailscale API tailnet does not contain this node")
 }

@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -95,5 +96,29 @@ func TestLookupCacheExpires(t *testing.T) {
 	serveOnce(ing)
 	if got := cs.endpointLookups.Load(); got != 2 {
 		t.Fatalf("endpoint lookups = %d, want 2", got)
+	}
+}
+
+func TestTTLCacheKeepsLiveEntriesWhenFull(t *testing.T) {
+	c := newTTLCache[int](time.Minute)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	for i := range maxCacheEntries {
+		now = now.Add(time.Nanosecond)
+		c.put(fmt.Sprint(i), i)
+	}
+	now = now.Add(time.Nanosecond)
+	c.put("extra", -1)
+	if _, ok := c.get("extra"); !ok {
+		t.Fatal("new entry missing")
+	}
+	if _, ok := c.get(fmt.Sprint(maxCacheEntries - 1)); !ok {
+		t.Fatal("a live recent entry was lost when the cache filled")
+	}
+	if _, ok := c.get("0"); ok {
+		t.Fatal("oldest entry survived eviction")
+	}
+	if n := len(c.entries); n != maxCacheEntries {
+		t.Fatalf("entries = %d, want %d", n, maxCacheEntries)
 	}
 }

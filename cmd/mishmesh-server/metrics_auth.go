@@ -3,9 +3,9 @@ package main
 import (
 	"net"
 	"net/http"
-	"strings"
 
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/token"
 )
 
 var forwardingHeaders = []string{"X-Forwarded-For", "Forwarded", "X-Real-IP", "CF-Connecting-IP"}
@@ -39,9 +39,7 @@ func metricsAuth(metricsToken, apiToken string, next http.Handler) http.Handler 
 		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		h := r.Header.Get("Authorization")
-		if !strings.HasPrefix(h, prefix) || !store.ConstantTimeEqualHash(strings.TrimSpace(h[len(prefix):]), required) {
+		if !store.ConstantTimeEqualHash(token.Bearer(r.Header.Get("Authorization")), required) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
