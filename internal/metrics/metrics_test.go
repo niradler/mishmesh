@@ -76,6 +76,13 @@ func TestNilReceiverNoPanic(t *testing.T) {
 	m.Handler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 }
 
+func TestRuntimeAndProcessCollectorsScrape(t *testing.T) {
+	body := scrape(t, New())
+	assertContains(t, body, "go_goroutines")
+	assertContains(t, body, "go_memstats_alloc_bytes")
+	assertContains(t, body, "process_open_fds")
+}
+
 type fakeAccessLogStats struct{ dropped, suppressed, failed int64 }
 
 func (f fakeAccessLogStats) Dropped() int64       { return f.dropped }

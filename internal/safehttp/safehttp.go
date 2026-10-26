@@ -7,26 +7,12 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/mishmesh/mishmesh/internal/netblock"
 )
 
-var metadataIP = net.IPv4(169, 254, 169, 254)
-
 func Blocked(ip net.IP, allowLoopback, allowPrivate bool) bool {
-	if ip.Equal(metadataIP) || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-		return true
-	}
-	if ip.IsLoopback() {
-		return !allowLoopback
-	}
-	if !allowPrivate {
-		if ip.IsPrivate() {
-			return true
-		}
-		if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1]&0xc0 == 64 {
-			return true
-		}
-	}
-	return false
+	return !netblock.Policy{AllowLoopback: allowLoopback, AllowPrivate: allowPrivate}.IPAllowed(ip)
 }
 
 func Client(allowLoopback, allowPrivate bool) *http.Client {

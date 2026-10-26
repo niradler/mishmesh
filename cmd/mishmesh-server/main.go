@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -23,7 +22,6 @@ import (
 	"github.com/mishmesh/mishmesh/internal/connect/bridge"
 	"github.com/mishmesh/mishmesh/internal/connect/egress"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
-	"github.com/mishmesh/mishmesh/internal/connect/sshfwd"
 	"github.com/mishmesh/mishmesh/internal/controlplane"
 	"github.com/mishmesh/mishmesh/internal/egressca"
 	"github.com/mishmesh/mishmesh/internal/gateway"
@@ -97,15 +95,17 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	defer data.Close()
+	var cleanup cleanupStack
+	defer cleanup.run()
+	cleanup.add(func() { _ = data.Close() })
 
 	conns, clusterRT, err := openConnStore(cfg, log)
 	if err != nil {
 		return err
 	}
-	defer clusterRT.close()
+	cleanup.add(clusterRT.close)
 	if closer, ok := conns.(io.Closer); ok && clusterRT == nil {
-		defer closer.Close()
+		cleanup.add(func() { _ = closer.Close() })
 	}
 	limiter := newLimiter(clusterRT, log)
 	trustedProxies, err := ingress.ParseTrustedProxies(cfg.TrustedProxies)
@@ -126,57 +126,19 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	defer stopPprof()
+	cleanup.add(stopPprof)
 
 	var mx *metrics.Metrics
 	if cfg.MetricsEnabled {
 		mx = metrics.New()
 	}
 
-	var tcpIngress *ingress.TCP
-	if cfg.IngressEnabled && cfg.TCPEnabled {
-		tcpOpts := ingress.TCPOptions{
-			Conns:    conns,
-			Data:     data,
-			Log:      log,
-			BindHost: cfg.TCPBindHost,
-			PortMin:  cfg.TCPPortMin,
-			PortMax:  cfg.TCPPortMax,
-			Meter:    mx,
-		}
-		if clusterRT != nil {
-			tcpOpts.Claims = clusterRT.store.PortClaims(cfg.TCPPortMin, cfg.TCPPortMax)
-		}
-		tcpIngress = ingress.NewTCP(tcpOpts)
-		defer tcpIngress.Shutdown()
-		if clusterRT != nil {
-			if err := tcpIngress.ListenCluster(); err != nil {
-				return err
-			}
-		}
-		log.Info("tcp ingress enabled", "bind", cfg.TCPBindHost, "ports", fmt.Sprintf("%d-%d", cfg.TCPPortMin, cfg.TCPPortMax))
+	env := &serverEnv{cfg: cfg, log: log, data: data, conns: conns, clusterRT: clusterRT, mx: mx, cleanup: &cleanup}
+	tcpIngress, err := env.startTCPIngress()
+	if err != nil {
+		return err
 	}
-
-	var udpIngress *ingress.UDP
-	if cfg.IngressEnabled {
-		if clusterRT != nil {
-			log.Warn("udp ingress is not supported in cluster mode yet; public udp ports are disabled")
-		} else {
-			udpIngress = ingress.NewUDP(ingress.UDPOptions{
-				Conns:    conns,
-				Data:     data,
-				Log:      log,
-				BindHost: cfg.UDPBindHost,
-				PortMin:  cfg.UDPPortMin,
-				PortMax:  cfg.UDPPortMax,
-				Meter:    mx,
-				Idle:     cfg.UDPIdleTimeout,
-				MaxFlows: cfg.UDPMaxFlows,
-			})
-			defer udpIngress.Shutdown()
-			log.Info("udp ingress enabled", "bind", cfg.UDPBindHost, "ports", fmt.Sprintf("%d-%d", cfg.UDPPortMin, cfg.UDPPortMax))
-		}
-	}
+	udpIngress := env.startUDPIngress()
 
 	gwOpts := gateway.Options{
 		Data:               data,
@@ -216,18 +178,8 @@ func serve() error {
 	gw := gateway.New(gwOpts)
 	idSvc.OnFlush(gw.FlushOrg)
 	cp.SetDecisionFlusher(idSvc.FlushOrg)
-	if bus, ok := conns.(store.EventBus); ok {
-		stopBus, err := idSvc.AttachBus(bus, log)
-		if err != nil {
-			return err
-		}
-		defer stopBus()
-		stopSecretBus, err := vault.AttachBus(bus, log)
-		if err != nil {
-			return err
-		}
-		defer stopSecretBus()
-		log.Info("revocations, decision flushes and secret invalidations shared across nodes")
+	if err := env.attachBuses(idSvc, vault); err != nil {
+		return err
 	}
 	if swept, err := gw.SweepOrphanedEphemeral(context.Background()); err != nil {
 		log.Warn("sweep of orphaned ephemeral endpoints failed", "err", err)
@@ -238,46 +190,10 @@ func serve() error {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)
 	apiMux.HandleFunc("GET "+tunnel.AgentEgressCAPath, gw.HandleAgentEgressCA)
-	cp.SetPublicConfig(cfg.BaseDomain, cfg.PublicScheme)
-	cp.SetPathRouting(cfg.PathRouting)
-	cp.SetTLSPublicPort(cfg.TLSPassthroughPublicPort)
-	cp.SetLimiter(limiter)
-	cp.SetTrustedProxies(trustedProxies)
-	cp.SetAllowedOrigins(cfg.AllowedOrigins)
-	cp.SetProxyGuard(proxyGuard)
-	cp.SetMaxOrgsPerUser(cfg.MaxOrgsPerUser)
-	cp.SetDefaultQuota(store.Quota{
-		MaxAgents:         cfg.QuotaMaxAgents,
-		MaxEndpoints:      cfg.QuotaMaxEndpoints,
-		MaxBandwidthBytes: cfg.QuotaMaxBandwidthBytes,
-	})
-	cp.SetReachInEnabled(cfg.ReachInEnabled)
-	cp.SetAPIPublicURL(cfg.APIPublicURL)
-	cp.SetDomainVerification(cfg.DomainVerification, nil)
-	cp.ConfigureAuth(controlplane.AuthOptions{
-		Enabled:            cfg.AuthEnabled,
-		PasswordEnabled:    cfg.AuthPasswordEnabled,
-		SignupMode:         cfg.SignupMode,
-		CookieSecure:       cfg.PublicScheme == "https",
-		SessionTTL:         time.Duration(cfg.SessionTTLHours) * time.Hour,
-		GoogleClientID:     cfg.GoogleClientID,
-		GoogleClientSecret: cfg.GoogleClientSecret,
-		RedirectURL:        cfg.OIDCRedirectURL,
-		Issuer:             cfg.OIDCIssuer,
-	})
+	configureControlPlane(cp, cfg, limiter, trustedProxies, proxyGuard)
 	network.attach(cp)
 	cp.Register(apiMux)
-	if cfg.ReachInEnabled {
-		log.Info("reach-in data-plane api enabled")
-	}
-	if mx != nil {
-		apiMux.Handle("GET /metrics", metricsAuth(cfg.MetricsToken, cfg.APIAuthToken, mx.Handler()))
-		log.Info("metrics enabled", "path", "/metrics")
-	}
-	if cfg.WebUIEnabled && cfg.WebUIDir != "" {
-		apiMux.Handle("/", spaHandler(cfg.WebUIDir))
-		log.Info("web ui enabled", "dir", cfg.WebUIDir)
-	}
+	mountOptionalAPI(apiMux, cfg, mx, log)
 
 	if cfg.BootstrapToken != "" {
 		if _, err := cp.EnsureBootstrap(context.Background(), cfg.BootstrapToken); err != nil {
@@ -295,7 +211,7 @@ func serve() error {
 		defer close(accessDone)
 		accessLog.Run(accessCtx)
 	}()
-	defer stopAccessLog()
+	cleanup.add(stopAccessLog)
 
 	if cfg.IngressEnabled {
 		ing := ingress.New(ingress.Options{
@@ -321,67 +237,18 @@ func serve() error {
 		})
 		cp.SetIngressInvalidator(ing.InvalidateCaches)
 		network.invalidateIngress = ing.InvalidateCaches
-		if cfg.TLSEnabled {
-			tc, acmeHTTP, err := buildTLSConfig(cfg, data)
-			if err != nil {
-				return err
-			}
-			servers = append(servers, newIngressHTTPServer(cfg.HTTPSAddr, ing, tc))
-			log.Info("ingress https listener", "addr", cfg.HTTPSAddr, "base_domain", cfg.BaseDomain)
-			httpHandler := http.Handler(ing)
-			if acmeHTTP != nil {
-				httpHandler = acmeHTTP
-			}
-			servers = append(servers, newIngressHTTPServer(cfg.IngressAddr, httpHandler, nil))
-			log.Info("ingress http listener", "addr", cfg.IngressAddr)
-		} else {
-			servers = append(servers, newIngressHTTPServer(cfg.IngressAddr, ing, nil))
-			log.Info("ingress listener", "addr", cfg.IngressAddr, "base_domain", cfg.BaseDomain)
+		ingressServers, err := env.ingressServers(ing)
+		if err != nil {
+			return err
 		}
-		if cfg.TLSPassthroughEnabled {
-			tp := ingress.NewTLSPassthrough(ingress.TLSPassthroughOptions{Data: data, Conns: conns, Log: log, BaseDomain: cfg.BaseDomain, Meter: mx})
-			if err := tp.Listen(cfg.TLSPassthroughAddr); err != nil {
-				return err
-			}
-			defer tp.Shutdown()
-			log.Info("tls passthrough listener", "addr", cfg.TLSPassthroughAddr)
+		servers = append(servers, ingressServers...)
+		if err := env.startTLSPassthrough(); err != nil {
+			return err
 		}
 	}
 
-	if cfg.SSHEnabled {
-		sshOpts := sshfwd.Options{
-			Data:               data,
-			Conns:              conns,
-			Log:                log,
-			BaseDomain:         cfg.BaseDomain,
-			PublicScheme:       cfg.PublicScheme,
-			DisablePathRouting: !cfg.PathRouting,
-		}
-		if tcpIngress != nil {
-			sshOpts.Ports = tcpIngress
-		}
-		if mx != nil {
-			sshOpts.Metrics = mx
-		}
-		keyPath := cfg.SSHHostKeyFile
-		if keyPath == "" {
-			keyPath = defaultHostKeyPath(cfg)
-		}
-		keyPEM, err := loadOrCreateHostKey(keyPath)
-		if err != nil {
-			return fmt.Errorf("ssh host key: %w", err)
-		}
-		sshOpts.HostKeyPEM = keyPEM
-		log.Info("ssh host key", "path", keyPath)
-		sshSrv, err := sshfwd.New(sshOpts)
-		if err != nil {
-			return err
-		}
-		if _, err := sshSrv.Listen(cfg.SSHAddr); err != nil {
-			return err
-		}
-		defer sshSrv.Shutdown()
-		log.Info("clientless ssh remote-forward listener", "addr", cfg.SSHAddr)
+	if err := env.startSSH(tcpIngress); err != nil {
+		return err
 	}
 
 	hooks := shutdownHooks{
@@ -488,10 +355,6 @@ func spaHandler(dir string) http.Handler {
 	index := filepath.Join(dir, "index.html")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clean := filepath.Join(dir, filepath.Clean("/"+r.URL.Path))
-		if !strings.HasPrefix(clean, filepath.Clean(dir)) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
 		if st, err := os.Stat(clean); err == nil && !st.IsDir() {
 			fileServer.ServeHTTP(w, r)
 			return
@@ -590,13 +453,6 @@ func newLogger(level string) *slog.Logger {
 		lvl = slog.LevelInfo
 	}
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
-}
-
-func envOr(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return def
 }
 
 func fail(err error) {

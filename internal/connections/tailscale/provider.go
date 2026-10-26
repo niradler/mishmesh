@@ -26,6 +26,7 @@ type Options struct {
 type provider struct {
 	options Options
 	locks   targetLocks
+	claims  claimsCache
 }
 type configuration struct {
 	Level       string   `json:"level"`
@@ -153,6 +154,7 @@ func (p *provider) Open(input connections.Config, deps connections.Deps) (connec
 	if local == nil {
 		return nil, errors.New("Tailscale LocalAPI is required")
 	}
+	p.claims.invalidate()
 	i := &instance{provider: p, cfg: cfg, record: input.Record, deps: deps, local: local, api: newAPI(p.options.APIBaseURL, p.options.HTTPClient, input.Secrets["oauth_client_id"], input.Secrets["oauth_client_secret"]), origin: deps.Origin}
 	if _, err := i.loadState(input.Record.State, ""); err != nil {
 		return nil, err
