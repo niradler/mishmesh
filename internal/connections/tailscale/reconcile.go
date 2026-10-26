@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mishmesh/mishmesh/internal/connections"
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -20,6 +21,10 @@ import (
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
 )
+
+var errClaimsUnavailable = errors.New("Tailscale ownership claims unavailable")
+
+const claimsTTL = 10 * time.Second
 
 func AccessHostname(endpointDomain, requested string) (string, error) {
 	label := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(requested)), ".")
@@ -79,9 +84,11 @@ func (i *instance) loadState(raw json.RawMessage, tailnet string) (*ownershipSta
 
 func (i *instance) saveState(ctx context.Context, state *ownershipState) error {
 	raw, err := json.Marshal(state)
+	i.provider.claims.invalidate()
 	if err != nil || i.deps.Data.UpdateConnectionState(ctx, i.record.OrgID, i.record.ID, raw) != nil {
 		return errors.New("Tailscale ownership could not be saved")
 	}
+	i.provider.claims.invalidate()
 	return nil
 }
 
@@ -169,39 +176,104 @@ func desiredServices(connectionID string, endpoints []*store.Endpoint) (map[stri
 	return desired, nil
 }
 
-func (i *instance) claims(ctx context.Context, tailnet string) (map[string]bool, error) {
-	claims := map[string]bool{}
-	records, err := i.deps.Data.ListAllConnections(ctx)
-	if err != nil {
-		return nil, errors.New("Tailscale ownership claims unavailable")
+type claimEntry struct {
+	id           string
+	orgID        string
+	tailnet      string
+	stateTailnet string
+	names        map[string]bool
+	err          error
+}
+
+type claimsCache struct {
+	mu      sync.Mutex
+	loaded  time.Time
+	entries []claimEntry
+	err     error
+	valid   bool
+}
+
+func (c *claimsCache) invalidate() {
+	c.mu.Lock()
+	c.valid = false
+	c.mu.Unlock()
+}
+
+func (c *claimsCache) snapshot(ctx context.Context, data store.DataStore) ([]claimEntry, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.valid && time.Since(c.loaded) < claimsTTL {
+		return c.entries, c.err
 	}
+	entries, err := loadClaimEntries(ctx, data)
+	if ctx.Err() != nil {
+		return nil, err
+	}
+	c.entries, c.err, c.loaded, c.valid = entries, err, time.Now(), true
+	return entries, err
+}
+
+func loadClaimEntries(ctx context.Context, data store.DataStore) ([]claimEntry, error) {
+	records, err := data.ListAllConnections(ctx)
+	if err != nil {
+		return nil, errClaimsUnavailable
+	}
+	var entries []claimEntry
+	byOrg := map[string][]*store.Endpoint{}
 	for _, record := range records {
-		if record == nil || record.Type != "tailscale" || record.ID == i.record.ID && record.OrgID == i.record.OrgID {
+		if record == nil || record.Type != "tailscale" {
 			continue
 		}
 		var cfg configuration
 		if json.Unmarshal(record.Config, &cfg) != nil {
-			return nil, errors.New("Tailscale ownership claims unavailable")
+			return nil, errClaimsUnavailable
 		}
 		var state ownershipState
 		if len(record.State) > 0 && json.Unmarshal(record.State, &state) != nil {
-			return nil, errors.New("Tailscale ownership claims unavailable")
+			return nil, errClaimsUnavailable
 		}
-		if cfg.Tailnet != "-" && !strings.EqualFold(cfg.Tailnet, tailnet) && !strings.EqualFold(state.Tailnet, tailnet) {
-			continue
+		entry := claimEntry{id: record.ID, orgID: record.OrgID, tailnet: cfg.Tailnet, stateTailnet: state.Tailnet, names: map[string]bool{}}
+		endpoints, listed := byOrg[record.OrgID]
+		var err error
+		if !listed {
+			endpoints, err = data.ListEndpointsByOrg(ctx, record.OrgID)
+			byOrg[record.OrgID] = endpoints
 		}
-		endpoints, err := i.deps.Data.ListEndpointsByOrg(ctx, record.OrgID)
+		var desired map[string]string
+		if err == nil {
+			desired, err = desiredServices(record.ID, endpoints)
+		}
 		if err != nil {
-			return nil, errors.New("Tailscale ownership claims unavailable")
-		}
-		desired, err := desiredServices(record.ID, endpoints)
-		if err != nil {
-			return nil, errors.New("Tailscale ownership claims unavailable")
+			entry.err = errClaimsUnavailable
 		}
 		for name := range desired {
-			claims[name] = true
+			entry.names[name] = true
 		}
 		for name := range state.OwnedServices {
+			entry.names[name] = true
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func (i *instance) claims(ctx context.Context, tailnet string) (map[string]bool, error) {
+	entries, err := i.provider.claims.snapshot(ctx, i.deps.Data)
+	if err != nil {
+		return nil, err
+	}
+	claims := map[string]bool{}
+	for _, entry := range entries {
+		if entry.id == i.record.ID && entry.orgID == i.record.OrgID {
+			continue
+		}
+		if entry.tailnet != "-" && !strings.EqualFold(entry.tailnet, tailnet) && !strings.EqualFold(entry.stateTailnet, tailnet) {
+			continue
+		}
+		if entry.err != nil {
+			return nil, entry.err
+		}
+		for name := range entry.names {
 			claims[name] = true
 		}
 	}
