@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -558,27 +559,24 @@ func decodePolicy(raw json.RawMessage, log *slog.Logger) *store.EndpointPolicy {
 	return &p
 }
 
+var agentSettablePolicyFields = map[string]bool{
+	"RequestHeadersAdd": true, "RequestHeadersRemove": true, "ResponseHeadersAdd": true, "ResponseHeadersRemove": true,
+	"HostHeader": true, "StripPathPrefix": true, "AddPathPrefix": true, "BasicAuthUser": true, "BasicAuthHash": true,
+	"IPAllow": true, "IPDeny": true, "ForceHTTPS": true, "MaxBodyBytes": true, "Compression": true,
+	"OIDC": true, "MTLS": true, "RateLimit": true, "Connect": true,
+}
+
 func dropControlPlaneFields(p *store.EndpointPolicy) []string {
 	var dropped []string
-	if len(p.ProxyTargets) > 0 {
-		dropped = append(dropped, "proxy_targets")
-		p.ProxyTargets = nil
-	}
-	if p.LoadBalance != "" {
-		dropped = append(dropped, "load_balance")
-		p.LoadBalance = ""
-	}
-	if p.OriginTLS != nil {
-		dropped = append(dropped, "origin_tls")
-		p.OriginTLS = nil
-	}
-	if p.ServiceID != "" {
-		dropped = append(dropped, "service_id")
-		p.ServiceID = ""
-	}
-	if len(p.Access) > 0 {
-		dropped = append(dropped, "access")
-		p.Access = nil
+	v := reflect.ValueOf(p).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Type().Field(i)
+		if agentSettablePolicyFields[field.Name] || v.Field(i).IsZero() {
+			continue
+		}
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		dropped = append(dropped, name)
+		v.Field(i).SetZero()
 	}
 	return dropped
 }
