@@ -5,6 +5,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
+
+	"github.com/mishmesh/mishmesh/internal/netblock"
 )
 
 type allowRule struct {
@@ -144,8 +146,8 @@ func (a *Allowlist) resolveIPs(ctx context.Context, host string) []net.IP {
 	return ips
 }
 
-var awsIPv6Metadata = net.ParseIP("fd00:ec2::254")
+var hardDenyPolicy = netblock.Policy{AllowPrivate: true}
 
 func hardDenied(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.Equal(awsIPv6Metadata)
+	return !hardDenyPolicy.IPAllowed(ip)
 }

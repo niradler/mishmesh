@@ -58,6 +58,21 @@ func TestAllowlistHardDenyOverridesBroadRule(t *testing.T) {
 	}
 }
 
+func TestAllowlistHardDeniesEmbeddedUnspecifiedAndMulticast(t *testing.T) {
+	a := NewAllowlist([]string{"0.0.0.0/0", "::/0"})
+	for _, target := range []string{
+		"[64:ff9b::a9fe:a9fe]:80",
+		"[64:ff9b::7f00:1]:80",
+		"0.0.0.1:80",
+		"224.0.0.1:80",
+		"255.255.255.255:80",
+	} {
+		if a.Allowed(target) {
+			t.Fatalf("%s must be hard-denied", target)
+		}
+	}
+}
+
 func TestAllowlistSkipsLookupForUnmatchableHost(t *testing.T) {
 	cases := []struct {
 		name       string
