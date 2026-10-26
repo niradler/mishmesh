@@ -30,6 +30,7 @@ type streamAgent struct {
 	gotEP    string
 	greeting string
 	failWith string
+	scripted func(net.Conn)
 }
 
 func (s *streamAgent) AgentID() string { return s.id }
@@ -55,6 +56,10 @@ func (s *streamAgent) OpenStream(_ context.Context, endpointID, kind string, met
 			_ = tunnel.CloseWrite(c)
 			_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
 			_, _ = io.Copy(io.Discard, c)
+			return
+		}
+		if s.scripted != nil {
+			s.scripted(c)
 			return
 		}
 		if s.greeting != "" {

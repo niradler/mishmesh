@@ -48,13 +48,12 @@ type ConnectionSnapshotStatus interface {
 
 func (a *API) SetServices(s ServiceControl) {
 	a.services = s
-	if a.serviceRegistry == nil {
-		a.serviceRegistry = services.NewBuiltinRegistry()
-	}
 }
 
 func (a *API) SetServiceRegistry(registry *services.Registry) {
-	a.serviceRegistry = registry
+	if registry != nil {
+		a.serviceRegistry = registry
+	}
 }
 
 func (a *API) SetIngressInvalidator(invalidate func()) { a.invalidateIngress = invalidate }
@@ -82,12 +81,16 @@ func (a *API) SetHostCommands(enabled bool) {
 
 var errHostCommandsOff = errors.New("host commands are disabled on this server (MISHMESH_HOST_COMMANDS)")
 
+type permissionDeniedError struct{ action authz.Action }
+
+func (e *permissionDeniedError) Error() string { return "permission denied: " + string(e.action) }
+
 func (a *API) hostAccess(r *http.Request) error {
 	if !a.hostCommands {
 		return errHostCommandsOff
 	}
 	if !a.permitted(r, authz.ActionHostExec) {
-		return errors.New("permission denied: " + string(authz.ActionHostExec))
+		return &permissionDeniedError{action: authz.ActionHostExec}
 	}
 	return nil
 }
@@ -104,13 +107,13 @@ func (a *API) endpointChanged(ep *store.Endpoint) {
 	if a.endpointHealth == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), healthProbeTimeout)
+	a.spawn(func(bg context.Context) {
+		ctx, cancel := context.WithTimeout(bg, healthProbeTimeout)
 		defer cancel()
 		if _, err := a.endpointHealth.ProbeNow(ctx, ep.ID); err != nil {
 			a.log.Warn("health probe after endpoint change failed", "endpoint_id", ep.ID, "err", err)
 		}
-	}()
+	})
 }
 
 func (a *API) endpointRemoved(ep *store.Endpoint) {

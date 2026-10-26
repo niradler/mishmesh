@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
@@ -26,14 +27,7 @@ func (a *API) listOrgsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgs, err := a.data.ListOrgs(r.Context())
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]orgDTO, 0, len(orgs))
-	for _, org := range orgs {
-		out = append(out, toOrgDTO(org))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, orgs, err, toOrgDTO)
 }
 
 type memberDTO struct {
@@ -80,8 +74,7 @@ func (a *API) addMemberHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "cannot grant a role above your own")
 		return
 	}
-	actor, _ := r.Context().Value(ctxActor).(string)
-	inv, token, err := a.createInvite(r.Context(), a.orgScope(r), email, req.Role, actor)
+	inv, token, err := a.createInvite(r.Context(), a.orgScope(r), email, req.Role, a.actor(r))
 	if err != nil {
 		a.log.Warn("create invite failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -108,6 +101,7 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	orgID := a.orgScope(r)
 	userID := r.PathValue("user_id")
+	defer a.memberMutations.lock(orgID)()
 	target, err := a.data.GetMembership(r.Context(), orgID, userID)
 	if a.handleErr(w, err) {
 		return
@@ -171,6 +165,7 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := a.orgScope(r)
 	userID := r.PathValue("user_id")
+	defer a.memberMutations.lock(orgID)()
 	if !a.authorizeMemberChange(w, r, orgID, userID, "") {
 		return
 	}
@@ -184,6 +179,17 @@ func (a *API) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "member.remove", userID, "")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type orgLocks struct {
+	locks sync.Map
+}
+
+func (l *orgLocks) lock(orgID string) func() {
+	m, _ := l.locks.LoadOrStore(orgID, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (a *API) revokeMemberAccess(ctx context.Context, orgID, userID string) error {

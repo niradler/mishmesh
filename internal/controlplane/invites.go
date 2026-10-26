@@ -33,8 +33,7 @@ func (a *API) callerRole(r *http.Request) string {
 	if a.isAdmin(r) {
 		return store.RoleOwner
 	}
-	role, _ := r.Context().Value(ctxRole).(string)
-	return role
+	return callerOf(r).role
 }
 
 func (a *API) canGrant(r *http.Request, role string) bool {
@@ -61,7 +60,7 @@ func (a *API) createInvite(ctx context.Context, orgID, email, role, invitedBy st
 	if err != nil {
 		return nil, "", fmt.Errorf("invite token: %w", err)
 	}
-	now := time.Now()
+	now := a.now()
 	inv := &store.Invite{
 		ID:        store.NewID("inv"),
 		TokenHash: store.HashToken(token),
@@ -93,7 +92,7 @@ func (a *API) lookupInvite(ctx context.Context, token, email string) (*store.Inv
 	if subtle.ConstantTimeCompare([]byte(inv.TokenHash), []byte(hash)) != 1 {
 		return nil, errInvalidInvite
 	}
-	if time.Now().After(inv.ExpiresAt) {
+	if a.now().After(inv.ExpiresAt) {
 		_ = a.data.DeleteInvite(ctx, inv.OrgID, inv.ID)
 		return nil, errInvalidInvite
 	}
@@ -113,36 +112,47 @@ func (a *API) claimInvite(ctx context.Context, inv *store.Invite) error {
 	return nil
 }
 
+func (a *API) releaseInvite(ctx context.Context, inv *store.Invite) {
+	if err := a.data.CreateInvite(ctx, inv); err != nil {
+		a.log.Warn("restore claimed invite failed", "invite", inv.ID, "err", err)
+	}
+}
+
 func (a *API) grantInviteMembership(ctx context.Context, userID string, inv *store.Invite) error {
-	if _, err := a.data.GetMembership(ctx, inv.OrgID, userID); err == nil {
+	_, err := a.data.GetMembership(ctx, inv.OrgID, userID)
+	if err == nil {
 		return nil
 	}
-	if err := a.data.CreateMembership(ctx, &store.Membership{OrgID: inv.OrgID, UserID: userID, Role: inv.Role, CreatedAt: time.Now()}); err != nil {
+	if !errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("lookup membership: %w", err)
+	}
+	if err := a.data.CreateMembership(ctx, &store.Membership{OrgID: inv.OrgID, UserID: userID, Role: inv.Role, CreatedAt: a.now()}); err != nil {
 		return fmt.Errorf("create membership: %w", err)
 	}
 	return nil
 }
 
-func (a *API) redeemVerifiedEmailInvites(ctx context.Context, user *store.User) (int, error) {
+func (a *API) redeemVerifiedEmailInvites(ctx context.Context, user *store.User) error {
 	invites, err := a.data.ListInvitesByEmail(ctx, user.Email)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	joined := 0
-	now := time.Now()
+	now := a.now()
 	for _, inv := range invites {
-		if err := a.claimInvite(ctx, inv); err != nil {
+		if err := a.claimInvite(ctx, inv); errors.Is(err, errInvalidInvite) {
 			continue
+		} else if err != nil {
+			return err
 		}
 		if now.After(inv.ExpiresAt) {
 			continue
 		}
 		if err := a.grantInviteMembership(ctx, user.ID, inv); err != nil {
-			return joined, err
+			a.releaseInvite(ctx, inv)
+			return err
 		}
-		joined++
 	}
-	return joined, nil
+	return nil
 }
 
 func (a *API) hasLiveInviteFor(ctx context.Context, email string) bool {
@@ -150,7 +160,7 @@ func (a *API) hasLiveInviteFor(ctx context.Context, email string) bool {
 	if err != nil {
 		return false
 	}
-	now := time.Now()
+	now := a.now()
 	for _, inv := range invites {
 		if now.Before(inv.ExpiresAt) {
 			return true
@@ -161,14 +171,7 @@ func (a *API) hasLiveInviteFor(ctx context.Context, email string) bool {
 
 func (a *API) listInvitesHandler(w http.ResponseWriter, r *http.Request) {
 	invites, err := a.data.ListInvitesByOrg(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]inviteDTO, 0, len(invites))
-	for _, inv := range invites {
-		out = append(out, toInviteDTO(inv))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, invites, err, toInviteDTO)
 }
 
 func (a *API) revokeInviteHandler(w http.ResponseWriter, r *http.Request) {
@@ -211,6 +214,7 @@ func (a *API) acceptInviteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.grantInviteMembership(r.Context(), su.user.ID, inv); err != nil {
+		a.releaseInvite(r.Context(), inv)
 		a.log.Warn("accept invite failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

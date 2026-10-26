@@ -220,7 +220,7 @@ func (a *API) auditAs(r *http.Request, orgID, actor, action, target, detail stri
 		Detail:    detail,
 		CreatedAt: a.now(),
 	}
-	if err := a.data.AppendAudit(r.Context(), ev); err != nil {
+	if err := a.data.AppendAudit(context.WithoutCancel(r.Context()), ev); err != nil {
 		a.log.Warn("append audit failed", "action", action, "err", err)
 	}
 }
@@ -228,7 +228,7 @@ func (a *API) auditAs(r *http.Request, orgID, actor, action, target, detail stri
 func (a *API) requireMachine(action authz.Action, h http.HandlerFunc) http.HandlerFunc {
 	human := a.require(action, h)
 	return func(w http.ResponseWriter, r *http.Request) {
-		raw := bearerToken(r)
+		raw := token.Bearer(r.Header.Get("Authorization"))
 		if a.identity == nil || !token.LooksLikeToken(raw) {
 			human(w, r)
 			return
@@ -265,8 +265,7 @@ func (a *API) authorizeMachine(w http.ResponseWriter, r *http.Request, raw strin
 		writeStoreUnavailable(w)
 		return nil, false
 	}
-	ctx := a.authContext(r, p.OrgID, "service_account:"+sa.ID, sa.Role, false)
-	return context.WithValue(ctx, ctxPrincipalType, authz.EntityServiceAccount), true
+	return a.authContext(r, caller{orgID: p.OrgID, actor: "service_account:" + sa.ID, role: sa.Role, kind: authz.EntityServiceAccount}), true
 }
 
 func (a *API) tokenAuthMethods() []string {

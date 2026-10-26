@@ -3,7 +3,6 @@ package controlplane
 import (
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -83,7 +82,7 @@ func (a *API) putPolicyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	org := a.orgScope(r)
-	if err := a.data.SetOrgPolicy(r.Context(), &store.OrgPolicy{OrgID: org, CedarSrc: string(src), UpdatedAt: time.Now()}); err != nil {
+	if err := a.data.SetOrgPolicy(r.Context(), &store.OrgPolicy{OrgID: org, CedarSrc: string(src), UpdatedAt: a.now()}); err != nil {
 		a.handleErr(w, err)
 		return
 	}

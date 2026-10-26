@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/services"
@@ -15,27 +15,15 @@ import (
 )
 
 func (a *API) driverRegistry() *services.Registry {
-	if a.serviceRegistry != nil {
-		return a.serviceRegistry
-	}
-	return services.NewBuiltinRegistry()
+	return a.serviceRegistry
 }
 
 func (a *API) lockServiceMutation(ctx context.Context) error {
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if a.servicesMu.TryLock() {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
+	select {
+	case a.servicesSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -162,7 +150,8 @@ func (a *API) authorizeServiceGraph(w http.ResponseWriter, r *http.Request, prop
 		}
 		if err := walk(candidate.record, candidate.persisted); err != nil {
 			status := http.StatusBadRequest
-			if strings.Contains(err.Error(), "permission denied") || errors.Is(err, errHostCommandsOff) {
+			var denied *permissionDeniedError
+			if errors.As(err, &denied) || errors.Is(err, errHostCommandsOff) {
 				status = http.StatusForbidden
 			}
 			writeError(w, status, err.Error())
@@ -197,28 +186,38 @@ func (a *API) serviceOperationError(w http.ResponseWriter, err error, phase stri
 	return true
 }
 
-func (a *API) serviceDefinitions(ctx context.Context, mutation store.ServiceMutation, records []*store.Service) ([]services.Definition, error) {
-	definitions := make([]services.Definition, 0, len(records))
+func firstProxyTargets(endpoints []*store.Endpoint, orgID string) map[string]string {
+	targets := map[string]string{}
+	for _, endpoint := range endpoints {
+		if endpoint.OrgID != orgID || endpoint.Policy == nil || len(endpoint.Policy.ProxyTargets) == 0 {
+			continue
+		}
+		if targets[endpoint.Policy.ServiceID] == "" {
+			targets[endpoint.Policy.ServiceID] = endpoint.Policy.ProxyTargets[0]
+		}
+	}
+	return targets
+}
+
+func (a *API) buildDefinitions(ctx context.Context, records []*store.Service, listEndpoints func(context.Context, string) ([]*store.Endpoint, error)) ([]services.Definition, error) {
 	fallbacks := map[string]map[string]string{}
+	definitions := make([]services.Definition, 0, len(records))
 	for _, record := range records {
 		definition, err := services.FromRecordWithRegistry(record, a.driverRegistry())
 		if err != nil {
-			a.log.Error("service skipped", "id", record.ID, "org", record.OrgID)
+			a.log.Error("service skipped", "id", record.ID, "org", record.OrgID, "err", err)
 			continue
 		}
-		if fallbacks[record.OrgID] == nil {
-			endpoints, err := mutation.ListEndpointsByOrg(ctx, record.OrgID)
+		targets, loaded := fallbacks[record.OrgID]
+		if !loaded {
+			endpoints, err := listEndpoints(ctx, record.OrgID)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("list service endpoints: %w", err)
 			}
-			fallbacks[record.OrgID] = map[string]string{}
-			for _, endpoint := range endpoints {
-				if endpoint.Policy != nil && len(endpoint.Policy.ProxyTargets) > 0 && fallbacks[record.OrgID][endpoint.Policy.ServiceID] == "" {
-					fallbacks[record.OrgID][endpoint.Policy.ServiceID] = endpoint.Policy.ProxyTargets[0]
-				}
-			}
+			targets = firstProxyTargets(endpoints, record.OrgID)
+			fallbacks[record.OrgID] = targets
 		}
-		definition.FallbackReadyAddr = fallbacks[record.OrgID][record.ID]
+		definition.FallbackReadyAddr = targets[record.ID]
 		definitions = append(definitions, definition)
 	}
 	return definitions, nil
@@ -231,18 +230,52 @@ func (a *API) reserveService(r *http.Request, definitions []services.Definition,
 	return a.services.Reserve(r.Context(), definitions, action)
 }
 
-func (a *API) withServiceMutation(r *http.Request, expected []*store.Service, definitions []services.Definition, action func(services.LifecycleReservation, store.ServiceMutation) error) error {
+func (a *API) snapshotMutation(r *http.Request, orgID string, expected []*store.Service, fn func(store.ServiceMutation) error) error {
 	snapshots, ok := a.data.(store.ServiceSnapshotStore)
 	if !ok {
 		return errors.New("service snapshot transactions are unavailable")
 	}
-	lease := func(reservation services.LifecycleReservation) error {
-		return snapshots.WithServiceSnapshots(r.Context(), a.orgScope(r), expected, func(mutation store.ServiceMutation) error {
+	return snapshots.WithServiceSnapshots(r.Context(), orgID, expected, fn)
+}
+
+func (a *API) withServiceMutation(r *http.Request, expected []*store.Service, definitions []services.Definition, action func(services.LifecycleReservation, store.ServiceMutation) error) error {
+	return a.reserveService(r, definitions, func(reservation services.LifecycleReservation) error {
+		return a.snapshotMutation(r, a.orgScope(r), expected, func(mutation store.ServiceMutation) error {
 			return action(reservation, mutation)
 		})
-	}
-	if a.services == nil {
-		return lease(nil)
-	}
-	return a.services.Reserve(r.Context(), definitions, lease)
+	})
 }
+
+func (a *API) applyServices(r *http.Request, orgID string, expected []*store.Service, reservation services.LifecycleReservation, onApplied func() error) error {
+	return a.snapshotMutation(r, orgID, expected, func(mutation store.ServiceMutation) error {
+		records, err := mutation.ListAllServices(r.Context())
+		if err != nil {
+			return err
+		}
+		definitions, err := a.buildDefinitions(r.Context(), records, mutation.ListEndpointsByOrg)
+		if err != nil {
+			return err
+		}
+		if err := reservation.Apply(definitions); err != nil {
+			return err
+		}
+		if onApplied == nil {
+			return nil
+		}
+		return onApplied()
+	})
+}
+
+func (a *API) beginServiceMutation(w http.ResponseWriter, r *http.Request) (*http.Request, func(), bool) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	if err := a.lockServiceMutation(ctx); a.serviceOperationError(w, err, "admission", false) {
+		cancel()
+		return nil, nil, false
+	}
+	return r.WithContext(ctx), func() {
+		a.unlockServiceMutation()
+		cancel()
+	}, true
+}
+
+func (a *API) unlockServiceMutation() { <-a.servicesSem }

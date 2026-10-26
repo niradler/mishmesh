@@ -530,7 +530,7 @@ func TestShouldPreserveAuthenticationCSRFLimitsAndSensitiveOutput(t *testing.T) 
 	}
 	body := `{"type":"third","name":"x","config":{"location":"` + strings.Repeat("x", 1<<20) + `"}}`
 	code, response = f.do(t, f.alice, http.MethodPost, "/api/v1/connections", body)
-	if code != http.StatusBadRequest {
+	if code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("request limit: %d %s", code, response)
 	}
 	body = `{"type":"third","type":"third","name":"x","config":{}}`

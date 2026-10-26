@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -72,24 +71,9 @@ func newClientSecret() (string, error) {
 	return clientSecretPrefix + raw, nil
 }
 
-func (a *API) serviceAccountErr(w http.ResponseWriter, err error) bool {
-	if errors.Is(err, store.ErrConflict) {
-		writeError(w, http.StatusConflict, "service account name already exists")
-		return true
-	}
-	return a.handleErr(w, err)
-}
-
 func (a *API) listServiceAccountsHandler(w http.ResponseWriter, r *http.Request) {
 	list, err := a.data.ListServiceAccounts(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]serviceAccountDTO, 0, len(list))
-	for _, sa := range list {
-		out = append(out, toServiceAccountDTO(sa))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, list, err, toServiceAccountDTO)
 }
 
 func (a *API) createServiceAccountHandler(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +107,7 @@ func (a *API) createServiceAccountHandler(w http.ResponseWriter, r *http.Request
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	if a.serviceAccountErr(w, a.data.CreateServiceAccount(r.Context(), sa)) {
+	if a.handleStoreErr(w, a.data.CreateServiceAccount(r.Context(), sa), "service account name already exists") {
 		return
 	}
 	a.audit(r, "service_account.create", sa.ID, sa.Name)
@@ -181,7 +165,7 @@ func (a *API) patchServiceAccountHandler(w http.ResponseWriter, r *http.Request)
 		sa.Disabled = *req.Disabled
 	}
 	sa.UpdatedAt = a.now().UTC()
-	if a.serviceAccountErr(w, a.data.UpdateServiceAccount(r.Context(), sa)) {
+	if a.handleStoreErr(w, a.data.UpdateServiceAccount(r.Context(), sa), "service account name already exists") {
 		return
 	}
 	if revoke && !a.revokeServiceAccount(w, r, sa) {

@@ -33,14 +33,7 @@ func toEgressCredentialDTO(c *store.EgressCredential) egressCredentialDTO {
 
 func (a *API) listEgressCredentialsHandler(w http.ResponseWriter, r *http.Request) {
 	list, err := a.data.ListEgressCredentials(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]egressCredentialDTO, 0, len(list))
-	for _, c := range list {
-		out = append(out, toEgressCredentialDTO(c))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, list, err, toEgressCredentialDTO)
 }
 
 func (a *API) getEgressCredentialHandler(w http.ResponseWriter, r *http.Request) {

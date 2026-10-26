@@ -171,14 +171,7 @@ func (a *API) listWorkloadIdentitiesHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	list, err := a.data.ListWorkloadIdentities(r.Context(), sa.OrgID, sa.ID)
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]workloadIdentityDTO, 0, len(list))
-	for _, wi := range list {
-		out = append(out, toWorkloadIdentityDTO(wi))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, list, err, toWorkloadIdentityDTO)
 }
 
 func (a *API) createWorkloadIdentityHandler(w http.ResponseWriter, r *http.Request) {

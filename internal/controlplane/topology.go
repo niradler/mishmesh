@@ -154,16 +154,13 @@ func (a *API) topologyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, record := range records {
-		view, err := a.connectionView(record, a.connectionRecordStatus(record))
+		view, err := a.buildConnectionView(record, a.connectionRecordStatus(record))
 		if a.handleErr(w, err) {
 			return
 		}
 		name := record.ID
-		if raw, ok := view["name"].(json.RawMessage); ok {
-			_ = json.Unmarshal(raw, &name)
-		}
-		status := view["status"].(connections.Status)
-		a.addConnection(b, record, name, status, eps)
+		_ = json.Unmarshal(view.Name, &name)
+		a.addConnection(b, record, name, view.Status, eps)
 	}
 	writeJSON(w, http.StatusOK, b.result())
 }
