@@ -147,11 +147,7 @@ func (a *API) rotateToken(ctx context.Context, agent *store.Agent) (string, erro
 			return "", fmt.Errorf("revoke previous token: %w", err)
 		}
 	}
-	if a.conns != nil {
-		if conn, ok := a.conns.GetAgent(agent.ID); ok {
-			_ = conn.Close()
-		}
-	}
+	a.closeAgentConn(agent.ID)
 	return raw, nil
 }
 
@@ -167,11 +163,7 @@ func (a *API) revokeAgent(ctx context.Context, agentID string) error {
 	if err := a.data.RevokeTokensByAgent(ctx, agentID); err != nil {
 		return err
 	}
-	if a.conns != nil {
-		if conn, ok := a.conns.GetAgent(agentID); ok {
-			_ = conn.Close()
-		}
-	}
+	a.closeAgentConn(agentID)
 	return nil
 }
 
@@ -199,19 +191,37 @@ func (a *API) updateAgent(ctx context.Context, agentID, name, status string) (*s
 	if err != nil {
 		return nil, err
 	}
+	switch status {
+	case "", store.AgentActive, store.AgentDisabled, store.AgentRevoked:
+	default:
+		return nil, fmt.Errorf("invalid status %q", status)
+	}
 	if name != "" {
 		agent.Name = name
 	}
-	if status != "" {
-		switch status {
-		case store.AgentActive, store.AgentDisabled, store.AgentRevoked:
-			agent.Status = status
-		default:
-			return nil, fmt.Errorf("invalid status %q", status)
-		}
+	if status != "" && status != store.AgentRevoked {
+		agent.Status = status
 	}
 	if err := a.data.UpdateAgent(ctx, agent); err != nil {
 		return nil, err
 	}
+	switch status {
+	case store.AgentRevoked:
+		if err := a.revokeAgent(ctx, agentID); err != nil {
+			return nil, err
+		}
+		agent.Status = store.AgentRevoked
+	case store.AgentDisabled:
+		a.closeAgentConn(agentID)
+	}
 	return agent, nil
+}
+
+func (a *API) closeAgentConn(agentID string) {
+	if a.conns == nil {
+		return
+	}
+	if conn, ok := a.conns.GetAgent(agentID); ok {
+		_ = conn.Close()
+	}
 }

@@ -612,7 +612,20 @@ func (a *API) patchAgentHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Status != "" {
 		a.flushDecisions(ag.OrgID)
 	}
+	a.audit(r, patchAgentAuditAction(req.Status), ag.ID, req.Name)
 	writeJSON(w, http.StatusOK, a.toAgentDTO(ag))
+}
+
+func patchAgentAuditAction(status string) string {
+	switch status {
+	case store.AgentRevoked:
+		return "agent.revoke"
+	case store.AgentDisabled:
+		return "agent.disable"
+	case store.AgentActive:
+		return "agent.enable"
+	}
+	return "agent.update"
 }
 
 func (a *API) deleteAgentHandler(w http.ResponseWriter, r *http.Request) {
@@ -627,6 +640,7 @@ func (a *API) deleteAgentHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
+	a.audit(r, "agent.delete", r.PathValue("id"), "")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -650,6 +664,7 @@ func (a *API) revokeAgentHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, a.revokeAgent(r.Context(), r.PathValue("id"))) {
 		return
 	}
+	a.audit(r, "agent.revoke", r.PathValue("id"), "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
