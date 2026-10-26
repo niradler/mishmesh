@@ -20,12 +20,13 @@ import (
 )
 
 type gateDeps struct {
-	oidc         *oidcGate
-	trusted      []*net.IPNet
-	limiter      ratelimit.Limiter
-	basic        *ttlCache[struct{}]
-	basicLockout *ttlCache[time.Time]
-	caPools      *ttlCache[*x509.CertPool]
+	oidc           *oidcGate
+	trusted        []*net.IPNet
+	limiter        ratelimit.Limiter
+	basic          *ttlCache[struct{}]
+	basicLockout   *ttlCache[time.Time]
+	basicVerifying *keyedLocks
+	caPools        *ttlCache[*x509.CertPool]
 }
 
 func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, deps gateDeps) bool {
@@ -55,25 +56,38 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 	}
 
 	if p.BasicAuthUser != "" {
-		key := basicAuthVerifyKey(ep.ID, ip)
-		var lockedFor time.Duration
-		locked := func() bool {
-			until, ok := deps.basicLockout.get(key)
-			lockedFor = time.Until(until)
-			return ok && lockedFor > 0
-		}
-		switch checkBasicAuth(r, ep.ID, p.BasicAuthUser, p.BasicAuthHash, deps.basic, locked) {
-		case basicAuthThrottled:
-			writeBasicAuthThrottled(w, lockedFor)
-			return false
-		case basicAuthDenied:
-			if deps.limiter != nil {
-				if d := deps.limiter.Allow(r.Context(), key, ratelimit.Limit{Requests: basicAuthVerifyRequests, Period: basicAuthVerifyPeriod}); !d.Allowed {
-					deps.basicLockout.put(key, time.Now().Add(d.RetryAfter))
-					writeBasicAuthThrottled(w, d.RetryAfter)
-					return false
+		var retryAfter time.Duration
+		guard := func(verify func() bool) basicAuthResult {
+			key := basicAuthVerifyKey(ep.ID, ip)
+			release, err := deps.basicVerifying.acquire(r.Context(), key)
+			if err != nil {
+				return basicAuthDenied
+			}
+			defer release()
+			if until, ok := deps.basicLockout.get(key); ok {
+				if retryAfter = time.Until(until); retryAfter > 0 {
+					return basicAuthThrottled
 				}
 			}
+			if verify() {
+				return basicAuthOK
+			}
+			if deps.limiter == nil {
+				return basicAuthDenied
+			}
+			d := deps.limiter.Allow(r.Context(), key, ratelimit.Limit{Requests: basicAuthVerifyRequests, Period: basicAuthVerifyPeriod})
+			if d.Allowed {
+				return basicAuthDenied
+			}
+			deps.basicLockout.put(key, time.Now().Add(d.RetryAfter))
+			retryAfter = d.RetryAfter
+			return basicAuthThrottled
+		}
+		switch checkBasicAuth(r, ep.ID, p.BasicAuthUser, p.BasicAuthHash, deps.basic, guard) {
+		case basicAuthThrottled:
+			writeBasicAuthThrottled(w, retryAfter)
+			return false
+		case basicAuthDenied:
 			w.Header().Set("WWW-Authenticate", `Basic realm="mishmesh"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return false
@@ -288,6 +302,8 @@ const (
 	basicAuthThrottled
 )
 
+var compareBasicAuthPassword = bcrypt.CompareHashAndPassword
+
 const (
 	basicAuthVerifyRequests = 10
 	basicAuthVerifyPeriod   = time.Minute
@@ -305,7 +321,7 @@ func writeBasicAuthThrottled(w http.ResponseWriter, retryAfter time.Duration) {
 	http.Error(w, "too many authentication attempts", http.StatusTooManyRequests)
 }
 
-func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[struct{}], locked func() bool) basicAuthResult {
+func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[struct{}], guard func(verify func() bool) basicAuthResult) basicAuthResult {
 	u, pass, ok := r.BasicAuth()
 	if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 || hash == "" {
 		return basicAuthDenied
@@ -315,12 +331,21 @@ func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[st
 	if _, hit := cache.get(key); hit {
 		return basicAuthOK
 	}
-	if locked != nil && locked() {
-		return basicAuthThrottled
+	verify := func() bool {
+		if _, hit := cache.get(key); hit {
+			return true
+		}
+		if compareBasicAuthPassword([]byte(hash), []byte(pass)) != nil {
+			return false
+		}
+		cache.put(key, struct{}{})
+		return true
 	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) != nil {
-		return basicAuthDenied
+	if guard != nil {
+		return guard(verify)
 	}
-	cache.put(key, struct{}{})
-	return basicAuthOK
+	if verify() {
+		return basicAuthOK
+	}
+	return basicAuthDenied
 }

@@ -71,12 +71,13 @@ type Ingress struct {
 	secrets     SecretOpener
 	upgrades    *flows.Tracker
 
-	endpoints    *ttlCache[*store.Endpoint]
-	quotas       *ttlCache[*store.Quota]
-	misses       *ttlCache[struct{}]
-	basicAuth    *ttlCache[struct{}]
-	basicLockout *ttlCache[time.Time]
-	caPools      *ttlCache[*x509.CertPool]
+	endpoints      *ttlCache[*store.Endpoint]
+	quotas         *ttlCache[*store.Quota]
+	misses         *ttlCache[struct{}]
+	basicAuth      *ttlCache[struct{}]
+	basicLockout   *ttlCache[time.Time]
+	basicVerifying *keyedLocks
+	caPools        *ttlCache[*x509.CertPool]
 }
 
 func New(opts Options) *Ingress {
@@ -101,12 +102,13 @@ func New(opts Options) *Ingress {
 		access:      opts.AccessLog,
 		secrets:     opts.Secrets,
 
-		endpoints:    newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
-		quotas:       newTTLCache[*store.Quota](opts.LookupCacheTTL),
-		misses:       newTTLCache[struct{}](min(opts.LookupCacheTTL, negativeCacheTTL)),
-		basicAuth:    newTTLCache[struct{}](basicAuthCacheTTL),
-		basicLockout: newTTLCache[time.Time](basicAuthVerifyPeriod),
-		caPools:      newTTLCache[*x509.CertPool](clientCAPoolCacheTTL),
+		endpoints:      newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
+		quotas:         newTTLCache[*store.Quota](opts.LookupCacheTTL),
+		misses:         newTTLCache[struct{}](min(opts.LookupCacheTTL, negativeCacheTTL)),
+		basicAuth:      newTTLCache[struct{}](basicAuthCacheTTL),
+		basicLockout:   newTTLCache[time.Time](basicAuthVerifyPeriod),
+		basicVerifying: &keyedLocks{},
+		caPools:        newTTLCache[*x509.CertPool](clientCAPoolCacheTTL),
 	}
 	if i.limiter == nil {
 		i.limiter = ratelimit.NewMemory()
@@ -183,7 +185,7 @@ func (i *Ingress) serveEndpoint(w http.ResponseWriter, r *http.Request, ep *stor
 }
 
 func (i *Ingress) gateDeps() gateDeps {
-	return gateDeps{oidc: i.oidc, trusted: i.trusted, limiter: i.limiter, basic: i.basicAuth, basicLockout: i.basicLockout, caPools: i.caPools}
+	return gateDeps{oidc: i.oidc, trusted: i.trusted, limiter: i.limiter, basic: i.basicAuth, basicLockout: i.basicLockout, basicVerifying: i.basicVerifying, caPools: i.caPools}
 }
 
 var (

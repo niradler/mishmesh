@@ -3,6 +3,8 @@ package ingress
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,5 +80,63 @@ func TestBasicAuthCachedSuccessBypassesThrottle(t *testing.T) {
 		if !applyPolicyGate(w, r, ep, deps) {
 			t.Fatalf("request %d rejected with %d", i, w.Code)
 		}
+	}
+}
+
+func TestBasicAuthConcurrentFailuresCannotOutrunLockout(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("s3cret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var verifications atomic.Int32
+	original := compareBasicAuthPassword
+	compareBasicAuthPassword = func(hash, pass []byte) error {
+		verifications.Add(1)
+		time.Sleep(5 * time.Millisecond)
+		return original(hash, pass)
+	}
+	t.Cleanup(func() { compareBasicAuthPassword = original })
+
+	ep := &store.Endpoint{ID: "ep_1", Policy: &store.EndpointPolicy{BasicAuthUser: "alice", BasicAuthHash: string(hash)}}
+	deps := gateDeps{limiter: ratelimit.NewMemory(), basic: newTTLCache[struct{}](basicAuthCacheTTL), basicLockout: newTTLCache[time.Time](basicAuthVerifyPeriod), basicVerifying: &keyedLocks{}}
+	const burst = 50
+	var wg sync.WaitGroup
+	for i := 0; i < burst; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := httptest.NewRequest(http.MethodGet, "http://demo.localhost/", nil)
+			r.RemoteAddr = "203.0.113.9:1234"
+			r.SetBasicAuth("alice", "wrong")
+			applyPolicyGate(httptest.NewRecorder(), r, ep, deps)
+		}()
+	}
+	wg.Wait()
+	if got := verifications.Load(); got > basicAuthVerifyRequests+1 {
+		t.Fatalf("bcrypt ran %d times for a %d-request burst, want at most %d", got, burst, basicAuthVerifyRequests+1)
+	}
+}
+
+func TestBasicAuthMissingCredentialsDoNotLockOut(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("s3cret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := &store.Endpoint{ID: "ep_1", Policy: &store.EndpointPolicy{BasicAuthUser: "alice", BasicAuthHash: string(hash)}}
+	deps := gateDeps{limiter: ratelimit.NewMemory(), basic: newTTLCache[struct{}](basicAuthCacheTTL), basicLockout: newTTLCache[time.Time](basicAuthVerifyPeriod), basicVerifying: &keyedLocks{}}
+	for i := 0; i < basicAuthVerifyRequests*3; i++ {
+		r := httptest.NewRequest(http.MethodGet, "http://demo.localhost/", nil)
+		r.RemoteAddr = "203.0.113.9:1234"
+		w := httptest.NewRecorder()
+		applyPolicyGate(w, r, ep, deps)
+		if w.Code != http.StatusUnauthorized || w.Header().Get("WWW-Authenticate") == "" {
+			t.Fatalf("credential-less request %d: status = %d, want 401 with a login challenge", i, w.Code)
+		}
+	}
+	r := httptest.NewRequest(http.MethodGet, "http://demo.localhost/", nil)
+	r.RemoteAddr = "203.0.113.9:1234"
+	r.SetBasicAuth("alice", "s3cret")
+	if w := httptest.NewRecorder(); !applyPolicyGate(w, r, ep, deps) {
+		t.Fatalf("correct password after anonymous visits rejected with %d", w.Code)
 	}
 }
