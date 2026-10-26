@@ -82,12 +82,16 @@ func (a *API) SetHostCommands(enabled bool) {
 
 var errHostCommandsOff = errors.New("host commands are disabled on this server (MISHMESH_HOST_COMMANDS)")
 
+type permissionDeniedError struct{ action authz.Action }
+
+func (e *permissionDeniedError) Error() string { return "permission denied: " + string(e.action) }
+
 func (a *API) hostAccess(r *http.Request) error {
 	if !a.hostCommands {
 		return errHostCommandsOff
 	}
 	if !a.permitted(r, authz.ActionHostExec) {
-		return errors.New("permission denied: " + string(authz.ActionHostExec))
+		return &permissionDeniedError{action: authz.ActionHostExec}
 	}
 	return nil
 }

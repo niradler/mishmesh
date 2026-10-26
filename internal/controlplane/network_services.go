@@ -3,7 +3,6 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -122,35 +121,9 @@ func (a *API) reloadServicesLocked(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list services: %w", err)
 	}
-	fallbacks := make(map[string]map[string]string)
-	for _, rec := range recs {
-		if _, loaded := fallbacks[rec.OrgID]; loaded {
-			continue
-		}
-		endpoints, err := a.data.ListEndpointsByOrg(ctx, rec.OrgID)
-		if err != nil {
-			return fmt.Errorf("list service endpoints: %w", err)
-		}
-		targets := make(map[string]string)
-		for _, ep := range endpoints {
-			if ep.OrgID != rec.OrgID || ep.Policy == nil || len(ep.Policy.ProxyTargets) == 0 {
-				continue
-			}
-			if targets[ep.Policy.ServiceID] == "" {
-				targets[ep.Policy.ServiceID] = ep.Policy.ProxyTargets[0]
-			}
-		}
-		fallbacks[rec.OrgID] = targets
-	}
-	defs := make([]services.Definition, 0, len(recs))
-	for _, rec := range recs {
-		def, err := services.FromRecordWithRegistry(rec, a.driverRegistry())
-		if err != nil {
-			a.log.Error("service skipped", "id", rec.ID, "org", rec.OrgID, "err", err)
-			continue
-		}
-		def.FallbackReadyAddr = fallbacks[rec.OrgID][rec.ID]
-		defs = append(defs, def)
+	defs, err := a.buildDefinitions(ctx, recs, a.data.ListEndpointsByOrg)
+	if err != nil {
+		return err
 	}
 	a.services.Apply(defs)
 	return nil
@@ -250,13 +223,11 @@ func (a *API) getServiceHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) createServiceHandler(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	r = r.WithContext(ctx)
-	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
+	r, release, ok := a.beginServiceMutation(w, r)
+	if !ok {
 		return
 	}
-	defer a.unlockServiceMutation()
+	defer release()
 	rec, ok := a.buildService(w, r, nil)
 	if !ok {
 		return
@@ -266,11 +237,7 @@ func (a *API) createServiceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := a.reserveService(r, definitions, func(reservation services.LifecycleReservation) error {
-		snapshots, ok := a.data.(store.ServiceSnapshotStore)
-		if !ok {
-			return errors.New("service snapshot transactions are unavailable")
-		}
-		if err := snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, expected, func(mutation store.ServiceMutation) error {
+		if err := a.snapshotMutation(r, rec.OrgID, expected, func(mutation store.ServiceMutation) error {
 			return mutation.CreateService(r.Context(), rec)
 		}); err != nil {
 			return err
@@ -278,17 +245,7 @@ func (a *API) createServiceHandler(w http.ResponseWriter, r *http.Request) {
 		if reservation == nil {
 			return nil
 		}
-		return snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, append(expected, rec), func(mutation store.ServiceMutation) error {
-			records, err := mutation.ListAllServices(r.Context())
-			if err != nil {
-				return err
-			}
-			defs, err := a.serviceDefinitions(r.Context(), mutation, records)
-			if err != nil {
-				return err
-			}
-			return reservation.Apply(defs)
-		})
+		return a.applyServices(r, rec.OrgID, append(expected, rec), reservation, nil)
 	})
 	if a.handleStoreErr(w, err, "service name already exists or references changed; reload and retry") {
 		return
@@ -298,13 +255,11 @@ func (a *API) createServiceHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) updateServiceHandler(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	r = r.WithContext(ctx)
-	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
+	r, release, ok := a.beginServiceMutation(w, r)
+	if !ok {
 		return
 	}
-	defer a.unlockServiceMutation()
+	defer release()
 	existing, ok := a.scopedService(w, r)
 	if !ok {
 		return
@@ -331,12 +286,8 @@ func (a *API) updateServiceHandler(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		snapshots, ok := a.data.(store.ServiceSnapshotStore)
-		if !ok {
-			return errors.New("service snapshot transactions are unavailable")
-		}
 		var authoritative []*store.Service
-		err := snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, expected, func(mutation store.ServiceMutation) error {
+		err := a.snapshotMutation(r, rec.OrgID, expected, func(mutation store.ServiceMutation) error {
 			if restart && reservation != nil {
 				phase = "stop"
 				if err := reservation.Stop(rec.ID); err != nil {
@@ -374,18 +325,7 @@ func (a *API) updateServiceHandler(w http.ResponseWriter, r *http.Request) {
 				reservation.Invalidate(rec.ID)
 			}
 		}()
-		return snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, current, func(mutation store.ServiceMutation) error {
-			records, err := mutation.ListAllServices(r.Context())
-			if err != nil {
-				return err
-			}
-			defs, err := a.serviceDefinitions(r.Context(), mutation, records)
-			if err != nil {
-				return err
-			}
-			if err := reservation.Apply(defs); err != nil {
-				return err
-			}
+		return a.applyServices(r, rec.OrgID, current, reservation, func() error {
 			applied = true
 			if restart {
 				phase = "start"
@@ -406,13 +346,11 @@ func (a *API) updateServiceHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) deleteServiceHandler(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	r = r.WithContext(ctx)
-	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
+	r, release, ok := a.beginServiceMutation(w, r)
+	if !ok {
 		return
 	}
-	defer a.unlockServiceMutation()
+	defer release()
 	rec, ok := a.scopedService(w, r)
 	if !ok {
 		return
@@ -450,11 +388,7 @@ func (a *API) deleteServiceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted := false
 	err = a.reserveService(r, definitions, func(reservation services.LifecycleReservation) error {
-		snapshots, ok := a.data.(store.ServiceSnapshotStore)
-		if !ok {
-			return errors.New("service snapshot transactions are unavailable")
-		}
-		err := snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, expected, func(mutation store.ServiceMutation) error {
+		err := a.snapshotMutation(r, rec.OrgID, expected, func(mutation store.ServiceMutation) error {
 			if err := mutation.CheckDeleteService(r.Context(), rec.ID); err != nil {
 				return err
 			}
@@ -479,17 +413,7 @@ func (a *API) deleteServiceHandler(w http.ResponseWriter, r *http.Request) {
 				remaining = append(remaining, record)
 			}
 		}
-		return snapshots.WithServiceSnapshots(r.Context(), rec.OrgID, remaining, func(mutation store.ServiceMutation) error {
-			records, err := mutation.ListAllServices(r.Context())
-			if err != nil {
-				return err
-			}
-			defs, err := a.serviceDefinitions(r.Context(), mutation, records)
-			if err != nil {
-				return err
-			}
-			return reservation.Apply(defs)
-		})
+		return a.applyServices(r, rec.OrgID, remaining, reservation, nil)
 	})
 	if a.serviceOperationError(w, err, "delete", deleted) {
 		return
@@ -515,13 +439,11 @@ func (a *API) controllableService(w http.ResponseWriter, r *http.Request) (*stor
 }
 
 func (a *API) startServiceHandler(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	r = r.WithContext(ctx)
-	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
+	r, release, ok := a.beginServiceMutation(w, r)
+	if !ok {
 		return
 	}
-	defer a.unlockServiceMutation()
+	defer release()
 	rec, ok := a.controllableService(w, r)
 	if !ok {
 		return
@@ -552,13 +474,11 @@ func (a *API) startServiceHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) stopServiceHandler(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	r = r.WithContext(ctx)
-	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
+	r, release, ok := a.beginServiceMutation(w, r)
+	if !ok {
 		return
 	}
-	defer a.unlockServiceMutation()
+	defer release()
 	rec, ok := a.controllableService(w, r)
 	if !ok {
 		return
