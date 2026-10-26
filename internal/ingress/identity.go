@@ -158,7 +158,7 @@ func (i *Ingress) decideEndpoint(r *http.Request, ep *store.Endpoint, outPath st
 	reqCtx := authz.RequestContext{
 		ClientIP:   unknownClientIP,
 		Host:       hostOnly(r.Host),
-		TLS:        requestIsHTTPS(r),
+		TLS:        requestIsHTTPS(r, i.trusted),
 		Method:     r.Method,
 		Path:       outPath,
 		AuthMethod: authz.AuthMethodNone,

@@ -96,7 +96,7 @@ func (i *Ingress) handleEndpointCallback(w http.ResponseWriter, r *http.Request,
 		Value:    issued.Token,
 		Path:     endpointCookiePath(r, ep),
 		HttpOnly: true,
-		Secure:   i.secure || requestIsHTTPS(r),
+		Secure:   i.secure || requestIsHTTPS(r, i.trusted),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  issued.Session.ExpiresAt,
 	})

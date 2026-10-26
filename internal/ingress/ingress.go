@@ -107,7 +107,7 @@ func New(opts Options) *Ingress {
 	i.upgrades = newUpgradeTracker(i, opts.Identity)
 	i.proxy = i.newProxy(opts.UpstreamResponseTimeout)
 	if len(opts.OIDCSignKey) > 0 {
-		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.Identity, opts.CookieSecure, false, opts.OIDCAllowPrivate, log)
+		i.oidc = newOIDCGate(opts.Data, opts.OIDCSignKey, opts.Identity, opts.CookieSecure, false, opts.OIDCAllowPrivate, opts.TrustedProxies, log)
 	}
 	return i
 }

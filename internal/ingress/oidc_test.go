@@ -30,7 +30,7 @@ import (
 
 func testGate(t *testing.T) *oidcGate {
 	t.Helper()
-	return newOIDCGate(nil, []byte("test-signing-key-0123456789abcdef"), newIdentityService(t), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newOIDCGate(nil, []byte("test-signing-key-0123456789abcdef"), newIdentityService(t), false, true, false, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestStateRoundTrip(t *testing.T) {
@@ -98,7 +98,7 @@ func TestOIDCSessionIsServerSide(t *testing.T) {
 }
 
 func TestOIDCGateFailsClosedWithoutSessions(t *testing.T) {
-	g := newOIDCGate(nil, []byte("k"), nil, false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(nil, []byte("k"), nil, false, true, false, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ep := &store.Endpoint{ID: "ep_1", Kind: store.KindHTTP, Policy: &store.EndpointPolicy{OIDC: &store.OIDCEndpointAuth{Issuer: "https://idp.invalid", ClientID: "c"}}}
 	w := httptest.NewRecorder()
 	if g.authenticate(w, httptest.NewRequest("GET", "http://app.local/", nil), ep) || w.Code != http.StatusServiceUnavailable {
@@ -130,14 +130,14 @@ func TestAllowlistPermits(t *testing.T) {
 }
 
 func TestProviderRejectsInsecureIssuer(t *testing.T) {
-	g := newOIDCGate(nil, []byte("k"), nil, false, false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(nil, []byte("k"), nil, false, false, false, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := g.provider(context.Background(), "http://accounts.google.com", false); err == nil {
 		t.Fatal("non-https issuer must be rejected when loopback is disallowed")
 	}
 }
 
 func TestProviderBlocksMetadataIssuer(t *testing.T) {
-	g := newOIDCGate(nil, []byte("k"), nil, false, false, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	g := newOIDCGate(nil, []byte("k"), nil, false, false, false, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_, err := g.provider(context.Background(), "https://169.254.169.254", false)
 	if err == nil {
 		t.Fatal("metadata-IP issuer must be blocked by the SSRF dialer")
@@ -312,7 +312,7 @@ func oidcEndpointFixture(t *testing.T, issuer string, domains []string) (*oidcGa
 	if err := data.CreateEndpoint(ctx, ep); err != nil {
 		t.Fatal(err)
 	}
-	return newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), newIdentityService(t), false, true, false, slog.New(slog.NewTextHandler(io.Discard, nil))), ep
+	return newOIDCGate(data, []byte("test-signing-key-0123456789abcdef"), newIdentityService(t), false, true, false, nil, slog.New(slog.NewTextHandler(io.Discard, nil))), ep
 }
 
 func runOIDCLogin(t *testing.T, g *oidcGate, ep *store.Endpoint, idp *fakeIdP) *httptest.ResponseRecorder {

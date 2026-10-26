@@ -36,6 +36,51 @@ func TestCIDRMatch(t *testing.T) {
 	}
 }
 
+func TestForceHTTPSTrustsForwardedProtoOnlyFromTrustedProxies(t *testing.T) {
+	trusted, err := ParseTrustedProxies("10.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := &store.Endpoint{ID: "ep", Policy: &store.EndpointPolicy{ForceHTTPS: true}}
+	cases := []struct {
+		name       string
+		remoteAddr string
+		wantPass   bool
+	}{
+		{"untrusted client spoofing https", "203.0.113.9:4000", false},
+		{"trusted proxy reporting https", "10.1.2.3:4000", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "http://demo.localhost/x", nil)
+			r.RemoteAddr = c.remoteAddr
+			r.Header.Set("X-Forwarded-Proto", "https")
+			w := httptest.NewRecorder()
+			got := applyPolicyGate(w, r, ep, gateDeps{trusted: trusted})
+			if got != c.wantPass {
+				t.Fatalf("pass = %v want %v (status %d)", got, c.wantPass, w.Code)
+			}
+			if !c.wantPass && w.Code != http.StatusPermanentRedirect {
+				t.Fatalf("status = %d want 308", w.Code)
+			}
+		})
+	}
+}
+
+func TestRequestSchemeIgnoresUntrustedForwardedProto(t *testing.T) {
+	trusted, _ := ParseTrustedProxies("10.0.0.0/8")
+	r := httptest.NewRequest("GET", "http://demo.localhost/x", nil)
+	r.RemoteAddr = "203.0.113.9:4000"
+	r.Header.Set("X-Forwarded-Proto", "https")
+	if got := requestScheme(r, trusted); got != "http" {
+		t.Fatalf("scheme = %q want http", got)
+	}
+	r.RemoteAddr = "10.1.2.3:4000"
+	if got := requestScheme(r, trusted); got != "https" {
+		t.Fatalf("scheme = %q want https", got)
+	}
+}
+
 func TestIsUpgrade(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	if isUpgrade(r) {

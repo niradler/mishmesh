@@ -32,7 +32,7 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 	}
 	p := ep.Policy
 
-	if p.ForceHTTPS && !requestIsHTTPS(r) {
+	if p.ForceHTTPS && !requestIsHTTPS(r, deps.trusted) {
 		target := "https://" + r.Host + r.URL.RequestURI()
 		http.Redirect(w, r, target, http.StatusPermanentRedirect)
 		return false
@@ -144,11 +144,8 @@ func applyResponsePolicy(h http.Header, ep *store.Endpoint) {
 	}
 }
 
-func requestIsHTTPS(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+func requestIsHTTPS(r *http.Request, trusted []*net.IPNet) bool {
+	return clientip.IsHTTPS(r, trusted)
 }
 
 func allowRate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint, ip net.IP, limiter ratelimit.Limiter) bool {

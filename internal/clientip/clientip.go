@@ -29,6 +29,18 @@ func Resolve(r *http.Request, trusted []*net.IPNet) net.IP {
 	return peer
 }
 
+func TrustedPeer(remoteAddr string, trusted []*net.IPNet) bool {
+	peer := parseHost(remoteAddr)
+	return peer != nil && contains(trusted, peer)
+}
+
+func IsHTTPS(r *http.Request, trusted []*net.IPNet) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return TrustedPeer(r.RemoteAddr, trusted) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 func forwardedChain(values []string) []string {
 	var hops []string
 	for _, v := range values {

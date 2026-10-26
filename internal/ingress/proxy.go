@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mishmesh/mishmesh/internal/clientip"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
@@ -170,7 +171,7 @@ func (i *Ingress) rewriteRequest(pr *httputil.ProxyRequest) {
 }
 
 func setForwardedHeaders(in, out *http.Request, trusted []*net.IPNet) {
-	peerTrusted := peerInNets(in.RemoteAddr, trusted)
+	peerTrusted := clientip.TrustedPeer(in.RemoteAddr, trusted)
 	clientHost := in.RemoteAddr
 	if h, _, err := net.SplitHostPort(in.RemoteAddr); err == nil {
 		clientHost = h
@@ -226,26 +227,6 @@ func ParseTrustedProxies(csv string) ([]*net.IPNet, error) {
 		nets = append(nets, n)
 	}
 	return nets, nil
-}
-
-func peerInNets(remoteAddr string, nets []*net.IPNet) bool {
-	if len(nets) == 0 {
-		return false
-	}
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	for _, n := range nets {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
 }
 
 func (i *Ingress) modifyResponse(resp *http.Response) error {
