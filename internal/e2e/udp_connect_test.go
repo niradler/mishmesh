@@ -17,15 +17,44 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/agent"
+	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/connect/bridge"
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
 	"github.com/mishmesh/mishmesh/internal/gateway"
+	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/ingress"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/store/memory"
 	"github.com/mishmesh/mishmesh/internal/store/sqlite"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
+
+type connectPolicyDeciders struct {
+	data store.DataStore
+}
+
+func (d connectPolicyDeciders) Decider(identity.Scope) authz.Decider {
+	return connectPolicyDecider{data: d.data}
+}
+
+type connectPolicyDecider struct {
+	data store.DataStore
+}
+
+func (d connectPolicyDecider) Decide(ctx context.Context, req authz.DecisionRequest) (authz.Decision, error) {
+	ep, err := d.data.GetEndpoint(ctx, req.Resource.ID)
+	if err != nil {
+		return authz.Decision{}, err
+	}
+	agent, err := d.data.GetAgent(ctx, req.Principal.ID)
+	if err != nil {
+		return authz.Decision{}, err
+	}
+	if ep.Policy == nil || !ep.Policy.Connect.Allows(agent) {
+		return authz.Decision{Reason: authz.ReasonPolicyDeny}, nil
+	}
+	return authz.Decision{Allowed: true, Reason: authz.ReasonAllow}, nil
+}
 
 type connectHarness struct {
 	t          *testing.T
@@ -53,7 +82,7 @@ func newConnectHarness(t *testing.T) *connectHarness {
 	gw := gateway.New(gateway.Options{
 		Data: data, Conns: conns, Log: log, BaseDomain: "localhost", PublicScheme: "http",
 		UDPPorts: udpIng,
-		Connect:  bridge.New(bridge.Options{Data: data, Conns: conns, Log: log}),
+		Connect:  bridge.New(bridge.Options{Data: data, Conns: conns, Log: log, Deciders: connectPolicyDeciders{data: data}}),
 	})
 	mux := http.NewServeMux()
 	mux.HandleFunc(tunnel.AgentConnectPath, gw.HandleAgentConnect)

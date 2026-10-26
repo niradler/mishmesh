@@ -7,6 +7,8 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 var ErrBlocked = errors.New("proxy: blocked target")
@@ -57,6 +59,8 @@ type Guard struct {
 	allowPrivate  bool
 	allowed       []*net.IPNet
 	lookup        func(ctx context.Context, host string) ([]net.IPAddr, error)
+	tlsConfigs    sync.Map
+	tlsConfigN    atomic.Int64
 }
 
 func NewGuard(allowLoopback, allowPrivate bool, allowedCIDRs []string) (*Guard, error) {
@@ -159,14 +163,6 @@ func (g *Guard) ValidateTarget(target string) error {
 }
 
 const maxResolvedAddrs = 8
-
-func (g *Guard) Resolve(ctx context.Context, target string) (string, error) {
-	addrs, err := g.ResolveAll(ctx, target)
-	if err != nil {
-		return "", err
-	}
-	return addrs[0], nil
-}
 
 func (g *Guard) ResolveAll(ctx context.Context, target string) ([]string, error) {
 	host, port, err := splitTarget(target)

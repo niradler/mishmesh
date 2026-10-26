@@ -122,7 +122,7 @@ func (o *originator) transport(creds egressCreds, clientIP string) *http.Transpo
 	rt := &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
-			return o.a.openEgress(clientIP, addr, creds)
+			return o.a.openEgress(ctx, clientIP, addr, creds)
 		},
 		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: o.roots},
 		TLSHandshakeTimeout: egressHandshakeTimeout,

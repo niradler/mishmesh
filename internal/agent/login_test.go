@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -81,7 +82,52 @@ func TestLoginBrowserCompletesPKCEFlow(t *testing.T) {
 	}
 }
 
-func TestLoginBrowserRejectsStateMismatch(t *testing.T) {
+func TestLoginBrowserIgnoresForgedStateAndKeepsWaiting(t *testing.T) {
+	var challenge, redirect string
+	srv := tokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.PostForm.Get("code") != "the-code" || pkceChallenge(r.PostForm.Get("code_verifier")) != challenge {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		writeTokens(w, "acc", "ref")
+	})
+	forgedStatus := make(chan int, 1)
+	open := func(raw string) error {
+		u, _ := url.Parse(raw)
+		q := u.Query()
+		challenge, redirect = q.Get("code_challenge"), q.Get("redirect_uri")
+		go func() {
+			resp, err := http.Get(redirect + "?code=evil&state=forged")
+			if err != nil {
+				forgedStatus <- 0
+				return
+			}
+			resp.Body.Close()
+			forgedStatus <- resp.StatusCode
+			resp, err = http.Get(redirect + "?" + url.Values{"code": {"the-code"}, "state": {q.Get("state")}}.Encode())
+			if err == nil {
+				resp.Body.Close()
+			}
+		}()
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	creds, err := LoginBrowser(ctx, LoginOptions{Server: srv.URL, Open: open})
+	if err != nil {
+		t.Fatalf("forged callback aborted the legitimate login: %v", err)
+	}
+	if creds.AccessToken != "acc" {
+		t.Fatalf("creds = %+v", creds)
+	}
+	if got := <-forgedStatus; got != http.StatusBadRequest {
+		t.Fatalf("forged callback status = %d, want 400", got)
+	}
+}
+
+func TestLoginBrowserForgedStateAloneNeverCompletes(t *testing.T) {
 	srv := tokenServer(t, func(w http.ResponseWriter, _ *http.Request) { writeTokens(w, "acc", "ref") })
 	open := func(raw string) error {
 		u, _ := url.Parse(raw)
@@ -94,10 +140,11 @@ func TestLoginBrowserRejectsStateMismatch(t *testing.T) {
 		}()
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
-	if _, err := LoginBrowser(ctx, LoginOptions{Server: srv.URL, Open: open}); err == nil || !strings.Contains(err.Error(), "state") {
-		t.Fatalf("err = %v, want state mismatch", err)
+	creds, err := LoginBrowser(ctx, LoginOptions{Server: srv.URL, Open: open})
+	if creds != nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("creds=%v err=%v, want a wait timeout", creds, err)
 	}
 }
 

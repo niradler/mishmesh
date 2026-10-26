@@ -60,7 +60,9 @@ func newDecisionHarness(t *testing.T) *decisionHarness {
 	}
 	clock := &fakeClock{now: time.Unix(1_000_000, 0)}
 	h := &decisionHarness{dec: newRemoteDecider(clock.Now), clock: clock}
-	h.gen = h.dec.attach(ctrl)
+	if h.gen, err = h.dec.attach(ctrl); err != nil {
+		t.Fatal(err)
+	}
 	if err := ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgPing}); err != nil {
 		t.Fatal(err)
 	}

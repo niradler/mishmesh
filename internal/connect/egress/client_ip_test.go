@@ -1,6 +1,10 @@
 package egress
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/mishmesh/mishmesh/internal/connect"
+)
 
 func TestEgressClientIP(t *testing.T) {
 	tests := []struct {
@@ -11,9 +15,9 @@ func TestEgressClientIP(t *testing.T) {
 		{"::ffff:10.0.0.7", "10.0.0.7"},
 		{"fe80::1%eth0", "fe80::1"},
 		{"2001:db8::5", "2001:db8::5"},
-		{"", agentClientIP},
-		{"not-an-ip", agentClientIP},
-		{"10.0.0.1:5555", agentClientIP},
+		{"", connect.AgentClientIP},
+		{"not-an-ip", connect.AgentClientIP},
+		{"10.0.0.1:5555", connect.AgentClientIP},
 	}
 	for _, tt := range tests {
 		if got := egressClientIP(tt.reported); got != tt.want {

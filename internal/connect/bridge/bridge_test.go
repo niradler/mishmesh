@@ -89,7 +89,8 @@ func TestHandleConnect(t *testing.T) {
 		{"missing ref", laptop, "", store.KindTCP, ErrMissingConnect},
 		{"other org", outsider, "vpn", store.KindUDP, store.ErrNotFound},
 	}
-	b := New(Options{Data: data, Conns: conns, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	deciders := connectPolicyDeciders{data: data, agents: map[string]*store.Agent{laptop.ID: laptop, stranger.ID: stranger, outsider.ID: outsider}}
+	b := New(Options{Data: data, Conns: conns, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Deciders: deciders})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			init := tunnel.StreamInit{Kind: tt.kind, Meta: map[string]string{tunnel.MetaConnect: tt.connect}}

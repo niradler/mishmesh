@@ -21,6 +21,7 @@ const (
 	SystemOrgID = "org_system"
 
 	dialTimeout = 10 * time.Second
+	dialBudget  = 30 * time.Second
 )
 
 type TargetHealth interface {
@@ -28,12 +29,12 @@ type TargetHealth interface {
 }
 
 type Connector struct {
-	data     store.DataStore
-	log      *slog.Logger
-	guard    *Guard
-	counters sync.Map
-	mu       sync.RWMutex
-	health   TargetHealth
+	data       store.DataStore
+	log        *slog.Logger
+	guard      *Guard
+	counters   sync.Map
+	health     atomic.Pointer[TargetHealth]
+	dialBudget time.Duration
 }
 
 var _ store.AgentConn = (*Connector)(nil)
@@ -42,21 +43,23 @@ func newConn(data store.DataStore, log *slog.Logger, guard *Guard) *Connector {
 	if guard == nil {
 		guard = DefaultGuard()
 	}
-	return &Connector{data: data, log: log, guard: guard}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Connector{data: data, log: log, guard: guard, dialBudget: dialBudget}
 }
 
 func (c *Connector) AgentID() string { return AgentID }
 
 func (c *Connector) SetTargetHealth(h TargetHealth) {
-	c.mu.Lock()
-	c.health = h
-	c.mu.Unlock()
+	c.health.Store(&h)
 }
 
 func (c *Connector) targetHealth() TargetHealth {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.health
+	if h := c.health.Load(); h != nil {
+		return *h
+	}
+	return nil
 }
 
 func (c *Connector) counter(endpointID string) *atomic.Uint64 {
@@ -135,6 +138,8 @@ func (c *Connector) OpenStream(ctx context.Context, endpointID, kind string, met
 		return nil, fmt.Errorf("proxy: endpoint %s has no proxy_targets", endpointID)
 	}
 	var lastErr error
+	ctx, cancel := context.WithTimeout(ctx, c.dialBudget)
+	defer cancel()
 	for _, target := range c.orderTargets(endpointID, meta[tunnel.MetaClientIP], ep.Policy) {
 		if !targetMatchesKind(target, kind) {
 			lastErr = fmt.Errorf("target %s does not carry %s traffic", target, kind)
@@ -164,16 +169,18 @@ func datagramStream(socket net.Conn, meta map[string]string) net.Conn {
 func (c *Connector) Close() error { return nil }
 
 func Register(ctx context.Context, data store.DataStore, conns store.ConnectionStore, log *slog.Logger, guard *Guard) *Connector {
-	ensureProxyAgent(ctx, data)
 	connector := newConn(data, log, guard)
+	connector.ensureAgent(ctx)
 	conns.AddAgent(connector)
 	orgs, err := data.ListOrgs(ctx)
 	if err != nil {
+		connector.log.Error("proxy: list orgs to rebind endpoints failed", "err", err)
 		return connector
 	}
 	for _, org := range orgs {
 		eps, err := data.ListEndpointsByOrg(ctx, org.ID)
 		if err != nil {
+			connector.log.Error("proxy: list endpoints to rebind failed", "org_id", org.ID, "err", err)
 			continue
 		}
 		for _, ep := range eps {
@@ -185,12 +192,18 @@ func Register(ctx context.Context, data store.DataStore, conns store.ConnectionS
 	return connector
 }
 
-func ensureProxyAgent(ctx context.Context, data store.DataStore) {
-	if _, err := data.GetOrg(ctx, SystemOrgID); err != nil {
-		_ = data.CreateOrg(ctx, &store.Org{ID: SystemOrgID, Name: "system", CreatedAt: time.Now()})
+func (c *Connector) ensureAgent(ctx context.Context) {
+	if _, err := c.data.GetOrg(ctx, SystemOrgID); err != nil {
+		org := &store.Org{ID: SystemOrgID, Name: "system", CreatedAt: time.Now()}
+		if err := c.data.CreateOrg(ctx, org); err != nil {
+			c.log.Error("proxy: create system org failed", "err", err)
+		}
 	}
-	if _, err := data.GetAgent(ctx, AgentID); err != nil {
-		_ = data.CreateAgent(ctx, &store.Agent{ID: AgentID, OrgID: SystemOrgID, Name: "agentless-proxy", Status: store.AgentActive, CreatedAt: time.Now()})
+	if _, err := c.data.GetAgent(ctx, AgentID); err != nil {
+		agent := &store.Agent{ID: AgentID, OrgID: SystemOrgID, Name: "agentless-proxy", Status: store.AgentActive, CreatedAt: time.Now()}
+		if err := c.data.CreateAgent(ctx, agent); err != nil {
+			c.log.Error("proxy: create proxy agent failed", "err", err)
+		}
 	}
 }
 

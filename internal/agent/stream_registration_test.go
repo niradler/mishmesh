@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -30,7 +31,7 @@ func TestEndpointStreamWaitsForRegistration(t *testing.T) {
 	registered := make(chan struct{})
 	client, stream := net.Pipe()
 	t.Cleanup(func() { _ = client.Close() })
-	go a.handleStream(stream, tunnel.StreamInit{EndpointID: "ep-early", Kind: store.KindTCP}, registered)
+	go a.handleStream(context.Background(), stream, tunnel.StreamInit{EndpointID: "ep-early", Kind: store.KindTCP}, registered)
 
 	time.Sleep(100 * time.Millisecond)
 	a.setTarget("ep-early", localTarget{addr: backend.Addr().String()})

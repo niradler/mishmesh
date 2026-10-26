@@ -205,3 +205,11 @@ func TestDialFallsBackToNextAnswer(t *testing.T) {
 	}
 	_ = c.Close()
 }
+
+func (g *Guard) Resolve(ctx context.Context, target string) (string, error) {
+	addrs, err := g.ResolveAll(ctx, target)
+	if err != nil {
+		return "", err
+	}
+	return addrs[0], nil
+}

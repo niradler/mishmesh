@@ -38,9 +38,7 @@ type LoginOptions struct {
 
 func (o *LoginOptions) defaults() {
 	o.Server = strings.TrimRight(o.Server, "/")
-	if o.Client == nil {
-		o.Client = &http.Client{Timeout: tokenRequestTimeout}
-	}
+	o.Client = httpClientOrDefault(o.Client, tokenRequestTimeout)
 	if o.Now == nil {
 		o.Now = time.Now
 	}
@@ -53,19 +51,19 @@ func (o *LoginOptions) defaults() {
 }
 
 func APIBaseFromGateway(gateway string) (string, error) {
-	u, err := url.Parse(gateway)
-	if err != nil || u.Host == "" {
-		return "", fmt.Errorf("invalid gateway url %q", gateway)
+	normalized, err := NormalizeGatewayURL(gateway)
+	if err != nil {
+		return "", err
 	}
-	switch u.Scheme {
-	case "ws", "http":
-		u.Scheme = "http"
-	case "wss", "https":
-		u.Scheme = "https"
-	default:
-		return "", fmt.Errorf("invalid gateway url scheme %q", u.Scheme)
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return "", fmt.Errorf("invalid gateway URL %q: %w", gateway, err)
 	}
-	return u.Scheme + "://" + u.Host, nil
+	scheme := "http"
+	if u.Scheme == "wss" {
+		scheme = "https"
+	}
+	return scheme + "://" + u.Host, nil
 }
 
 func LoginBrowser(ctx context.Context, o LoginOptions) (*Credentials, error) {
@@ -96,10 +94,15 @@ func LoginBrowser(ctx context.Context, o LoginOptions) (*Credentials, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /callback", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, "<p>mishmesh login failed: unexpected callback state</p>")
+			return
+		}
 		var res callback
 		switch {
-		case subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1:
-			res.err = errors.New("login callback state mismatch")
 		case q.Get("error") != "":
 			res.err = fmt.Errorf("login refused: %s", q.Get("error"))
 		case q.Get("code") == "":
@@ -107,8 +110,6 @@ func LoginBrowser(ctx context.Context, o LoginOptions) (*Credentials, error) {
 		default:
 			res.code = q.Get("code")
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
 		if res.err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			fmt.Fprintf(w, "<p>mishmesh login failed: %s</p>", html.EscapeString(res.err.Error()))
@@ -174,7 +175,7 @@ type deviceStart struct {
 func LoginDevice(ctx context.Context, o LoginOptions) (*Credentials, error) {
 	o.defaults()
 	var start deviceStart
-	status, err := postJSON(ctx, o.Client, o.Server+"/oauth2/device_authorization", url.Values{"client_id": {AgentClientID}}, &start)
+	status, err := postFormInto(ctx, o.Client, o.Server+"/oauth2/device_authorization", url.Values{"client_id": {AgentClientID}}, "device", &start)
 	if err != nil {
 		return nil, err
 	}
@@ -218,10 +219,7 @@ func LoginDevice(ctx context.Context, o LoginOptions) (*Credentials, error) {
 }
 
 func Revoke(ctx context.Context, client *http.Client, server, token string) error {
-	if client == nil {
-		client = &http.Client{Timeout: tokenRequestTimeout}
-	}
-	_, status, err := postForm(ctx, client, strings.TrimRight(server, "/")+"/oauth2/revoke", url.Values{"client_id": {AgentClientID}, "token": {token}})
+	_, status, err := postForm(ctx, httpClientOrDefault(client, tokenRequestTimeout), strings.TrimRight(server, "/")+"/oauth2/revoke", url.Values{"client_id": {AgentClientID}, "token": {token}})
 	if err != nil {
 		return err
 	}
@@ -240,27 +238,6 @@ func exchange(ctx context.Context, o LoginOptions, form url.Values) (*Credential
 		return nil, fmt.Errorf("token exchange failed: status %d %s", status, resp.Error)
 	}
 	return credentialsFrom(o.Server, resp, o.Now())
-}
-
-func postJSON(ctx context.Context, client *http.Client, endpoint string, form url.Values, out *deviceStart) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("contact %s: %w", endpoint, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return resp.StatusCode, nil
-	}
-	if err := decodeLimited(resp.Body, out); err != nil {
-		return resp.StatusCode, fmt.Errorf("decode device response: %w", err)
-	}
-	return resp.StatusCode, nil
 }
 
 func OpenBrowser(target string) error {

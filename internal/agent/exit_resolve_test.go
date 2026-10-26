@@ -51,7 +51,7 @@ func TestExitReportsResolvedTargetsAndDialsOnlyApproved(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		exitAgent(dialer).serveExit(exitSide, "svc.example.com:443", true)
+		exitAgent(dialer).serveExit(context.Background(), exitSide, "svc.example.com:443", true)
 	}()
 
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
@@ -80,7 +80,7 @@ func TestExitRefusesTargetsItDidNotResolve(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			exitAgent(dialer).serveExit(exitSide, "svc.example.com:443", true)
+			exitAgent(dialer).serveExit(context.Background(), exitSide, "svc.example.com:443", true)
 			_ = exitSide.Close()
 		}()
 		_ = server.SetDeadline(time.Now().Add(5 * time.Second))
@@ -108,7 +108,7 @@ func TestExitDialsNothingWhenServerAborts(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		exitAgent(dialer).serveExit(exitSide, "svc.example.com:443", true)
+		exitAgent(dialer).serveExit(context.Background(), exitSide, "svc.example.com:443", true)
 	}()
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := tunnel.ReadExitTargets(server); err != nil {
@@ -128,7 +128,7 @@ func TestExitDialsNothingWhenServerAborts(t *testing.T) {
 func TestExitRefusalIsReportedBeforeTargets(t *testing.T) {
 	server, exitSide := net.Pipe()
 	defer server.Close()
-	go exitAgent(failingExitDialer{}).serveExit(exitSide, "metadata.internal:80", true)
+	go exitAgent(failingExitDialer{}).serveExit(context.Background(), exitSide, "metadata.internal:80", true)
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
 	targets, reply, err := tunnel.ReadExitResolution(server)
 	if err != nil || targets != nil || reply == nil || reply.Status != tunnel.EgressDenied || reply.Reason != "blocked_destination" {

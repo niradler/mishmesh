@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"net"
 	"strconv"
 	"strings"
@@ -15,11 +16,11 @@ type allowRule struct {
 
 type Allowlist struct {
 	rules    []allowRule
-	lookupIP func(host string) ([]net.IP, error)
+	lookupIP func(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
 func NewAllowlist(specs []string) *Allowlist {
-	a := &Allowlist{lookupIP: net.LookupIP}
+	a := &Allowlist{lookupIP: net.DefaultResolver.LookupIPAddr}
 	for _, spec := range specs {
 		spec = strings.TrimSpace(spec)
 		if spec == "" {
@@ -68,12 +69,7 @@ func isPortList(s string) bool {
 	return true
 }
 
-func (a *Allowlist) Allowed(target string) bool {
-	_, _, ok := a.Resolve(target)
-	return ok
-}
-
-func (a *Allowlist) Resolve(target string) (dialAddr, serverName string, ok bool) {
+func (a *Allowlist) Resolve(ctx context.Context, target string) (dialAddr, serverName string, ok bool) {
 	host, portStr, err := net.SplitHostPort(target)
 	if err != nil {
 		return "", "", false
@@ -85,7 +81,7 @@ func (a *Allowlist) Resolve(target string) (dialAddr, serverName string, ok bool
 	if net.ParseIP(host) == nil && !a.couldAdmitHost(host, port) {
 		return "", "", false
 	}
-	ips := a.resolveIPs(host)
+	ips := a.resolveIPs(ctx, host)
 	if len(ips) == 0 {
 		return "", "", false
 	}
@@ -133,23 +129,23 @@ func (a *Allowlist) allowsIP(ip net.IP, host string, port int) bool {
 	return false
 }
 
-func (a *Allowlist) resolveIPs(host string) []net.IP {
+func (a *Allowlist) resolveIPs(ctx context.Context, host string) []net.IP {
 	if ip := net.ParseIP(host); ip != nil {
 		return []net.IP{ip}
 	}
-	addrs, err := a.lookupIP(host)
+	addrs, err := a.lookupIP(ctx, host)
 	if err != nil {
 		return nil
 	}
-	return addrs
+	ips := make([]net.IP, 0, len(addrs))
+	for _, addr := range addrs {
+		ips = append(ips, addr.IP)
+	}
+	return ips
 }
 
+var awsIPv6Metadata = net.ParseIP("fd00:ec2::254")
+
 func hardDenied(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-		return true
-	}
-	if ip.Equal(net.ParseIP("169.254.169.254")) || ip.Equal(net.ParseIP("fd00:ec2::254")) {
-		return true
-	}
-	return false
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.Equal(awsIPv6Metadata)
 }

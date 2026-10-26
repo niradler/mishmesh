@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	tlsHandshakeRecord = 0x16
 	extensionECH       = 0xfe0d
 	clientHelloTimeout = 10 * time.Second
 	maxClientHelloSize = 64 << 10
@@ -83,7 +82,7 @@ func (c *sniConn) inspect() ([]byte, error) {
 	if _, err := io.ReadFull(c.Conn, first); err != nil {
 		return nil, err
 	}
-	if first[0] != tlsHandshakeRecord {
+	if first[0] != tunnel.TLSHandshakeRecord {
 		return first, nil
 	}
 	_ = c.Conn.SetReadDeadline(time.Now().Add(clientHelloTimeout))
