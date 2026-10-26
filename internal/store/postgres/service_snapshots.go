@@ -33,6 +33,8 @@ func (s *Store) WithServiceSnapshots(ctx context.Context, orgID string, expected
 	if orgID == "" || action == nil {
 		return store.ErrConflict
 	}
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	tx, err := s.beginNetworkWrite(ctx)
 	if err != nil {
 		return err
