@@ -373,11 +373,13 @@ func (e *ConnectionInUseError) Error() string {
 }
 func (e *ConnectionInUseError) Unwrap() error { return ErrConflict }
 
-type DataStore interface {
+type OrgStore interface {
 	CreateOrg(ctx context.Context, o *Org) error
 	GetOrg(ctx context.Context, id string) (*Org, error)
 	ListOrgs(ctx context.Context) ([]*Org, error)
+}
 
+type AgentStore interface {
 	CreateAgent(ctx context.Context, a *Agent) error
 	GetAgent(ctx context.Context, id string) (*Agent, error)
 	ListAgents(ctx context.Context, orgID string) ([]*Agent, error)
@@ -385,13 +387,17 @@ type DataStore interface {
 	DeleteAgent(ctx context.Context, id string) error
 	TouchAgent(ctx context.Context, id string, seenAt time.Time) error
 	CountAgents(ctx context.Context, orgID string) (int, error)
+}
 
+type TokenStore interface {
 	CreateToken(ctx context.Context, t *Token) error
 	GetTokenByHash(ctx context.Context, hash string) (*Token, error)
 	ListTokensByAgent(ctx context.Context, agentID string) ([]*Token, error)
 	RevokeToken(ctx context.Context, id string) error
 	RevokeTokensByAgent(ctx context.Context, agentID string) error
+}
 
+type EndpointStore interface {
 	CreateEndpoint(ctx context.Context, e *Endpoint) error
 	GetEndpoint(ctx context.Context, id string) (*Endpoint, error)
 	GetEndpointBySubdomain(ctx context.Context, subdomain string) (*Endpoint, error)
@@ -404,31 +410,41 @@ type DataStore interface {
 	UpdateEndpoint(ctx context.Context, e *Endpoint) error
 	DeleteEndpoint(ctx context.Context, id string) error
 	CountEndpoints(ctx context.Context, orgID string) (int, error)
+}
 
+type DomainStore interface {
 	CreateDomain(ctx context.Context, d *Domain) error
 	GetDomain(ctx context.Context, orgID, name string) (*Domain, error)
 	GetVerifiedDomain(ctx context.Context, name string) (*Domain, error)
 	ListDomainsByOrg(ctx context.Context, orgID string) ([]*Domain, error)
 	SetDomainVerified(ctx context.Context, id string, at time.Time) error
 	DeleteDomain(ctx context.Context, orgID, id string) error
+}
 
+type QuotaStore interface {
 	GetQuota(ctx context.Context, orgID string) (*Quota, error)
 	SetQuota(ctx context.Context, q *Quota) error
+}
 
+type UserStore interface {
 	CreateUser(ctx context.Context, u *User) error
 	GetUserByID(ctx context.Context, id string) (*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserByGoogleSub(ctx context.Context, sub string) (*User, error)
 	UpdateUser(ctx context.Context, u *User) error
 	CountUsers(ctx context.Context) (int, error)
+}
 
+type MembershipStore interface {
 	CreateMembership(ctx context.Context, m *Membership) error
 	GetMembership(ctx context.Context, orgID, userID string) (*Membership, error)
 	ListMembershipsByUser(ctx context.Context, userID string) ([]*Membership, error)
 	ListMembershipsByOrg(ctx context.Context, orgID string) ([]*Membership, error)
 	UpdateMembership(ctx context.Context, m *Membership) error
 	DeleteMembership(ctx context.Context, orgID, userID string) error
+}
 
+type GroupStore interface {
 	CreateGroup(ctx context.Context, g *Group) error
 	GetGroup(ctx context.Context, orgID, id string) (*Group, error)
 	ListGroups(ctx context.Context, orgID string) ([]*Group, error)
@@ -438,50 +454,68 @@ type DataStore interface {
 	RemoveGroupMember(ctx context.Context, orgID, groupID, memberType, memberID string) error
 	ListGroupMembers(ctx context.Context, orgID, groupID string) ([]*GroupMember, error)
 	ListMemberGroups(ctx context.Context, orgID, memberType, memberID string) ([]*Group, error)
+}
 
+type ServiceAccountStore interface {
 	CreateServiceAccount(ctx context.Context, sa *ServiceAccount) error
 	GetServiceAccount(ctx context.Context, orgID, id string) (*ServiceAccount, error)
 	GetServiceAccountByClientID(ctx context.Context, clientID string) (*ServiceAccount, error)
 	ListServiceAccounts(ctx context.Context, orgID string) ([]*ServiceAccount, error)
 	UpdateServiceAccount(ctx context.Context, sa *ServiceAccount) error
 	DeleteServiceAccount(ctx context.Context, orgID, id string) error
+}
 
+type WorkloadIdentityStore interface {
 	CreateWorkloadIdentity(ctx context.Context, w *WorkloadIdentity) error
 	ListWorkloadIdentities(ctx context.Context, orgID, serviceAccountID string) ([]*WorkloadIdentity, error)
 	ListWorkloadIdentitiesByIssuer(ctx context.Context, issuer string) ([]*WorkloadIdentity, error)
 	DeleteWorkloadIdentity(ctx context.Context, orgID, serviceAccountID, id string) error
+}
 
+type InviteStore interface {
 	CreateInvite(ctx context.Context, i *Invite) error
 	GetInviteByTokenHash(ctx context.Context, tokenHash string) (*Invite, error)
 	ListInvitesByOrg(ctx context.Context, orgID string) ([]*Invite, error)
 	ListInvitesByEmail(ctx context.Context, email string) ([]*Invite, error)
 	DeleteInvite(ctx context.Context, orgID, id string) error
+}
 
+type WebSessionStore interface {
 	CreateSession(ctx context.Context, s *Session) error
 	GetSession(ctx context.Context, idHash string) (*Session, error)
 	DeleteSession(ctx context.Context, idHash string) error
 	DeleteExpiredSessions(ctx context.Context, now time.Time) error
 	DeleteUserSessions(ctx context.Context, orgID, userID string) error
 	SetMembershipDisabled(ctx context.Context, orgID, userID string, at *time.Time) error
+}
 
+type OrgPolicyStore interface {
 	GetOrgPolicy(ctx context.Context, orgID string) (*OrgPolicy, error)
 	SetOrgPolicy(ctx context.Context, p *OrgPolicy) error
+}
 
+type OrgSecretStore interface {
 	PutOrgSecret(ctx context.Context, s *OrgSecret) error
 	GetOrgSecret(ctx context.Context, orgID, name string) (*OrgSecret, error)
 	ListOrgSecrets(ctx context.Context, orgID string) ([]*OrgSecret, error)
 	DeleteOrgSecret(ctx context.Context, orgID, name string) error
+}
 
+type EgressCredentialStore interface {
 	PutEgressCredential(ctx context.Context, c *EgressCredential) error
 	GetEgressCredential(ctx context.Context, orgID, name string) (*EgressCredential, error)
 	ListEgressCredentials(ctx context.Context, orgID string) ([]*EgressCredential, error)
 	DeleteEgressCredential(ctx context.Context, orgID, name string) error
+}
 
+type OrgCryptoStore interface {
 	EnsureOrgCA(ctx context.Context, ca *OrgCA) (*OrgCA, error)
 	GetOrgCA(ctx context.Context, orgID string) (*OrgCA, error)
 	GetOrgDecrypt(ctx context.Context, orgID string) (*OrgDecrypt, error)
 	SetOrgDecrypt(ctx context.Context, d *OrgDecrypt) error
+}
 
+type ServiceStore interface {
 	CreateService(ctx context.Context, svc *Service) error
 	GetService(ctx context.Context, id string) (*Service, error)
 	ListServices(ctx context.Context, orgID string) ([]*Service, error)
@@ -489,7 +523,9 @@ type DataStore interface {
 	ListAllServices(ctx context.Context) ([]*Service, error)
 	UpdateService(ctx context.Context, svc *Service) error
 	DeleteService(ctx context.Context, id string) error
+}
 
+type ConnectionRecordStore interface {
 	CreateConnection(ctx context.Context, c *Connection) error
 	GetConnection(ctx context.Context, id string) (*Connection, error)
 	ListConnections(ctx context.Context, orgID string) ([]*Connection, error)
@@ -499,13 +535,41 @@ type DataStore interface {
 	UpdateConnectionState(ctx context.Context, orgID, connectionID string, state json.RawMessage) error
 	DeleteConnection(ctx context.Context, id string) error
 	DeleteConnectionIfCurrent(ctx context.Context, expected *Connection) error
+}
 
+type AuditStore interface {
 	AppendAudit(ctx context.Context, e *AuditEvent) error
 	ListAudit(ctx context.Context, orgID string, limit int) ([]*AuditEvent, error)
+}
 
+type AccessLogStore interface {
 	AppendAccessEvents(ctx context.Context, events []*AccessEvent) error
 	ListAccessEvents(ctx context.Context, orgID string, q AccessLogQuery) ([]*AccessEvent, error)
 	PruneAccessEvents(ctx context.Context, before time.Time) (int64, error)
+}
+
+type DataStore interface {
+	OrgStore
+	AgentStore
+	TokenStore
+	EndpointStore
+	DomainStore
+	QuotaStore
+	UserStore
+	MembershipStore
+	GroupStore
+	ServiceAccountStore
+	WorkloadIdentityStore
+	InviteStore
+	WebSessionStore
+	OrgPolicyStore
+	OrgSecretStore
+	EgressCredentialStore
+	OrgCryptoStore
+	ServiceStore
+	ConnectionRecordStore
+	AuditStore
+	AccessLogStore
 
 	Close() error
 }
