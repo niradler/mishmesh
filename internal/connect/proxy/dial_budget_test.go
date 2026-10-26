@@ -19,7 +19,7 @@ func TestOpenStreamBoundsTotalFallbackTime(t *testing.T) {
 	defer data.Close()
 	ctx := context.Background()
 	now := time.Now()
-	ensureProxyAgent(ctx, data)
+	newConn(data, nil, nil).ensureAgent(ctx)
 	_ = data.CreateOrg(ctx, &store.Org{ID: "org_default", Name: "d", CreatedAt: now})
 	targets := make([]string, 16)
 	for i := range targets {
