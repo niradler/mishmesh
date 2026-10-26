@@ -48,6 +48,7 @@ type API struct {
 	maxOrgsPerUser     int
 	services           ServiceControl
 	servicesMu         sync.Mutex
+	memberMutations    orgLocks
 	serviceRegistry    *services.Registry
 	invalidateIngress  func()
 	decisionFlush      func(orgID string)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
@@ -108,6 +109,7 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	orgID := a.orgScope(r)
 	userID := r.PathValue("user_id")
+	defer a.memberMutations.lock(orgID)()
 	target, err := a.data.GetMembership(r.Context(), orgID, userID)
 	if a.handleErr(w, err) {
 		return
@@ -171,6 +173,7 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := a.orgScope(r)
 	userID := r.PathValue("user_id")
+	defer a.memberMutations.lock(orgID)()
 	if !a.authorizeMemberChange(w, r, orgID, userID, "") {
 		return
 	}
@@ -184,6 +187,17 @@ func (a *API) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "member.remove", userID, "")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type orgLocks struct {
+	locks sync.Map
+}
+
+func (l *orgLocks) lock(orgID string) func() {
+	m, _ := l.locks.LoadOrStore(orgID, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (a *API) revokeMemberAccess(ctx context.Context, orgID, userID string) error {
