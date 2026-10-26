@@ -3,6 +3,7 @@ package ingress
 import (
 	"bufio"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -72,7 +73,9 @@ type Ingress struct {
 
 	endpoints *ttlCache[*store.Endpoint]
 	quotas    *ttlCache[*store.Quota]
+	misses    *ttlCache[struct{}]
 	basicAuth *ttlCache[struct{}]
+	caPools   *ttlCache[*x509.CertPool]
 }
 
 func New(opts Options) *Ingress {
@@ -99,7 +102,9 @@ func New(opts Options) *Ingress {
 
 		endpoints: newTTLCache[*store.Endpoint](opts.LookupCacheTTL),
 		quotas:    newTTLCache[*store.Quota](opts.LookupCacheTTL),
+		misses:    newTTLCache[struct{}](min(opts.LookupCacheTTL, negativeCacheTTL)),
 		basicAuth: newTTLCache[struct{}](basicAuthCacheTTL),
+		caPools:   newTTLCache[*x509.CertPool](clientCAPoolCacheTTL),
 	}
 	if i.limiter == nil {
 		i.limiter = ratelimit.NewMemory()
@@ -176,7 +181,7 @@ func (i *Ingress) serveEndpoint(w http.ResponseWriter, r *http.Request, ep *stor
 }
 
 func (i *Ingress) gateDeps() gateDeps {
-	return gateDeps{oidc: i.oidc, trusted: i.trusted, limiter: i.limiter, basic: i.basicAuth}
+	return gateDeps{oidc: i.oidc, trusted: i.trusted, limiter: i.limiter, basic: i.basicAuth, caPools: i.caPools}
 }
 
 var (
@@ -332,41 +337,8 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 		return
 	}
 
-	outReq := r.Clone(r.Context())
-	outReq.RequestURI = ""
-	applyOutboundPath(outReq, ep, outPath)
-	if ep.Policy != nil && ep.Policy.HostHeader != "" {
-		outReq.Host = ep.Policy.HostHeader
-	}
-	stripHopHeaders(outReq.Header)
-	preserveUpgradeHeaders(outReq.Header, r.Header)
-	sanitizeUpstreamRequest(outReq.Header, ep)
-	setForwardedHeaders(r, outReq, i.trusted)
-	stripGateCredentials(outReq.Header, ep)
-	applyRequestPolicy(outReq, ep)
-	applyUpstreamCredential(outReq.Header, r, ep)
-	if err := outReq.Write(stream); err != nil {
-		http.Error(w, upstreamUnreachableMessage(""), http.StatusBadGateway)
-		i.recordCode(http.StatusBadGateway)
-		return
-	}
-
-	br := bufio.NewReader(stream)
-	if reason, failed := tunnel.ReadStreamError(br); failed {
-		http.Error(w, upstreamUnreachableMessage(reason), http.StatusBadGateway)
-		i.recordCode(http.StatusBadGateway)
-		return
-	}
-	resp, err := readUpgradeResponse(br, outReq)
-	if err != nil {
-		http.Error(w, upstreamUnreachableMessage(""), http.StatusBadGateway)
-		i.recordCode(http.StatusBadGateway)
-		return
-	}
-	sanitizeUpstreamResponse(resp.Header)
-	applyResponsePolicy(resp.Header, ep)
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		i.relayRefusedUpgrade(w, resp)
+	resp, br, ok := i.upgradeHandshake(w, stream, upgradeRequest(r, ep, outPath, i.trusted), ep)
+	if !ok {
 		return
 	}
 
@@ -385,6 +357,44 @@ func (i *Ingress) proxyUpgrade(w http.ResponseWriter, r *http.Request, conn stor
 
 	in, out := tunnel.Splice(&bufferedConn{Conn: client, r: clientBuf.Reader}, &bufferedConn{Conn: stream, r: br})
 	accessFrom(r).markUpgraded(in, out)
+}
+
+func upgradeRequest(r *http.Request, ep *store.Endpoint, outPath string, trusted []*net.IPNet) *http.Request {
+	out := r.Clone(r.Context())
+	out.RequestURI = ""
+	stripHopHeaders(out.Header)
+	preserveUpgradeHeaders(out.Header, r.Header)
+	rewriteOutbound(r, out, ep, outPath, trusted)
+	return out
+}
+
+func (i *Ingress) upgradeHandshake(w http.ResponseWriter, stream net.Conn, outReq *http.Request, ep *store.Endpoint) (*http.Response, *bufio.Reader, bool) {
+	if err := outReq.Write(stream); err != nil {
+		i.failUpgrade(w, "")
+		return nil, nil, false
+	}
+	br := bufio.NewReader(stream)
+	if reason, failed := tunnel.ReadStreamError(br); failed {
+		i.failUpgrade(w, reason)
+		return nil, nil, false
+	}
+	resp, err := readUpgradeResponse(br, outReq)
+	if err != nil {
+		i.failUpgrade(w, "")
+		return nil, nil, false
+	}
+	sanitizeUpstreamResponse(resp.Header)
+	applyResponsePolicy(resp.Header, ep)
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		i.relayRefusedUpgrade(w, resp)
+		return nil, nil, false
+	}
+	return resp, br, true
+}
+
+func (i *Ingress) failUpgrade(w http.ResponseWriter, reason string) {
+	http.Error(w, upstreamUnreachableMessage(reason), http.StatusBadGateway)
+	i.recordCode(http.StatusBadGateway)
 }
 
 func (i *Ingress) relayRefusedUpgrade(w http.ResponseWriter, resp *http.Response) {
@@ -562,13 +572,5 @@ var hopHeaders = []string{
 func stripHopHeaders(h http.Header) {
 	for _, name := range hopHeaders {
 		h.Del(name)
-	}
-}
-
-func copyHeaders(dst, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
 	}
 }

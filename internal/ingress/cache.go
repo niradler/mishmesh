@@ -9,7 +9,10 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-const maxCacheEntries = 20000
+const (
+	maxCacheEntries  = 20000
+	negativeCacheTTL = 2 * time.Second
+)
 
 type ttlCache[V any] struct {
 	ttl     time.Duration
@@ -61,15 +64,6 @@ func (c *ttlCache[V]) put(key string, v V) {
 	c.mu.Unlock()
 }
 
-func (c *ttlCache[V]) invalidate(key string) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	delete(c.entries, key)
-	c.mu.Unlock()
-}
-
 func (c *ttlCache[V]) clear() {
 	if c == nil {
 		return
@@ -92,25 +86,37 @@ func cached[V any](c *ttlCache[V], key string, load func() (V, error)) (V, error
 	return v, nil
 }
 
+func (i *Ingress) cachedEndpoint(key string, load func() (*store.Endpoint, error)) (*store.Endpoint, error) {
+	if _, missing := i.misses.get(key); missing {
+		return nil, store.ErrNotFound
+	}
+	ep, err := cached(i.endpoints, key, load)
+	if errors.Is(err, store.ErrNotFound) {
+		i.misses.put(key, struct{}{})
+	}
+	return ep, err
+}
+
 func (i *Ingress) InvalidateCaches() {
 	i.endpoints.clear()
+	i.misses.clear()
 	i.quotas.clear()
 }
 
 func (i *Ingress) endpointBySubdomain(ctx context.Context, sub string) (*store.Endpoint, error) {
-	return cached(i.endpoints, "s:"+sub, func() (*store.Endpoint, error) { return i.data.GetEndpointBySubdomain(ctx, sub) })
+	return i.cachedEndpoint("s:"+sub, func() (*store.Endpoint, error) { return i.data.GetEndpointBySubdomain(ctx, sub) })
 }
 
 func (i *Ingress) endpointByDomain(ctx context.Context, domain string) (*store.Endpoint, error) {
-	return cached(i.endpoints, "d:"+domain, func() (*store.Endpoint, error) { return i.data.GetEndpointByDomain(ctx, domain) })
+	return i.cachedEndpoint("d:"+domain, func() (*store.Endpoint, error) { return i.data.GetEndpointByDomain(ctx, domain) })
 }
 
 func (i *Ingress) endpointByAccessHostname(ctx context.Context, hostname string) (*store.Endpoint, error) {
-	return cached(i.endpoints, "a:"+hostname, func() (*store.Endpoint, error) { return i.data.GetEndpointByAccessHostname(ctx, hostname) })
+	return i.cachedEndpoint("a:"+hostname, func() (*store.Endpoint, error) { return i.data.GetEndpointByAccessHostname(ctx, hostname) })
 }
 
 func (i *Ingress) endpointByID(ctx context.Context, id string) (*store.Endpoint, error) {
-	return cached(i.endpoints, "i:"+id, func() (*store.Endpoint, error) { return i.data.GetEndpoint(ctx, id) })
+	return i.cachedEndpoint("i:"+id, func() (*store.Endpoint, error) { return i.data.GetEndpoint(ctx, id) })
 }
 
 func (i *Ingress) quotaFor(ctx context.Context, orgID string) (*store.Quota, error) {

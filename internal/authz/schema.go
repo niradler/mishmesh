@@ -33,12 +33,6 @@ var loadSchema = sync.OnceValues(func() (*resolved.Schema, error) {
 	return s.Resolve()
 })
 
-func SchemaSource() []byte {
-	src := make([]byte, len(schemaSource))
-	copy(src, schemaSource)
-	return src
-}
-
 func Validate(src []byte) error {
 	if len(src) > MaxPolicyBytes {
 		return fmt.Errorf("%w: policy too large (%d bytes, max %d)", ErrInvalidPolicy, len(src), MaxPolicyBytes)

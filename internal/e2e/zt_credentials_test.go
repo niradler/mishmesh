@@ -40,14 +40,15 @@ func TestZeroTrustUpstreamCredentialsByGroup(t *testing.T) {
 	owner.putSecret("dev-key", devSecret)
 
 	upstream := &ztUpstreamRecorder{seen: map[string][]string{}}
-	ep := s.serveHTTP(owner, "billing-host", "billing", map[string]any{"identity": map[string]any{
+	ep := s.serveHTTP(owner, "billing-host", "billing", map[string]any{"identity": map[string]any{"required": true}}, upstream)
+	owner.mustJSON(http.MethodPatch, "/api/v1/endpoints/"+ep.ID, map[string]any{"policy": map[string]any{"identity": map[string]any{
 		"required": true,
 		"credentials": map[string]any{
 			"ops":   map[string]string{"header": "X-Upstream-Key", "secret": "ops-key", "prefix": "Key "},
 			"dev":   map[string]string{"header": "X-Upstream-Key", "secret": "dev-key"},
 			"ghost": map[string]string{"header": "X-Upstream-Key", "secret": "never-stored"},
 		},
-	}}, upstream)
+	}}}, http.StatusOK, nil)
 
 	opsGroup, devGroup, ghostGroup := owner.createGroup("ops"), owner.createGroup("dev"), owner.createGroup("ghost")
 	opsSA, devSA, ghostSA, plainSA := owner.createServiceAccount("ops-bot"), owner.createServiceAccount("dev-bot"), owner.createServiceAccount("ghost-bot"), owner.createServiceAccount("plain-bot")

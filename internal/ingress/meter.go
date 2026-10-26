@@ -1,6 +1,7 @@
 package ingress
 
 import (
+	"context"
 	"errors"
 	"net"
 	"sync"
@@ -46,6 +47,21 @@ func newMeteredConn(c net.Conn, t meterTarget) *meteredConn {
 		m.flushAt.Store(flushThreshold(t.limit - t.conns.Usage(t.orgID)))
 	}
 	return m
+}
+
+func endpointOrgID(ctx context.Context, data store.DataStore, endpointID string) string {
+	if data == nil {
+		return ""
+	}
+	ep, err := data.GetEndpoint(ctx, endpointID)
+	if err != nil {
+		return ""
+	}
+	return ep.OrgID
+}
+
+func meterStream(stream net.Conn, conns store.ConnectionStore, meter Meter, orgID, kind string) net.Conn {
+	return newMeteredConn(stream, meterTarget{conns: conns, meter: meter, orgID: orgID, kind: kind})
 }
 
 func flushThreshold(remaining int64) int64 {
