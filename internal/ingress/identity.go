@@ -35,20 +35,12 @@ func identityFrom(r *http.Request) *requestIdentity {
 	return id
 }
 
-func bearerValue(v string) string {
-	scheme, rest, ok := strings.Cut(strings.TrimSpace(v), " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return ""
-	}
-	return strings.TrimSpace(rest)
-}
-
 func presentedToken(r *http.Request, idp *store.EndpointIdentity) string {
-	if v := bearerValue(r.Header.Get(identityAuthHeader)); v != "" {
+	if v := token.Bearer(r.Header.Get(identityAuthHeader)); v != "" {
 		return v
 	}
 	if idp.AuthorizationHeader {
-		if v := bearerValue(r.Header.Get("Authorization")); token.LooksLikeToken(v) {
+		if v := token.Bearer(r.Header.Get("Authorization")); token.LooksLikeToken(v) {
 			return v
 		}
 	}
@@ -225,7 +217,7 @@ func sanitizeUpstreamRequest(h http.Header, ep *store.Endpoint) {
 	h.Del("Forwarded")
 	stripCookiesMatching(h, func(name string) bool { return strings.HasPrefix(name, mishmeshCookiePrefix) })
 	if ep != nil && ep.Policy != nil && ep.Policy.Identity != nil && ep.Policy.Identity.AuthorizationHeader {
-		if token.LooksLikeToken(bearerValue(h.Get("Authorization"))) {
+		if token.LooksLikeToken(token.Bearer(h.Get("Authorization"))) {
 			h.Del("Authorization")
 		}
 	}

@@ -574,11 +574,3 @@ func stripHopHeaders(h http.Header) {
 		h.Del(name)
 	}
 }
-
-func copyHeaders(dst, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
-	}
-}

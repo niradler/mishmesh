@@ -64,15 +64,6 @@ func (c *ttlCache[V]) put(key string, v V) {
 	c.mu.Unlock()
 }
 
-func (c *ttlCache[V]) invalidate(key string) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	delete(c.entries, key)
-	c.mu.Unlock()
-}
-
 func (c *ttlCache[V]) clear() {
 	if c == nil {
 		return

@@ -74,10 +74,10 @@ func (u *upstream) setAgentFailure(reason string) {
 	u.mu.Unlock()
 }
 
-func (u *upstream) snapshot() (openErr error, agentFailed bool, reason string, exceeded bool) {
+func (u *upstream) snapshot() (agentFailed bool, reason string, exceeded bool, openErr error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.openErr, u.agentFailed, u.agentReason, u.metered != nil && u.metered.exceeded.Load()
+	return u.agentFailed, u.agentReason, u.metered != nil && u.metered.exceeded.Load(), u.openErr
 }
 
 type upstreamConn struct {
@@ -265,7 +265,7 @@ func (i *Ingress) proxyError(w http.ResponseWriter, r *http.Request, err error) 
 		case <-r.Context().Done():
 		}
 	}
-	openErr, agentFailed, reason, exceeded := u.snapshot()
+	agentFailed, reason, exceeded, openErr := u.snapshot()
 
 	var code int
 	var msg string

@@ -122,7 +122,3 @@ func CheckLoopback(addr string) error {
 	}
 	return nil
 }
-
-func TokenContext(orgID, kind string) string {
-	return "cloudflare:" + orgID + ":" + kind
-}

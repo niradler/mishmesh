@@ -165,7 +165,7 @@ func accessHostname(endpointDomain, requested string) (string, error) {
 	}
 	host, err := connections.NormalizeAccessHostname(requested)
 	if err != nil || !strings.Contains(host, ".") || net.ParseIP(host) != nil {
-		return "", errors.New("Cloudflare access hostname must be a full DNS domain")
+		return "", errors.New("cloudflare access hostname must be a full DNS domain")
 	}
 	return host, nil
 }
