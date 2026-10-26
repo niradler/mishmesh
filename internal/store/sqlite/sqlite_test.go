@@ -10,7 +10,7 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-func newStore(t *testing.T) *Store {
+func newStore(t testing.TB) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {

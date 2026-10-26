@@ -504,7 +504,7 @@ func TestShouldKeepMultipleConnectionsOfOneType(t *testing.T) {
 	}
 }
 
-func createTypedOrg(t *testing.T, s *Store) string {
+func createTypedOrg(t testing.TB, s *Store) string {
 	t.Helper()
 	id := store.NewID("org")
 	if err := s.CreateOrg(context.Background(), &store.Org{ID: id, Name: id, CreatedAt: time.Now().UTC()}); err != nil {
@@ -524,7 +524,7 @@ func createTypedService(t *testing.T, s *Store, orgID string) *store.Service {
 	return svc
 }
 
-func createTypedConnection(t *testing.T, s *Store, orgID string) *store.Connection {
+func createTypedConnection(t testing.TB, s *Store, orgID string) *store.Connection {
 	t.Helper()
 	id := store.NewID("conn")
 	now := time.Now().UTC()
@@ -535,7 +535,7 @@ func createTypedConnection(t *testing.T, s *Store, orgID string) *store.Connecti
 	return connection
 }
 
-func createTypedEndpoint(t *testing.T, s *Store, orgID, domain string) *store.Endpoint {
+func createTypedEndpoint(t testing.TB, s *Store, orgID, domain string) *store.Endpoint {
 	t.Helper()
 	agentID := store.NewID("ag")
 	now := time.Now().UTC()
