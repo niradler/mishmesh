@@ -206,17 +206,13 @@ func (p *Publisher) ownedApp(host string) ownedAccessApp {
 }
 
 func (p *Publisher) storeOwnedApp(host string, record ownedAccessApp) {
-	owned := p.ownership.state.Routes[host]
-	if record == (ownedAccessApp{}) {
-		owned.App = nil
-	} else {
-		owned.App = &record
-	}
-	if owned.empty() {
-		delete(p.ownership.state.Routes, host)
-		return
-	}
-	p.ownership.state.Routes[host] = owned
+	p.ownership.update(host, func(owned *ownedRoute) {
+		if record == (ownedAccessApp{}) {
+			owned.App = nil
+		} else {
+			owned.App = &record
+		}
+	})
 }
 
 func (p *Publisher) ensureOwnAccess(ctx context.Context, host Hostname) (*ownAccess, error) {
