@@ -74,6 +74,11 @@ func (i *Ingress) applyIdentityGate(w http.ResponseWriter, r *http.Request, ep *
 		i.recordCode(http.StatusServiceUnavailable)
 		return r, false
 	}
+	if !decisionPathMatchesUpstream(r, outPath) {
+		http.Error(w, "bad request path", http.StatusBadRequest)
+		i.recordCode(http.StatusBadRequest)
+		return r, false
+	}
 	idp := ep.Policy.Identity
 	var principal *identity.Principal
 	raw := presentedToken(r, idp)
@@ -151,6 +156,13 @@ func (i *Ingress) applyIdentityGate(w http.ResponseWriter, r *http.Request, ep *
 
 func reauthWouldRepeat(p *identity.Principal) bool {
 	return !p.AuthTime.IsZero() && time.Since(p.AuthTime) <= identity.EndpointReauthMaxAge
+}
+
+func decisionPathMatchesUpstream(r *http.Request, outPath string) bool {
+	if r.URL.RawPath != "" || strings.ContainsAny(outPath, `\;`) {
+		return false
+	}
+	return canonicalDecisionPath(outPath) == outPath
 }
 
 func canonicalDecisionPath(p string) string {
