@@ -53,6 +53,7 @@ func TestCreateEndpointMethodAndPolicyValidation(t *testing.T) {
 		{"proxy single target", `{"kind":"http","method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"]}}`, http.StatusCreated, ""},
 		{"proxy https target", `{"kind":"http","method":"proxy","policy":{"proxy_targets":["https://93.184.216.34:443"]}}`, http.StatusCreated, ""},
 		{"proxy multiple targets failover", `{"kind":"http","method":"proxy","policy":{"proxy_targets":["93.184.216.34:80","93.184.216.35:80"],"load_balance":"failover"}}`, http.StatusCreated, ""},
+		{"proxy sticky", `{"kind":"http","method":"proxy","policy":{"proxy_targets":["93.184.216.34:80","93.184.216.35:80"],"load_balance":"sticky"}}`, http.StatusCreated, ""},
 		{"proxy round robin", `{"kind":"http","method":"proxy","policy":{"proxy_targets":["93.184.216.34:80"],"load_balance":"round_robin"}}`, http.StatusCreated, ""},
 		{"second target blocked", `{"kind":"http","method":"proxy","policy":{"proxy_targets":["93.184.216.34:80","169.254.169.254:80"]}}`, http.StatusBadRequest, "blocked address"},
 		{"target with path", `{"kind":"http","method":"proxy","policy":{"proxy_targets":["https://93.184.216.34:443/x"]}}`, http.StatusBadRequest, "path or query"},

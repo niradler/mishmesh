@@ -33,6 +33,7 @@ type upstream struct {
 	outPath     string
 	target      meterTarget
 	trusted     []*net.IPNet
+	clientIP    string
 	http2       bool
 	clientHTTP1 bool
 
@@ -49,7 +50,7 @@ func (u *upstream) open(ctx context.Context) (net.Conn, error) {
 	if u.http2 {
 		metadata = map[string]string{"http_protocol": "h2"}
 	}
-	stream, err := u.agent.OpenStream(ctx, u.ep.ID, store.KindHTTP, metadata)
+	stream, err := u.agent.OpenStream(ctx, u.ep.ID, store.KindHTTP, withClientIP(metadata, u.clientIP))
 	if err != nil {
 		u.mu.Lock()
 		u.openErr = err

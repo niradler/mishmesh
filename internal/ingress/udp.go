@@ -117,7 +117,7 @@ func (u *UDP) listen(requestedPort int) (net.PacketConn, int, error) {
 func (u *UDP) serve(l *udpListener) {
 	defer close(l.done)
 	dl := tunnel.NewDatagramListener(l.pc, tunnel.DatagramListenerOptions{
-		Open:     func(net.Addr) (net.Conn, error) { return u.openStream(l.endpoint) },
+		Open:     func(client net.Addr) (net.Conn, error) { return u.openStream(l.endpoint, client) },
 		Idle:     u.idle,
 		MaxFlows: u.maxFlows,
 		OnFlowDone: func(_ net.Addr, fromClient, toClient int64) {
@@ -134,12 +134,12 @@ func (u *UDP) serve(l *udpListener) {
 
 var errUDPEndpointOffline = errors.New("udp endpoint has no connected agent")
 
-func (u *UDP) openStream(endpointID string) (net.Conn, error) {
+func (u *UDP) openStream(endpointID string, client net.Addr) (net.Conn, error) {
 	agent, ok := u.conns.ResolveEndpoint(endpointID)
 	if !ok {
 		return nil, errUDPEndpointOffline
 	}
-	stream, err := agent.OpenStream(context.Background(), endpointID, store.KindUDP, tunnel.WithDatagramIdle(nil, u.idle))
+	stream, err := agent.OpenStream(context.Background(), endpointID, store.KindUDP, withClientIP(tunnel.WithDatagramIdle(nil, u.idle), peerIP(client)))
 	if err != nil {
 		u.log.Warn("udp open stream failed", "endpoint_id", endpointID, "err", err)
 		return nil, err

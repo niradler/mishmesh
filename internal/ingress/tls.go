@@ -86,7 +86,7 @@ func (t *TLSPassthrough) handle(client net.Conn) {
 	if !ok {
 		return
 	}
-	stream, err := agent.OpenStream(context.Background(), ep.ID, store.KindTLS, nil)
+	stream, err := agent.OpenStream(context.Background(), ep.ID, store.KindTLS, withClientIP(nil, peerIP(client.RemoteAddr())))
 	if err != nil {
 		t.log.Warn("tls passthrough: open stream failed", "endpoint_id", ep.ID, "err", err)
 		return

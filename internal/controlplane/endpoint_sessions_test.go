@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -36,8 +37,20 @@ func TestEndpointSessionsListAndRevoke(t *testing.T) {
 
 	var listed []endpointSessionDTO
 	doc(t, owner, f.srv, http.MethodGet, "/api/v1/endpoints/ep_app/sessions", "", http.StatusOK, &listed)
-	if len(listed) != 2 || listed[0].ID != first.Session.ID || listed[0].Email != "owner@example.com" || listed[0].SubjectType != "user" {
+	if len(listed) != 2 {
 		t.Fatalf("listed %+v", listed)
+	}
+	listedIDs := []string{listed[0].ID, listed[1].ID}
+	slices.Sort(listedIDs)
+	wantIDs := []string{first.Session.ID, second.Session.ID}
+	slices.Sort(wantIDs)
+	if !slices.Equal(listedIDs, wantIDs) {
+		t.Fatalf("listed %v, want %v", listedIDs, wantIDs)
+	}
+	for _, session := range listed {
+		if session.Email != "owner@example.com" || session.SubjectType != "user" {
+			t.Fatalf("listed session %+v", session)
+		}
 	}
 	doc(t, owner, f.srv, http.MethodGet, "/api/v1/endpoints/ep_other/sessions", "", http.StatusNotFound, nil)
 	doc(t, owner, f.srv, http.MethodDelete, "/api/v1/endpoints/ep_app/sessions/"+foreign.Session.ID, "", http.StatusNotFound, nil)

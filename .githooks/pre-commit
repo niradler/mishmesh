@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+set -eu
+
+staged_go=$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+[ -z "$staged_go" ] && exit 0
+
+unformatted=$(echo "$staged_go" | xargs gofmt -l)
+if [ -n "$unformatted" ]; then
+  echo "pre-commit: gofmt needed on:"
+  echo "$unformatted"
+  echo "run: make fmt"
+  exit 1
+fi
+
+timeout 300 go vet ./... || { echo "pre-commit: go vet failed"; exit 1; }

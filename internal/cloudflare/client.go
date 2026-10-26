@@ -367,10 +367,8 @@ func (c *Client) GetAccessApp(ctx context.Context, accountID, appID string) (Acc
 	if err != nil {
 		return nil, fmt.Errorf("get access app: %w", err)
 	}
-	dec := json.NewDecoder(bytes.NewReader(env.Result))
-	dec.UseNumber()
 	var app AccessApp
-	if err := dec.Decode(&app); err != nil {
+	if err := decodeAccessObject(env.Result, &app); err != nil {
 		return nil, fmt.Errorf("decode access app: %w", err)
 	}
 	return app, nil
@@ -381,4 +379,74 @@ func (c *Client) PutAccessApp(ctx context.Context, accountID, appID string, app 
 		return fmt.Errorf("put access app: %w", err)
 	}
 	return nil
+}
+
+type AccessPolicy map[string]any
+
+func decodeAccessObject(raw []byte, out any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	return dec.Decode(out)
+}
+
+func (c *Client) CreateAccessApp(ctx context.Context, accountID string, app AccessApp) (AccessApp, error) {
+	env, err := c.do(ctx, http.MethodPost, "/accounts/"+accountID+"/access/apps", nil, app)
+	if err != nil {
+		return nil, fmt.Errorf("create access app: %w", err)
+	}
+	var created AccessApp
+	if err := decodeAccessObject(env.Result, &created); err != nil {
+		return nil, fmt.Errorf("decode access app: %w", err)
+	}
+	return created, nil
+}
+
+func (c *Client) DeleteAccessApp(ctx context.Context, accountID, appID string) error {
+	if _, err := c.do(ctx, http.MethodDelete, "/accounts/"+accountID+"/access/apps/"+appID, nil, nil); err != nil {
+		return fmt.Errorf("delete access app: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) GetAccessPolicy(ctx context.Context, accountID, policyID string) (AccessPolicy, error) {
+	env, err := c.do(ctx, http.MethodGet, "/accounts/"+accountID+"/access/policies/"+policyID, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get access policy: %w", err)
+	}
+	var policy AccessPolicy
+	if err := decodeAccessObject(env.Result, &policy); err != nil {
+		return nil, fmt.Errorf("decode access policy: %w", err)
+	}
+	return policy, nil
+}
+
+func (c *Client) CreateAccessPolicy(ctx context.Context, accountID string, policy AccessPolicy) (AccessPolicy, error) {
+	env, err := c.do(ctx, http.MethodPost, "/accounts/"+accountID+"/access/policies", nil, policy)
+	if err != nil {
+		return nil, fmt.Errorf("create access policy: %w", err)
+	}
+	var created AccessPolicy
+	if err := decodeAccessObject(env.Result, &created); err != nil {
+		return nil, fmt.Errorf("decode access policy: %w", err)
+	}
+	return created, nil
+}
+
+func (c *Client) PutAccessPolicy(ctx context.Context, accountID, policyID string, policy AccessPolicy) error {
+	if _, err := c.do(ctx, http.MethodPut, "/accounts/"+accountID+"/access/policies/"+policyID, nil, policy); err != nil {
+		return fmt.Errorf("put access policy: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) DeleteAccessPolicy(ctx context.Context, accountID, policyID string) error {
+	if _, err := c.do(ctx, http.MethodDelete, "/accounts/"+accountID+"/access/policies/"+policyID, nil, nil); err != nil {
+		return fmt.Errorf("delete access policy: %w", err)
+	}
+	return nil
+}
+
+func isNotFound(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound
 }

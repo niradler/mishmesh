@@ -1,8 +1,10 @@
 package memory
 
 import (
+	"cmp"
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -126,7 +128,9 @@ func (s *SessionStore) endpointSessionsLocked(orgID, endpointID string) []store.
 			out = append(out, ts)
 		}
 	}
-	slices.SortFunc(out, func(a, b store.TokenSession) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	slices.SortFunc(out, func(a, b store.TokenSession) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.ID, b.ID))
+	})
 	return out
 }
 

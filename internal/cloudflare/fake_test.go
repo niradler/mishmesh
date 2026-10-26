@@ -35,6 +35,11 @@ type fakeCF struct {
 	failPostHosts    map[string]bool
 	app              map[string]any
 	appPuts          int
+	ownApps          map[string]map[string]any
+	policies         map[string]map[string]any
+	ownAppPuts       int
+	policyPuts       int
+	failAppCreate    bool
 	limit429         int
 	nextID           int
 	server           *httptest.Server
@@ -52,6 +57,8 @@ func newFakeCF(t *testing.T) *fakeCF {
 		zones:         []Zone{{ID: "z-example", Name: "example.com"}, {ID: "z-lab", Name: "lab.example.com"}},
 		records:       map[string][]DNSRecord{},
 		failPostHosts: map[string]bool{},
+		ownApps:       map[string]map[string]any{},
+		policies:      map[string]map[string]any{},
 		local:         newFakeLocal(t),
 	}
 	mux := http.NewServeMux()
@@ -64,6 +71,12 @@ func newFakeCF(t *testing.T) *fakeCF {
 	mux.HandleFunc("DELETE /zones/{zone}/dns_records/{id}", f.handleDeleteRecord)
 	mux.HandleFunc("GET /accounts/{acct}/access/apps/{app}", f.handleGetApp)
 	mux.HandleFunc("PUT /accounts/{acct}/access/apps/{app}", f.handlePutApp)
+	mux.HandleFunc("POST /accounts/{acct}/access/apps", f.handleCreateApp)
+	mux.HandleFunc("DELETE /accounts/{acct}/access/apps/{app}", f.handleDeleteApp)
+	mux.HandleFunc("GET /accounts/{acct}/access/policies/{id}", f.handleGetPolicy)
+	mux.HandleFunc("POST /accounts/{acct}/access/policies", f.handleCreatePolicy)
+	mux.HandleFunc("PUT /accounts/{acct}/access/policies/{id}", f.handlePutPolicy)
+	mux.HandleFunc("DELETE /accounts/{acct}/access/policies/{id}", f.handleDeletePolicy)
 	f.server = httptest.NewUnstartedServer(f.wrap(mux))
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -208,10 +221,121 @@ func (f *fakeCF) handleDeleteRecord(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, true, map[string]any{"id": r.PathValue("id")}, 0, "")
 }
 
+func isOwnAppID(id string) bool {
+	return strings.HasPrefix(id, "own-")
+}
+
 func (f *fakeCF) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if id := r.PathValue("app"); isOwnAppID(id) {
+		f.replyObject(w, f.ownApps[id])
+		return
+	}
 	reply(w, 200, true, f.app, 0, "")
+}
+
+func (f *fakeCF) replyObject(w http.ResponseWriter, object map[string]any) {
+	if object == nil {
+		reply(w, 404, false, nil, 12130, "not found")
+		return
+	}
+	reply(w, 200, true, object, 0, "")
+}
+
+func decodeObject(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
+	var object map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&object); err != nil {
+		reply(w, 400, false, nil, 1, err.Error())
+		return nil, false
+	}
+	return object, true
+}
+
+func (f *fakeCF) handleCreateApp(w http.ResponseWriter, r *http.Request) {
+	app, ok := decodeObject(w, r)
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failAppCreate {
+		reply(w, 500, false, nil, 9000, "boom")
+		return
+	}
+	f.nextID++
+	app["id"] = fmt.Sprintf("own-app%d", f.nextID)
+	if policies, ok := app["policies"].([]any); ok {
+		expanded := make([]any, 0, len(policies))
+		for _, ref := range policies {
+			id, _ := ref.(map[string]any)["id"].(string)
+			expanded = append(expanded, map[string]any{"id": id, "name": "expanded", "precedence": ref.(map[string]any)["precedence"]})
+		}
+		app["policies"] = expanded
+	}
+	f.ownApps[app["id"].(string)] = app
+	reply(w, 200, true, app, 0, "")
+}
+
+func (f *fakeCF) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := r.PathValue("app")
+	if f.ownApps[id] == nil {
+		reply(w, 404, false, nil, 12130, "not found")
+		return
+	}
+	delete(f.ownApps, id)
+	reply(w, 200, true, map[string]any{"id": id}, 0, "")
+}
+
+func (f *fakeCF) handleGetPolicy(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.replyObject(w, f.policies[r.PathValue("id")])
+}
+
+func (f *fakeCF) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
+	policy, ok := decodeObject(w, r)
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	policy["id"] = fmt.Sprintf("pol%d", f.nextID)
+	f.policies[policy["id"].(string)] = policy
+	reply(w, 200, true, policy, 0, "")
+}
+
+func (f *fakeCF) handlePutPolicy(w http.ResponseWriter, r *http.Request) {
+	policy, ok := decodeObject(w, r)
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := r.PathValue("id")
+	if f.policies[id] == nil {
+		reply(w, 404, false, nil, 12130, "not found")
+		return
+	}
+	f.policyPuts++
+	policy["id"] = id
+	f.policies[id] = policy
+	reply(w, 200, true, policy, 0, "")
+}
+
+func (f *fakeCF) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := r.PathValue("id")
+	if f.policies[id] == nil {
+		reply(w, 404, false, nil, 12130, "not found")
+		return
+	}
+	delete(f.policies, id)
+	reply(w, 200, true, map[string]any{"id": id}, 0, "")
 }
 
 func (f *fakeCF) handlePutApp(w http.ResponseWriter, r *http.Request) {
@@ -222,6 +346,17 @@ func (f *fakeCF) handlePutApp(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if id := r.PathValue("app"); isOwnAppID(id) {
+		if f.ownApps[id] == nil {
+			reply(w, 404, false, nil, 12130, "not found")
+			return
+		}
+		f.ownAppPuts++
+		app["id"] = id
+		f.ownApps[id] = app
+		reply(w, 200, true, app, 0, "")
+		return
+	}
 	f.appPuts++
 	if f.normalizeAccess {
 		for _, raw := range app["destinations"].([]any) {

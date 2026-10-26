@@ -1,11 +1,13 @@
 package redis
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -239,7 +241,9 @@ func (s *SessionStore) endpointSessions(ctx context.Context, orgID, endpointID s
 			return nil, fmt.Errorf("redis: prune endpoint sessions: %w", err)
 		}
 	}
-	slices.SortFunc(live, func(a, b store.TokenSession) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	slices.SortFunc(live, func(a, b store.TokenSession) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.ID, b.ID))
+	})
 	return live, nil
 }
 

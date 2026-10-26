@@ -169,3 +169,31 @@ func TestShouldExposeAndUseProviderOwnedDetectionFields(t *testing.T) {
 		t.Fatalf("missing provider capabilities: %s", body)
 	}
 }
+
+func TestShouldValidateAccessPoliciesAgainstConnectionSupport(t *testing.T) {
+	f := newNetworkFixture(t)
+	observed := f.accessConnection(t, "cloudflare", `{}`, `{"tunnel_token":"`+testTunnelToken("acct1", "tun1")+`"}`)
+	managed := f.accessConnection(t, "cloudflare", `{}`, `{"tunnel_token":"`+testTunnelToken("acct1", "tun2")+`","api_token":"token"}`)
+	private := f.accessConnection(t, "tailscale", `{"tailnet":"example.com"}`, `{}`)
+	policy := `{"allow_emails":["Ops@Example.Org"],"require_mfa":true,"session_duration":"8h"}`
+	rejected := map[string]string{
+		"observed level":       `"access":[{"connection_id":"` + observed + `"}],"access_policy":` + policy,
+		"unsupported provider": `"access":[{"connection_id":"` + private + `","policy":` + policy + `}]`,
+		"no access connection": `"access_policy":` + policy,
+		"empty allow lists":    `"access":[{"connection_id":"` + managed + `"}],"access_policy":{"require_mfa":true}`,
+		"invalid email":        `"access":[{"connection_id":"` + managed + `"}],"access_policy":{"allow_emails":["not-an-email"]}`,
+		"invalid group":        `"access":[{"connection_id":"` + managed + `","policy":{"allow_groups":["bad group"]}}]`,
+		"invalid session":      `"access":[{"connection_id":"` + managed + `"}],"access_policy":{"allow_email_domains":["example.org"],"session_duration":"1000h"}`,
+		"duplicate domain":     `"access":[{"connection_id":"` + managed + `"}],"access_policy":{"allow_email_domains":["example.org","EXAMPLE.ORG"]}`,
+	}
+	for name, fields := range rejected {
+		body := `{"method":"proxy","domain":"notes.example.org","policy":{"proxy_targets":["93.184.216.34:80"],` + fields + `}}`
+		if code, response := statusAndBody(t, f.srv, http.MethodPost, "/api/v1/endpoints", body); code != http.StatusBadRequest {
+			t.Fatalf("%s accepted: %d %s", name, code, response)
+		}
+	}
+	created := f.createEndpoint(t, `{"method":"proxy","domain":"notes.example.org","policy":{"proxy_targets":["93.184.216.34:80"],"access":[{"connection_id":"`+managed+`","policy":{"allow_groups":["grp1"]}}],"access_policy":`+policy+`}}`)
+	if created.Policy.AccessPolicy == nil || created.Policy.AccessPolicy.AllowEmails[0] != "ops@example.org" || created.Policy.Access[0].Policy == nil || created.Policy.Access[0].Policy.AllowGroups[0] != "grp1" {
+		t.Fatalf("access policy not stored normalized: %+v", created.Policy)
+	}
+}

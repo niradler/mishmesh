@@ -85,6 +85,7 @@ type StreamInit struct {
 const (
 	MetaConnect     = "connect"
 	MetaIdleTimeout = "idle_timeout"
+	MetaClientIP    = "client_ip"
 )
 
 type EndpointRequest struct {

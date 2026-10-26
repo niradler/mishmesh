@@ -376,9 +376,9 @@ func (a *API) validateProxyPolicy(pol *store.EndpointPolicy) error {
 		}
 	}
 	switch pol.LoadBalance {
-	case "", store.LoadBalanceRoundRobin, store.LoadBalanceFailover:
+	case "", store.LoadBalanceRoundRobin, store.LoadBalanceFailover, store.LoadBalanceSticky:
 	default:
-		return fmt.Errorf("load_balance must be %s or %s", store.LoadBalanceRoundRobin, store.LoadBalanceFailover)
+		return fmt.Errorf("load_balance must be %s, %s or %s", store.LoadBalanceRoundRobin, store.LoadBalanceFailover, store.LoadBalanceSticky)
 	}
 	return proxy.ValidateOriginTLS(pol.OriginTLS)
 }

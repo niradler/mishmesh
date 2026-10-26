@@ -106,12 +106,32 @@ type EndpointPolicy struct {
 	ServiceID             string            `json:"service_id,omitempty"`
 	Connect               *ConnectPolicy    `json:"connect,omitempty"`
 	Access                []AccessRef       `json:"access,omitempty"`
+	AccessPolicy          *AccessPolicy     `json:"access_policy,omitempty"`
 	Identity              *EndpointIdentity `json:"identity,omitempty"`
 }
 
 type AccessRef struct {
-	ConnectionID string `json:"connection_id"`
-	Hostname     string `json:"hostname,omitempty"`
+	ConnectionID string        `json:"connection_id"`
+	Hostname     string        `json:"hostname,omitempty"`
+	Policy       *AccessPolicy `json:"policy,omitempty"`
+}
+
+type AccessPolicy struct {
+	AllowEmails       []string `json:"allow_emails,omitempty"`
+	AllowEmailDomains []string `json:"allow_email_domains,omitempty"`
+	AllowGroups       []string `json:"allow_groups,omitempty"`
+	RequireMFA        bool     `json:"require_mfa,omitempty"`
+	SessionDuration   string   `json:"session_duration,omitempty"`
+}
+
+func (p *EndpointPolicy) EffectiveAccessPolicy(ref AccessRef) *AccessPolicy {
+	if ref.Policy != nil {
+		return ref.Policy
+	}
+	if p == nil {
+		return nil
+	}
+	return p.AccessPolicy
 }
 
 type EndpointAlias struct {
@@ -150,6 +170,7 @@ func PortKind(kind string) bool {
 const (
 	LoadBalanceRoundRobin = "round_robin"
 	LoadBalanceFailover   = "failover"
+	LoadBalanceSticky     = "sticky"
 )
 
 type OriginTLS struct {

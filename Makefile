@@ -80,6 +80,16 @@ run-server: build-server
 .PHONY: check
 check: fmt vet test
 
+## ci: run every ci.yml check locally against a clean export of HEAD (needs Docker, helm, python)
+.PHONY: ci
+ci:
+	python .claude/scripts/ci-local.py
+
+## hooks: install the git hooks (pre-commit: gofmt + vet, pre-push: local CI on changed stages)
+.PHONY: hooks
+hooks:
+	git config core.hooksPath .githooks
+
 ## docker: build the server image
 .PHONY: docker
 docker:
