@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -488,10 +487,6 @@ func spaHandler(dir string) http.Handler {
 	index := filepath.Join(dir, "index.html")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clean := filepath.Join(dir, filepath.Clean("/"+r.URL.Path))
-		if !strings.HasPrefix(clean, filepath.Clean(dir)) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
 		if st, err := os.Stat(clean); err == nil && !st.IsDir() {
 			fileServer.ServeHTTP(w, r)
 			return
