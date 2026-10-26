@@ -141,17 +141,17 @@ func TestStickyAllUnhealthyKeepsConfiguredOrder(t *testing.T) {
 }
 
 func TestOpenStreamFailsOverToLiveTarget(t *testing.T) {
+	live, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Close()
 	dead, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	deadAddr := dead.Addr().String()
 	dead.Close()
-	live, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer live.Close()
 	go func() {
 		c, err := live.Accept()
 		if err == nil {
