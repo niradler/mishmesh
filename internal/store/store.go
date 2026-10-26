@@ -491,6 +491,7 @@ type WebSessionStore interface {
 	DeleteExpiredSessions(ctx context.Context, now time.Time) error
 	DeleteUserSessions(ctx context.Context, orgID, userID string) error
 	SetMembershipDisabled(ctx context.Context, orgID, userID string, at *time.Time) error
+	SetMembershipDisabledKeepingOwner(ctx context.Context, orgID, userID string, at *time.Time) error
 }
 
 type OrgPolicyStore interface {

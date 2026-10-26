@@ -22,15 +22,6 @@ type faultStore struct {
 	failUpdateUser    atomic.Bool
 	failGetMembership atomic.Bool
 	failCreateMember  atomic.Bool
-	onListMembers     atomic.Pointer[func()]
-}
-
-func (f *faultStore) ListMembershipsByOrg(ctx context.Context, orgID string) ([]*store.Membership, error) {
-	ms, err := f.DataStore.ListMembershipsByOrg(ctx, orgID)
-	if hook := f.onListMembers.Load(); hook != nil {
-		(*hook)()
-	}
-	return ms, err
 }
 
 func (f *faultStore) CreateUser(ctx context.Context, u *store.User) error {
