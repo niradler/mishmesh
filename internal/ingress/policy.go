@@ -54,7 +54,20 @@ func applyPolicyGate(w http.ResponseWriter, r *http.Request, ep *store.Endpoint,
 	}
 
 	if p.BasicAuthUser != "" {
-		if !checkBasicAuth(r, ep.ID, p.BasicAuthUser, p.BasicAuthHash, deps.basic) {
+		var throttled ratelimit.Decision
+		var verifyLimiter func() ratelimit.Decision
+		if deps.limiter != nil {
+			verifyLimiter = func() ratelimit.Decision {
+				throttled = deps.limiter.Allow(r.Context(), basicAuthVerifyKey(ep.ID, ip), ratelimit.Limit{Requests: basicAuthVerifyRequests, Period: basicAuthVerifyPeriod})
+				return throttled
+			}
+		}
+		switch checkBasicAuth(r, ep.ID, p.BasicAuthUser, p.BasicAuthHash, deps.basic, verifyLimiter) {
+		case basicAuthThrottled:
+			w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(throttled.RetryAfter)))
+			http.Error(w, "too many authentication attempts", http.StatusTooManyRequests)
+			return false
+		case basicAuthDenied:
 			w.Header().Set("WWW-Authenticate", `Basic realm="mishmesh"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return false
@@ -261,25 +274,44 @@ func checkMTLS(r *http.Request, m *store.MTLSConfig, pools *ttlCache[*x509.CertP
 
 const basicAuthCacheTTL = time.Minute
 
-func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[struct{}]) bool {
+type basicAuthResult int
+
+const (
+	basicAuthDenied basicAuthResult = iota
+	basicAuthOK
+	basicAuthThrottled
+)
+
+const (
+	basicAuthVerifyRequests = 10
+	basicAuthVerifyPeriod   = time.Minute
+)
+
+func basicAuthVerifyKey(epID string, ip net.IP) string {
+	if ip == nil {
+		return "basic:" + epID + ":unknown"
+	}
+	return "basic:" + epID + ":" + rateLimitIPKey(ip)
+}
+
+func checkBasicAuth(r *http.Request, epID, user, hash string, cache *ttlCache[struct{}], verifyLimiter func() ratelimit.Decision) basicAuthResult {
 	u, pass, ok := r.BasicAuth()
-	if !ok {
-		return false
-	}
-	if subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 {
-		return false
-	}
-	if hash == "" {
-		return false
+	if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 || hash == "" {
+		return basicAuthDenied
 	}
 	sum := sha256.Sum256([]byte(hash + "|" + u + ":" + pass))
 	key := epID + "|" + hex.EncodeToString(sum[:])
 	if _, hit := cache.get(key); hit {
-		return true
+		return basicAuthOK
+	}
+	if verifyLimiter != nil {
+		if d := verifyLimiter(); !d.Allowed {
+			return basicAuthThrottled
+		}
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) != nil {
-		return false
+		return basicAuthDenied
 	}
 	cache.put(key, struct{}{})
-	return true
+	return basicAuthOK
 }
