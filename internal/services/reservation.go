@@ -35,16 +35,12 @@ func snapshotDefinitionEqual(a, b Definition) bool {
 func (m *Manager) Reserve(ctx context.Context, expected []Definition, action func(LifecycleReservation) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for !m.applyMu.TryLock() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
+	select {
+	case m.applySlot <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	defer m.applyMu.Unlock()
+	defer func() { <-m.applySlot }()
 	m.mu.Lock()
 	m.reloadDone = make(chan struct{})
 	m.reserved = true

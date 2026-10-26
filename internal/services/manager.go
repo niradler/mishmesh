@@ -121,7 +121,7 @@ type Manager struct {
 	pollInterval time.Duration
 	readyHold    time.Duration
 
-	applyMu       sync.Mutex
+	applySlot     chan struct{}
 	applyVersion  uint64
 	reserved      bool
 	reloadDone    chan struct{}
@@ -221,6 +221,7 @@ func newManager(opts Options, factory driverFactory) *Manager {
 		readyHold:    readyHoldWindow,
 		services:     make(map[string]*service),
 		refreshSlot:  make(chan struct{}, 1),
+		applySlot:    make(chan struct{}, 1),
 
 		admissionWait: defaultAdmissionWait,
 	}
@@ -764,8 +765,8 @@ func (m *Manager) Apply(defs []Definition) {
 	m.mu.Lock()
 	version := m.applyVersion
 	m.mu.Unlock()
-	m.applyMu.Lock()
-	defer m.applyMu.Unlock()
+	m.applySlot <- struct{}{}
+	defer func() { <-m.applySlot }()
 	m.mu.Lock()
 	if version != m.applyVersion {
 		m.mu.Unlock()
