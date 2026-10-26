@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
 	"github.com/mishmesh/mishmesh/internal/store"
+	"github.com/mishmesh/mishmesh/internal/token"
 )
 
 type callerKey struct{}
@@ -87,7 +87,7 @@ func (a *API) permitted(r *http.Request, action authz.Action) bool {
 }
 
 func (a *API) authorize(w http.ResponseWriter, r *http.Request) (context.Context, bool) {
-	tok := bearerToken(r)
+	tok := token.Bearer(r.Header.Get("Authorization"))
 	if a.adminToken != "" && tok != "" {
 		if !store.ConstantTimeEqualHash(tok, a.adminToken) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -127,13 +127,4 @@ func (a *API) queryOrg(r *http.Request) string {
 		return v
 	}
 	return defaultOrgID
-}
-
-func bearerToken(r *http.Request) string {
-	const prefix = "Bearer "
-	h := r.Header.Get("Authorization")
-	if strings.HasPrefix(h, prefix) {
-		return strings.TrimSpace(h[len(prefix):])
-	}
-	return ""
 }

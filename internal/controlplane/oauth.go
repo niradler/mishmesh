@@ -228,7 +228,7 @@ func (a *API) auditAs(r *http.Request, orgID, actor, action, target, detail stri
 func (a *API) requireMachine(action authz.Action, h http.HandlerFunc) http.HandlerFunc {
 	human := a.require(action, h)
 	return func(w http.ResponseWriter, r *http.Request) {
-		raw := bearerToken(r)
+		raw := token.Bearer(r.Header.Get("Authorization"))
 		if a.identity == nil || !token.LooksLikeToken(raw) {
 			human(w, r)
 			return
