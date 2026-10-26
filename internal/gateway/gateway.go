@@ -527,16 +527,32 @@ func (g *Gateway) publicHost() string {
 	return g.baseDomain
 }
 
-func (g *Gateway) quotaAllowsEndpoint(ctx context.Context, orgID string) bool {
+var (
+	errEndpointQuotaExceeded = errors.New("endpoint quota exceeded for this organization")
+	errEndpointQuotaCheck    = errors.New("internal error checking endpoint quota")
+)
+
+func (g *Gateway) checkEndpointQuota(ctx context.Context, orgID string) error {
 	q, err := g.data.GetQuota(ctx, orgID)
-	if err != nil || q.MaxEndpoints <= 0 {
-		return true
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		g.log.Error("endpoint quota lookup failed", "org_id", orgID, "err", err)
+		return errEndpointQuotaCheck
+	}
+	if q.MaxEndpoints <= 0 {
+		return nil
 	}
 	n, err := g.data.CountEndpoints(ctx, orgID)
 	if err != nil {
-		return true
+		g.log.Error("endpoint count failed", "org_id", orgID, "err", err)
+		return errEndpointQuotaCheck
 	}
-	return n < q.MaxEndpoints
+	if n >= q.MaxEndpoints {
+		return errEndpointQuotaExceeded
+	}
+	return nil
 }
 
 func decodePolicy(raw json.RawMessage, log *slog.Logger) *store.EndpointPolicy {
