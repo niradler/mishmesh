@@ -7,6 +7,27 @@ import (
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
 
+func TestScopeCacheKeepsLiveEntriesWhenFull(t *testing.T) {
+	d := newRemoteDecider(time.Now)
+	answer := tunnel.DecisionAnswer{Allowed: true, TTLSeconds: 600, Scope: &tunnel.DecisionScope{}}
+	for i := range maxCachedDecisions {
+		d.rememberRequest(0, 0, egressRequest{host: "h", port: i}, answer, nil)
+	}
+	d.rememberRequest(0, 0, egressRequest{host: "h", port: maxCachedDecisions}, answer, nil)
+	if n := len(d.scopes); n != maxCachedDecisions {
+		t.Fatalf("scope count = %d, want %d", n, maxCachedDecisions)
+	}
+	kept := 0
+	for i := range maxCachedDecisions {
+		if _, ok := d.scopes[scopeKeyOf(egressRequest{host: "h", port: i})]; ok {
+			kept++
+		}
+	}
+	if kept < maxCachedDecisions-1 {
+		t.Fatalf("%d of %d live scopes survived one extra insert", kept, maxCachedDecisions)
+	}
+}
+
 func TestDecisionCacheEvictsOldestWhenFull(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1_000_000, 0)}
 	d := newRemoteDecider(clock.Now)

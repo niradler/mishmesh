@@ -354,8 +354,11 @@ func (d *remoteDecider) rememberRequest(gen, epoch uint64, req egressRequest, an
 	key := buildRequestKey(sk, req, scope, true)
 	d.mu.Lock()
 	if d.gen == gen && d.epoch == epoch {
-		if len(d.scopes) >= maxCachedDecisions {
-			clear(d.scopes)
+		if _, known := d.scopes[sk]; !known && len(d.scopes) >= maxCachedDecisions {
+			for victim := range d.scopes {
+				delete(d.scopes, victim)
+				break
+			}
 		}
 		d.scopes[sk] = scope
 	}
