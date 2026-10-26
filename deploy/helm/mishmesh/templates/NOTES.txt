@@ -33,3 +33,7 @@ WARNING: ACME with multiple replicas keeps a per-pod cert cache and HTTP-01 chal
 
 WARNING: SSH host key is generated per pod; set ssh.hostKey.generate=true or ssh.hostKey.existingSecret for a stable identity.
 {{- end }}
+{{- if and .Values.ingress.enabled (empty .Values.trustedProxies) }}
+
+WARNING: ingress is enabled but trustedProxies is empty. X-Forwarded-Proto and X-Forwarded-For from the ingress controller are ignored, so force_https endpoints redirect in a loop and OIDC endpoint logins build http:// redirect URLs. Set trustedProxies to the controller's pod CIDR.
+{{- end }}
