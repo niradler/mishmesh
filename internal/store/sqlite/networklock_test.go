@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/mishmesh/mishmesh/internal/store/storetest"
 )
 
 func BenchmarkBeginNetworkWrite(b *testing.B) {
 	s := newStore(b)
 	ctx := context.Background()
-	createTypedOrg(b, s)
+	storetest.CreateTypedOrg(b, s)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tx, err := s.beginNetworkWrite(ctx)

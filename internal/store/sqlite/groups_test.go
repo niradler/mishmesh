@@ -30,3 +30,7 @@ func TestEgressDecrypt(t *testing.T) {
 func TestMissingRowContract(t *testing.T) {
 	storetest.RunMissingRows(t, func(t *testing.T) store.DataStore { return newStore(t) })
 }
+
+func TestNetworkContract(t *testing.T) {
+	storetest.RunNetwork(t, func(t *testing.T) store.DataStore { return newStore(t) })
+}

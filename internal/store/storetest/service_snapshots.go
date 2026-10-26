@@ -1,4 +1,4 @@
-package sqlite
+package storetest
 
 import (
 	"context"
@@ -10,11 +10,11 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-func TestShouldGuardAuthorizedServiceSnapshots(t *testing.T) {
-	s := newStore(t)
+func shouldGuardAuthorizedServiceSnapshots(t *testing.T, newStore func(*testing.T) store.DataStore) {
+	s := newStore(t).(snapshotStore)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	original := createTypedService(t, s, createSnapshotOrg(t, s, ctx))
+	original := CreateTypedService(t, s, createSnapshotOrg(t, s, ctx))
 	snapshot, err := s.GetService(ctx, original.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -45,13 +45,13 @@ func TestShouldGuardAuthorizedServiceSnapshots(t *testing.T) {
 	}
 }
 
-func TestShouldRollbackServiceMutationAndGuardTransitiveSnapshot(t *testing.T) {
-	s := newStore(t)
+func shouldRollbackServiceMutationAndGuardTransitiveSnapshot(t *testing.T, newStore func(*testing.T) store.DataStore) {
+	s := newStore(t).(snapshotStore)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	orgID := createSnapshotOrg(t, s, ctx)
-	original := createTypedService(t, s, orgID)
-	requirement := createTypedService(t, s, orgID)
+	original := CreateTypedService(t, s, orgID)
+	requirement := CreateTypedService(t, s, orgID)
 	original.Requires = []string{requirement.ID}
 	if err := s.UpdateService(ctx, original); err != nil {
 		t.Fatal(err)
@@ -105,11 +105,11 @@ func TestShouldRollbackServiceMutationAndGuardTransitiveSnapshot(t *testing.T) {
 	}
 }
 
-func TestShouldSerializeServiceLeaseAgainstConcurrentMutation(t *testing.T) {
-	s := newStore(t)
+func shouldSerializeServiceLeaseAgainstConcurrentMutation(t *testing.T, newStore func(*testing.T) store.DataStore) {
+	s := newStore(t).(snapshotStore)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	original := createTypedService(t, s, createSnapshotOrg(t, s, ctx))
+	original := CreateTypedService(t, s, createSnapshotOrg(t, s, ctx))
 	snapshot, err := s.GetService(ctx, original.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -159,11 +159,16 @@ func TestShouldSerializeServiceLeaseAgainstConcurrentMutation(t *testing.T) {
 	}
 }
 
-func createSnapshotOrg(t *testing.T, s *Store, ctx context.Context) string {
+func createSnapshotOrg(t *testing.T, s store.DataStore, ctx context.Context) string {
 	t.Helper()
 	orgID := store.NewID("org")
 	if err := s.CreateOrg(ctx, &store.Org{ID: orgID, Name: orgID, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	return orgID
+}
+
+type snapshotStore interface {
+	store.DataStore
+	store.ServiceSnapshotStore
 }
