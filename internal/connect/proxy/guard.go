@@ -7,6 +7,8 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 var ErrBlocked = errors.New("proxy: blocked target")
@@ -57,6 +59,8 @@ type Guard struct {
 	allowPrivate  bool
 	allowed       []*net.IPNet
 	lookup        func(ctx context.Context, host string) ([]net.IPAddr, error)
+	tlsConfigs    sync.Map
+	tlsConfigN    atomic.Int64
 }
 
 func NewGuard(allowLoopback, allowPrivate bool, allowedCIDRs []string) (*Guard, error) {

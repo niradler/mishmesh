@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -16,21 +18,14 @@ import (
 
 const pinLength = sha256.Size
 
+const (
+	maxCachedTLSConfigs = 512
+	tlsSessionCacheSize = 32
+)
+
 func ValidateOriginTLS(otls *store.OriginTLS) error {
-	if otls == nil {
-		return nil
-	}
-	if otls.CAPEM != "" {
-		if !x509.NewCertPool().AppendCertsFromPEM([]byte(otls.CAPEM)) {
-			return errors.New("origin_tls.ca_pem contains no valid certificate")
-		}
-	}
-	for _, pin := range otls.PinSHA256 {
-		if _, err := decodePin(pin); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := originTLSConfig("", otls)
+	return err
 }
 
 func decodePin(pin string) ([]byte, error) {
@@ -44,10 +39,45 @@ func decodePin(pin string) ([]byte, error) {
 	return raw, nil
 }
 
-func originTLSConfig(host string, otls *store.OriginTLS) (*tls.Config, error) {
-	if err := ValidateOriginTLS(otls); err != nil {
+func originTLSKey(host string, otls *store.OriginTLS) string {
+	if otls == nil {
+		return host
+	}
+	var b strings.Builder
+	b.WriteString(host)
+	b.WriteByte(0)
+	b.WriteString(otls.ServerName)
+	b.WriteByte(0)
+	b.WriteString(strconv.FormatBool(otls.InsecureSkipVerify))
+	b.WriteByte(0)
+	b.WriteString(otls.CAPEM)
+	for _, pin := range otls.PinSHA256 {
+		b.WriteByte(0)
+		b.WriteString(pin)
+	}
+	return b.String()
+}
+
+func (g *Guard) originTLSConfig(host string, otls *store.OriginTLS) (*tls.Config, error) {
+	key := originTLSKey(host, otls)
+	if cached, ok := g.tlsConfigs.Load(key); ok {
+		return cached.(*tls.Config), nil
+	}
+	cfg, err := originTLSConfig(host, otls)
+	if err != nil {
 		return nil, err
 	}
+	cfg.ClientSessionCache = tls.NewLRUClientSessionCache(tlsSessionCacheSize)
+	if g.tlsConfigN.Load() < maxCachedTLSConfigs {
+		if actual, loaded := g.tlsConfigs.LoadOrStore(key, cfg); loaded {
+			return actual.(*tls.Config), nil
+		}
+		g.tlsConfigN.Add(1)
+	}
+	return cfg, nil
+}
+
+func originTLSConfig(host string, otls *store.OriginTLS) (*tls.Config, error) {
 	cfg := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		NextProtos: []string{"http/1.1"},
@@ -59,18 +89,25 @@ func originTLSConfig(host string, otls *store.OriginTLS) (*tls.Config, error) {
 	if otls.ServerName != "" {
 		cfg.ServerName = otls.ServerName
 	}
+	var pool *x509.CertPool
+	if otls.CAPEM != "" {
+		pool = x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(otls.CAPEM)) {
+			return nil, errors.New("origin_tls.ca_pem contains no valid certificate")
+		}
+	}
+	pins := make([][]byte, 0, len(otls.PinSHA256))
+	for _, p := range otls.PinSHA256 {
+		raw, err := decodePin(p)
+		if err != nil {
+			return nil, err
+		}
+		pins = append(pins, raw)
+	}
 	switch {
 	case otls.InsecureSkipVerify:
 		cfg.InsecureSkipVerify = true
-	case len(otls.PinSHA256) > 0:
-		pins := make([][]byte, 0, len(otls.PinSHA256))
-		for _, p := range otls.PinSHA256 {
-			raw, err := decodePin(p)
-			if err != nil {
-				return nil, err
-			}
-			pins = append(pins, raw)
-		}
+	case len(pins) > 0:
 		cfg.InsecureSkipVerify = true
 		cfg.VerifyConnection = func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) == 0 {
@@ -84,9 +121,7 @@ func originTLSConfig(host string, otls *store.OriginTLS) (*tls.Config, error) {
 			}
 			return errors.New("origin certificate does not match any pin_sha256")
 		}
-	case otls.CAPEM != "":
-		pool := x509.NewCertPool()
-		pool.AppendCertsFromPEM([]byte(otls.CAPEM))
+	case pool != nil:
 		cfg.RootCAs = pool
 	}
 	return cfg, nil
@@ -99,7 +134,7 @@ func (g *Guard) Dial(ctx context.Context, target string, otls *store.OriginTLS, 
 	}
 	var tlsCfg *tls.Config
 	if t.TLS() {
-		if tlsCfg, err = originTLSConfig(t.Host, otls); err != nil {
+		if tlsCfg, err = g.originTLSConfig(t.Host, otls); err != nil {
 			return nil, err
 		}
 	}
