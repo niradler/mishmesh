@@ -119,13 +119,5 @@ func (a *API) revokeEndpointSessionsHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (a *API) scopedEndpoint(w http.ResponseWriter, r *http.Request) (*store.Endpoint, bool) {
-	ep, err := a.data.GetEndpoint(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return nil, false
-	}
-	if ep.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
-		return nil, false
-	}
-	return ep, true
+	return loadScoped(a, w, r, r.PathValue("id"), a.data.GetEndpoint, func(ep *store.Endpoint) string { return ep.OrgID })
 }

@@ -143,23 +143,12 @@ func redactPolicy(p *store.EndpointPolicy) *store.EndpointPolicy {
 
 func (a *API) listOrgEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 	eps, err := a.data.ListEndpointsByOrg(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]endpointDTO, 0, len(eps))
-	for _, ep := range eps {
-		out = append(out, a.toEndpointDTO(ep))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, eps, err, a.toEndpointDTO)
 }
 
 func (a *API) getEndpointHandler(w http.ResponseWriter, r *http.Request) {
-	ep, err := a.data.GetEndpoint(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return
-	}
-	if ep.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
+	ep, ok := a.scopedEndpoint(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, a.toEndpointDTO(ep))
@@ -245,12 +234,8 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
-	ep, err := a.data.GetEndpoint(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return
-	}
-	if ep.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
+	ep, ok := a.scopedEndpoint(w, r)
+	if !ok {
 		return
 	}
 	previousAccess := a.previousAccess(r.Context(), ep)
@@ -315,12 +300,8 @@ func (a *API) patchEndpointHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) deleteEndpointHandler(w http.ResponseWriter, r *http.Request) {
-	ep, err := a.data.GetEndpoint(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return
-	}
-	if ep.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
+	ep, ok := a.scopedEndpoint(w, r)
+	if !ok {
 		return
 	}
 	if a.handleErr(w, a.data.DeleteEndpoint(r.Context(), ep.ID)) {

@@ -91,15 +91,8 @@ func (a *API) reachInHTTPHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) authorizeReachAgent(w http.ResponseWriter, r *http.Request, agentID string) bool {
-	ag, err := a.data.GetAgent(r.Context(), agentID)
-	if a.handleErr(w, err) {
-		return false
-	}
-	if ag.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
-		return false
-	}
-	return true
+	_, ok := loadScoped(a, w, r, agentID, a.data.GetAgent, func(ag *store.Agent) string { return ag.OrgID })
+	return ok
 }
 
 func (a *API) openReachStream(w http.ResponseWriter, r *http.Request, agentID, kind string, meta map[string]string) (net.Conn, bool) {

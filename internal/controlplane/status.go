@@ -22,11 +22,11 @@ func (a *API) listAuditHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
-	out := make([]auditDTO, 0, len(events))
-	for _, e := range events {
-		out = append(out, auditDTO{ID: e.ID, Actor: e.Actor, Action: e.Action, Target: e.Target, Detail: e.Detail, CreatedAt: e.CreatedAt})
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, mapSlice(events, toAuditDTO))
+}
+
+func toAuditDTO(e *store.AuditEvent) auditDTO {
+	return auditDTO{ID: e.ID, Actor: e.Actor, Action: e.Action, Target: e.Target, Detail: e.Detail, CreatedAt: e.CreatedAt}
 }
 
 func (a *API) statusHandler(w http.ResponseWriter, r *http.Request) {

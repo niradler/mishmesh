@@ -82,14 +82,7 @@ func (a *API) serviceAccountErr(w http.ResponseWriter, err error) bool {
 
 func (a *API) listServiceAccountsHandler(w http.ResponseWriter, r *http.Request) {
 	list, err := a.data.ListServiceAccounts(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]serviceAccountDTO, 0, len(list))
-	for _, sa := range list {
-		out = append(out, toServiceAccountDTO(sa))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, list, err, toServiceAccountDTO)
 }
 
 func (a *API) createServiceAccountHandler(w http.ResponseWriter, r *http.Request) {

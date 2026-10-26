@@ -27,14 +27,7 @@ func (a *API) listOrgsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgs, err := a.data.ListOrgs(r.Context())
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]orgDTO, 0, len(orgs))
-	for _, org := range orgs {
-		out = append(out, toOrgDTO(org))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, orgs, err, toOrgDTO)
 }
 
 type memberDTO struct {

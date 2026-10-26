@@ -94,15 +94,7 @@ func (a *API) connectionProvider(w http.ResponseWriter, kind string) (connection
 }
 
 func (a *API) scopedConnection(w http.ResponseWriter, r *http.Request) (*store.Connection, bool) {
-	record, err := a.data.GetConnection(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return nil, false
-	}
-	if record.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
-		return nil, false
-	}
-	return record, true
+	return loadScoped(a, w, r, r.PathValue("id"), a.data.GetConnection, func(record *store.Connection) string { return record.OrgID })
 }
 
 func connectionFields(descriptor connections.Descriptor, secrets bool) []typedfields.Field {

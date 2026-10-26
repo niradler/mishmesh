@@ -625,14 +625,7 @@ func (a *API) createAgentHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) listAgentsHandler(w http.ResponseWriter, r *http.Request) {
 	agents, err := a.data.ListAgents(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]agentDTO, 0, len(agents))
-	for _, ag := range agents {
-		out = append(out, a.toAgentDTO(ag))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, agents, err, a.toAgentDTO)
 }
 
 func (a *API) getAgentHandler(w http.ResponseWriter, r *http.Request) {
@@ -722,14 +715,7 @@ func (a *API) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	eps, err := a.data.ListEndpointsByAgent(r.Context(), r.PathValue("id"))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]endpointDTO, 0, len(eps))
-	for _, ep := range eps {
-		out = append(out, a.toEndpointDTO(ep))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, eps, err, a.toEndpointDTO)
 }
 
 func (a *API) listTokensHandler(w http.ResponseWriter, r *http.Request) {
@@ -740,11 +726,11 @@ func (a *API) listTokensHandler(w http.ResponseWriter, r *http.Request) {
 	if a.handleErr(w, err) {
 		return
 	}
-	out := make([]tokenDTO, 0, len(toks))
-	for _, t := range toks {
-		out = append(out, tokenDTO{ID: t.ID, CreatedAt: t.CreatedAt, RevokedAt: t.RevokedAt})
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, mapSlice(toks, toTokenDTO))
+}
+
+func toTokenDTO(t *store.Token) tokenDTO {
+	return tokenDTO{ID: t.ID, CreatedAt: t.CreatedAt, RevokedAt: t.RevokedAt}
 }
 
 type orgDTO struct {
@@ -758,15 +744,12 @@ func toOrgDTO(o *store.Org) orgDTO {
 }
 
 func (a *API) scopedAgent(w http.ResponseWriter, r *http.Request, id string) (*store.Agent, bool) {
-	ag, err := a.data.GetAgent(r.Context(), id)
-	if a.handleErr(w, err) {
-		return nil, false
-	}
-	if !a.isAdmin(r) && ag.OrgID != a.orgScope(r) {
-		writeError(w, http.StatusNotFound, "not found")
-		return nil, false
-	}
-	return ag, true
+	return loadScoped(a, w, r, id, a.data.GetAgent, func(ag *store.Agent) string {
+		if a.isAdmin(r) {
+			return a.orgScope(r)
+		}
+		return ag.OrgID
+	})
 }
 
 func (a *API) handleErr(w http.ResponseWriter, err error) bool {

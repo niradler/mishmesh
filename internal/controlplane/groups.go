@@ -46,14 +46,7 @@ func (a *API) groupErr(w http.ResponseWriter, err error) bool {
 
 func (a *API) listGroupsHandler(w http.ResponseWriter, r *http.Request) {
 	groups, err := a.data.ListGroups(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]groupDTO, 0, len(groups))
-	for _, g := range groups {
-		out = append(out, toGroupDTO(g))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, groups, err, toGroupDTO)
 }
 
 func (a *API) createGroupHandler(w http.ResponseWriter, r *http.Request) {

@@ -172,14 +172,7 @@ func (a *API) hasLiveInviteFor(ctx context.Context, email string) bool {
 
 func (a *API) listInvitesHandler(w http.ResponseWriter, r *http.Request) {
 	invites, err := a.data.ListInvitesByOrg(r.Context(), a.orgScope(r))
-	if a.handleErr(w, err) {
-		return
-	}
-	out := make([]inviteDTO, 0, len(invites))
-	for _, inv := range invites {
-		out = append(out, toInviteDTO(inv))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeList(a, w, invites, err, toInviteDTO)
 }
 
 func (a *API) revokeInviteHandler(w http.ResponseWriter, r *http.Request) {

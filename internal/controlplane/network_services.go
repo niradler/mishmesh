@@ -161,14 +161,7 @@ func (a *API) LoadServices(ctx context.Context) error {
 }
 
 func (a *API) scopedService(w http.ResponseWriter, r *http.Request) (*store.Service, bool) {
-	rec, err := a.data.GetService(r.Context(), r.PathValue("id"))
-	if err == nil && rec.OrgID != a.orgScope(r) {
-		err = store.ErrNotFound
-	}
-	if a.handleErr(w, err) {
-		return nil, false
-	}
-	return rec, true
+	return loadScoped(a, w, r, r.PathValue("id"), a.data.GetService, func(rec *store.Service) string { return rec.OrgID })
 }
 
 func (a *API) buildService(w http.ResponseWriter, r *http.Request, existing *store.Service) (*store.Service, bool) {
