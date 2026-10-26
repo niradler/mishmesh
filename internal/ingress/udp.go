@@ -139,7 +139,9 @@ func (u *UDP) openStream(endpointID string, client net.Addr) (net.Conn, error) {
 	if !ok {
 		return nil, errUDPEndpointOffline
 	}
-	stream, err := agent.OpenStream(context.Background(), endpointID, store.KindUDP, withClientIP(tunnel.WithDatagramIdle(nil, u.idle), peerIP(client)))
+	openCtx, cancelOpen := context.WithTimeout(context.Background(), streamOpenTimeout)
+	stream, err := agent.OpenStream(openCtx, endpointID, store.KindUDP, withClientIP(tunnel.WithDatagramIdle(nil, u.idle), peerIP(client)))
+	cancelOpen()
 	if err != nil {
 		u.log.Warn("udp open stream failed", "endpoint_id", endpointID, "err", err)
 		return nil, err

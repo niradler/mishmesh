@@ -42,8 +42,35 @@ func (a *agentConn) Flush() error {
 	return ctrl.Send(tunnel.ControlMessage{Type: tunnel.MsgFlush})
 }
 
-func (a *agentConn) OpenStream(_ context.Context, endpointID, kind string, meta map[string]string) (net.Conn, error) {
-	conn, err := a.sess.OpenData(tunnel.StreamInit{EndpointID: endpointID, Kind: kind, Meta: meta})
+type openResult struct {
+	conn net.Conn
+	err  error
+}
+
+func (a *agentConn) openData(ctx context.Context, init tunnel.StreamInit) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	done := make(chan openResult, 1)
+	go func() {
+		conn, err := a.sess.OpenData(init)
+		done <- openResult{conn, err}
+	}()
+	select {
+	case res := <-done:
+		return res.conn, res.err
+	case <-ctx.Done():
+		go func() {
+			if res := <-done; res.conn != nil {
+				_ = res.conn.Close()
+			}
+		}()
+		return nil, ctx.Err()
+	}
+}
+
+func (a *agentConn) OpenStream(ctx context.Context, endpointID, kind string, meta map[string]string) (net.Conn, error) {
+	conn, err := a.openData(ctx, tunnel.StreamInit{EndpointID: endpointID, Kind: kind, Meta: meta})
 	if err != nil {
 		return nil, err
 	}

@@ -238,7 +238,8 @@ func (g *Gateway) HandleAgentConnect(w http.ResponseWriter, r *http.Request) {
 	if g.metrics != nil {
 		g.metrics.AgentConnected()
 	}
-	serveCtx := context.WithoutCancel(ctx)
+	serveCtx, cancelServe := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelServe()
 	if user != nil {
 		serveCtx = identity.WithPrincipal(serveCtx, *user)
 		g.log.Info("agent connected", "agent_id", agent.ID, "org_id", agent.OrgID, "user_id", user.Ref.ID)
