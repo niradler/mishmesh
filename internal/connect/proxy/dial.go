@@ -103,14 +103,14 @@ func (g *Guard) Dial(ctx context.Context, target string, otls *store.OriginTLS, 
 			return nil, err
 		}
 	}
-	addrs, err := g.ResolveAll(ctx, target)
-	if err != nil {
-		return nil, err
-	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
+	}
+	addrs, err := g.ResolveAll(ctx, target)
+	if err != nil {
+		return nil, err
 	}
 	network := "tcp"
 	if t.Datagram() {

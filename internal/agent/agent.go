@@ -235,7 +235,7 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 		if err != nil {
 			return fmt.Errorf("accept stream: %w", err)
 		}
-		go a.handleStream(stream, init, registered)
+		go a.handleStream(ctx, stream, init, registered)
 	}
 }
 
@@ -285,6 +285,7 @@ func (a *Agent) handleAck(ack *tunnel.RegisterAckPayload, refTarget map[string]l
 }
 
 const (
+	localDialTimeout = 30 * time.Second
 	registrationWait = 10 * time.Second
 	pingInterval     = 30 * time.Second
 	suspendThreshold = 3 * pingInterval
@@ -313,10 +314,10 @@ func (a *Agent) pingLoop(ctx context.Context, ctrl *tunnel.Control, reconnect co
 	}
 }
 
-func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit, registered <-chan struct{}) {
+func (a *Agent) handleStream(ctx context.Context, stream net.Conn, init tunnel.StreamInit, registered <-chan struct{}) {
 	defer stream.Close()
 	if dest, ok := init.Meta[tunnel.MetaEgressExit]; ok && init.EndpointID == "" {
-		a.serveExit(stream, dest, init.Meta[tunnel.MetaExitResolve] == "1")
+		a.serveExit(ctx, stream, dest, init.Meta[tunnel.MetaExitResolve] == "1")
 		return
 	}
 	if init.EndpointID != "" {
@@ -325,20 +326,20 @@ func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit, registered
 		case <-time.After(registrationWait):
 		}
 	}
-	tgt, ok := a.resolveStreamTarget(init)
+	tgt, ok := a.resolveStreamTarget(ctx, init)
 	if !ok {
 		reportStreamFailure(stream, init, notServedReason(init))
 		return
 	}
 	if init.Kind == store.KindUDP {
-		a.relayUDP(stream, init, tgt)
+		a.relayUDP(ctx, stream, init, tgt)
 		return
 	}
 	protocol := ""
 	if init.Kind == store.KindHTTP {
 		protocol = init.Meta["http_protocol"]
 	}
-	local, err := dialTarget(tgt, protocol)
+	local, err := dialTarget(ctx, tgt, protocol)
 	if err != nil {
 		a.log.Warn("dial local target failed", "target", tgt.addr, "err", err)
 		reportStreamFailure(stream, init, dialFailureReason(err))
@@ -349,8 +350,11 @@ func (a *Agent) handleStream(stream net.Conn, init tunnel.StreamInit, registered
 	tunnel.Splice(stream, local)
 }
 
-func dialTarget(tgt localTarget, protocol string) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", tgt.addr, 30*time.Second)
+func dialTarget(ctx context.Context, tgt localTarget, protocol string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, localDialTimeout)
+	defer cancel()
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "tcp", tgt.addr)
 	if err != nil {
 		return nil, err
 	}
@@ -370,8 +374,6 @@ func dialTarget(tgt localTarget, protocol string) (net.Conn, error) {
 		config.NextProtos = []string{"h2"}
 	}
 	tc := tls.Client(conn, config)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("local tls handshake: %w", err)
@@ -383,14 +385,14 @@ func dialTarget(tgt localTarget, protocol string) (net.Conn, error) {
 	return tc, nil
 }
 
-func (a *Agent) resolveStreamTarget(init tunnel.StreamInit) (localTarget, bool) {
+func (a *Agent) resolveStreamTarget(ctx context.Context, init tunnel.StreamInit) (localTarget, bool) {
 	if init.EndpointID == "" {
 		target := init.Meta["target"]
 		if target == "" {
 			a.log.Warn("reach-in stream without target")
 			return localTarget{}, false
 		}
-		dialAddr, serverName, ok := a.allow.Resolve(target)
+		dialAddr, serverName, ok := a.allow.Resolve(ctx, target)
 		if !ok {
 			a.log.Warn("reach-in target denied by allowlist", "target", target)
 			return localTarget{}, false

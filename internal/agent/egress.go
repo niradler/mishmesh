@@ -76,7 +76,7 @@ var egressStatusCodes = map[tunnel.EgressStatus]int{
 	tunnel.EgressAuthRequired: http.StatusProxyAuthRequired,
 }
 
-func (a *Agent) listenEgress(spec EgressSpec, wg *sync.WaitGroup) (func(), error) {
+func (a *Agent) listenEgress(ctx context.Context, spec EgressSpec, wg *sync.WaitGroup) (func(), error) {
 	var listeners []net.Listener
 	closeAll := func() {
 		for _, ln := range listeners {
@@ -86,7 +86,7 @@ func (a *Agent) listenEgress(spec EgressSpec, wg *sync.WaitGroup) (func(), error
 	for _, l := range []struct {
 		addr  string
 		kind  string
-		serve func(net.Conn)
+		serve func(context.Context, net.Conn)
 	}{
 		{spec.Listen, "http", a.serveEgressClient},
 		{spec.SocksListen, "socks5", a.serveSocksClient},
@@ -107,7 +107,7 @@ func (a *Agent) listenEgress(spec EgressSpec, wg *sync.WaitGroup) (func(), error
 				if err != nil {
 					return
 				}
-				go serve(client)
+				go serve(ctx, client)
 			}
 		})
 		a.log.Info("egress proxy listening", "proto", l.kind, "addr", ln.Addr().String(), "require_auth", spec.RequireAuth)
@@ -131,7 +131,7 @@ func (a *Agent) listenEgress(spec EgressSpec, wg *sync.WaitGroup) (func(), error
 	return closeAll, nil
 }
 
-func (a *Agent) serveEgressClient(client net.Conn) {
+func (a *Agent) serveEgressClient(ctx context.Context, client net.Conn) {
 	defer client.Close()
 	_ = client.SetDeadline(time.Now().Add(egressHandshakeTimeout))
 	limited := &io.LimitedReader{R: client, N: maxProxyHeaderBytes}
@@ -155,7 +155,7 @@ func (a *Agent) serveEgressClient(client net.Conn) {
 		return
 	}
 	if req.Method == http.MethodConnect {
-		a.serveConnect(client, br, req, creds)
+		a.serveConnect(ctx, client, br, req, creds)
 		return
 	}
 	_ = client.SetDeadline(time.Time{})
@@ -208,7 +208,7 @@ func credsFromUserPass(user, pass string) egressCreds {
 	return creds
 }
 
-func (a *Agent) serveConnect(client net.Conn, br *bufio.Reader, req *http.Request, creds egressCreds) {
+func (a *Agent) serveConnect(ctx context.Context, client net.Conn, br *bufio.Reader, req *http.Request, creds egressCreds) {
 	dest := req.Host
 	if _, port, err := net.SplitHostPort(dest); err != nil || port == "" {
 		writeProxyError(client, http.StatusBadRequest, "CONNECT target must be host:port")
@@ -217,7 +217,7 @@ func (a *Agent) serveConnect(client net.Conn, br *bufio.Reader, req *http.Reques
 	if a.serveDecrypted(client, br, dest, creds) {
 		return
 	}
-	stream, err := a.openEgress(remoteHost(client.RemoteAddr().String()), dest, creds)
+	stream, err := a.openEgress(ctx, remoteHost(client.RemoteAddr().String()), dest, creds)
 	if err != nil {
 		writeEgressFailure(client, err)
 		a.log.Info("egress refused", "destination", truncateLog(dest), "err", err)
@@ -265,7 +265,7 @@ func (r *recordingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (a *Agent) openEgress(clientIP, dest string, creds egressCreds) (net.Conn, error) {
+func (a *Agent) openEgress(ctx context.Context, clientIP, dest string, creds egressCreds) (net.Conn, error) {
 	sess := a.sess.Load()
 	if sess == nil {
 		return nil, &egressRefusal{status: http.StatusServiceUnavailable, reason: errNotConnected.Error()}
@@ -288,9 +288,14 @@ func (a *Agent) openEgress(clientIP, dest string, creds egressCreds) (net.Conn, 
 	if err != nil {
 		return nil, &egressRefusal{status: http.StatusServiceUnavailable, reason: "tunnel stream failed"}
 	}
+	stopWatch := context.AfterFunc(ctx, func() { _ = stream.Close() })
 	_ = stream.SetReadDeadline(time.Now().Add(tunnel.EgressReplyTimeout))
 	reply, err := tunnel.ReadEgressReply(stream)
 	_ = stream.SetReadDeadline(time.Time{})
+	if !stopWatch() {
+		_ = stream.Close()
+		return nil, &egressRefusal{status: http.StatusServiceUnavailable, reason: "request canceled"}
+	}
 	if err != nil {
 		_ = stream.Close()
 		return nil, &egressRefusal{status: http.StatusBadGateway, reason: "no egress reply from gateway"}
@@ -315,7 +320,7 @@ func exitGuard(allow []string, log *slog.Logger) ExitDialer {
 	return g
 }
 
-func (a *Agent) serveExit(stream net.Conn, dest string, reportResolved bool) {
+func (a *Agent) serveExit(ctx context.Context, stream net.Conn, dest string, reportResolved bool) {
 	refuse := func(status tunnel.EgressStatus, reason string) {
 		_ = stream.SetWriteDeadline(time.Now().Add(egressHandshakeTimeout))
 		_ = tunnel.WriteEgressReply(stream, tunnel.EgressReply{Status: status, Reason: reason})
@@ -332,9 +337,9 @@ func (a *Agent) serveExit(stream net.Conn, dest string, reportResolved bool) {
 	var upstream net.Conn
 	var err error
 	if reportResolved {
-		upstream, err = dialApprovedExit(stream, dialer, dest)
+		upstream, err = dialApprovedExit(ctx, stream, dialer, dest)
 	} else {
-		upstream, err = dialer.Dial(context.Background(), dest, nil, exitDialTimeout)
+		upstream, err = dialer.Dial(ctx, dest, nil, exitDialTimeout)
 	}
 	if errors.Is(err, errExitAborted) {
 		return
@@ -361,8 +366,8 @@ func (a *Agent) serveExit(stream net.Conn, dest string, reportResolved bool) {
 	tunnel.Splice(stream, upstream)
 }
 
-func dialApprovedExit(stream net.Conn, dialer ExitDialer, dest string) (net.Conn, error) {
-	resolveCtx, cancel := context.WithTimeout(context.Background(), exitDialTimeout)
+func dialApprovedExit(ctx context.Context, stream net.Conn, dialer ExitDialer, dest string) (net.Conn, error) {
+	resolveCtx, cancel := context.WithTimeout(ctx, exitDialTimeout)
 	resolved, err := dialer.ResolveAll(resolveCtx, dest)
 	cancel()
 	if err != nil {
@@ -393,7 +398,7 @@ func dialApprovedExit(stream net.Conn, dialer ExitDialer, dest string) (net.Conn
 	}
 	var upstream net.Conn
 	for _, target := range approved {
-		if upstream, err = dialer.Dial(context.Background(), target, nil, exitDialTimeout); err == nil {
+		if upstream, err = dialer.Dial(ctx, target, nil, exitDialTimeout); err == nil {
 			return upstream, nil
 		}
 	}
