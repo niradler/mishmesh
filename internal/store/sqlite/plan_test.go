@@ -65,3 +65,23 @@ func TestEndpointByDomainNormalizes(t *testing.T) {
 		t.Fatalf("normalized lookup: got %v err %v", got, err)
 	}
 }
+
+func TestHotQueriesUseIndexes(t *testing.T) {
+	s := newStore(t)
+	queries := map[string]string{
+		"agents by org":          `SELECT id FROM agents WHERE org_id = 'o' ORDER BY created_at`,
+		"tokens by agent":        `SELECT id FROM tokens WHERE agent_id = 'a' ORDER BY created_at`,
+		"endpoints by agent":     `SELECT id FROM endpoints WHERE agent_id = 'a' ORDER BY created_at`,
+		"memberships by user":    `SELECT org_id FROM memberships WHERE user_id = 'u' ORDER BY created_at`,
+		"sessions by user":       `DELETE FROM sessions WHERE org_id = 'o' AND user_id = 'u'`,
+		"sessions expiry":        `DELETE FROM sessions WHERE expires_at < 1`,
+		"invites by org":         `SELECT id FROM invites WHERE org_id = 'o' ORDER BY created_at`,
+		"requires by target":     `SELECT service_id FROM service_requires WHERE org_id = 'o' AND requires_id = 's'`,
+		"service connection use": `SELECT COUNT(*) FROM service_connections WHERE connection_id = 'c'`,
+		"alias connection use":   `SELECT COUNT(*) FROM endpoint_aliases WHERE connection_id = 'c'`,
+		"alias by endpoint":      `DELETE FROM endpoint_aliases WHERE endpoint_id = 'e'`,
+	}
+	for name, query := range queries {
+		t.Run(name, func(t *testing.T) { requireIndexedPlan(t, s, query) })
+	}
+}
