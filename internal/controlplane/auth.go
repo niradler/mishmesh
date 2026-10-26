@@ -76,7 +76,7 @@ func (a *API) googleEnabled() bool {
 	return a.auth != nil && a.auth.googleClientID != "" && a.auth.googleClientSecret != "" && a.auth.redirectURL != ""
 }
 
-func (a *API) registerAuthRoutes(mux *http.ServeMux) {
+func (a *API) registerAuthRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/v1/auth/config", a.authConfigHandler)
 	mux.HandleFunc("POST /api/v1/auth/login", a.csrfGuarded(a.loginHandler))
 	mux.HandleFunc("POST /api/v1/auth/logout", a.csrfGuarded(a.logoutHandler))

@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	StateRunning  = "running"
-	StateStopped  = "stopped"
-	StateSleeping = "sleeping"
-	StateStarting = "starting"
-	StatePartial  = "partial"
-	StateUnknown  = "unknown"
-	StateError    = "error"
+	StateRunning   = "running"
+	StateStopped   = "stopped"
+	StateSleeping  = "sleeping"
+	StateStarting  = "starting"
+	StatePartial   = "partial"
+	StateUnhealthy = "unhealthy"
+	StateUnknown   = "unknown"
+	StateError     = "error"
 
 	StartedByMishmesh = "mishmesh"
 	StartedByExternal = "external"
@@ -750,7 +751,7 @@ func (m *Manager) Run(ctx context.Context) {
 }
 
 func runtimeProtected(s *service) bool {
-	return s.runtimeAlive || s.state == StateRunning || s.state == StatePartial || s.state == StateStarting || s.active > 0 || len(s.requirements) > 0 || len(s.dependents) > 0
+	return s.runtimeAlive || s.state == StateRunning || s.state == StatePartial || s.state == StateUnhealthy || s.state == StateStarting || s.active > 0 || len(s.requirements) > 0 || len(s.dependents) > 0
 }
 
 func driverDefinitionEqual(a, b Definition) bool {
@@ -873,7 +874,7 @@ func (m *Manager) applyReserved(ctx context.Context, defs []Definition, releaseA
 	m.services = next
 	m.applyVersion++
 	for _, s := range next {
-		if s.state != StateRunning && s.state != StatePartial && len(s.requirements) == 0 {
+		if s.state != StateRunning && s.state != StatePartial && s.state != StateUnhealthy && len(s.requirements) == 0 {
 			continue
 		}
 		if err := m.validateRequirementsLocked(s); err != nil {
@@ -913,11 +914,13 @@ func (m *Manager) Refresh(ctx context.Context) {
 	}
 	defer func() { <-m.refreshSlot }()
 	type observation struct {
-		svc     *service
-		driver  Driver
-		version uint64
-		state   State
-		err     error
+		svc      *service
+		driver   Driver
+		ready    Readiness
+		version  uint64
+		state    State
+		err      error
+		probeErr error
 	}
 	unlock, err := m.lockAdmission(ctx)
 	if err != nil {
@@ -926,7 +929,7 @@ func (m *Manager) Refresh(ctx context.Context) {
 	m.refreshing = true
 	all := make([]observation, 0, len(m.services))
 	for _, s := range m.ordered() {
-		all = append(all, observation{svc: s, driver: s.driver, version: s.version})
+		all = append(all, observation{svc: s, driver: s.driver, ready: readinessTarget(s.def, ""), version: s.version})
 	}
 	unlock()
 	defer m.finishRefresh()
@@ -941,6 +944,9 @@ func (m *Manager) Refresh(ctx context.Context) {
 			callCtx, cancel := context.WithTimeout(ctx, driverCallTimeout)
 			defer cancel()
 			all[i].state, all[i].err = all[i].driver.State(callCtx)
+			if all[i].err == nil && all[i].state == Running && (all[i].ready.TCP != "" || all[i].ready.HTTP != nil) {
+				all[i].probeErr = m.probeReadiness(callCtx, all[i].ready)
+			}
 		}()
 	}
 	probes.Wait()
@@ -969,7 +975,13 @@ func (m *Manager) Refresh(ctx context.Context) {
 		switch item.state {
 		case Running:
 			s.runtimeAlive = true
-			if s.state != StateRunning {
+			if item.probeErr != nil {
+				if s.startedBy == "" {
+					s.startedBy = StartedByExternal
+				}
+				s.lastError = "runtime is running but the readiness probe failed: " + item.probeErr.Error()
+				changed = m.setState(s, StateUnhealthy) || changed
+			} else if s.state != StateRunning {
 				if s.startedBy == "" {
 					s.startedBy = StartedByExternal
 				}
@@ -996,7 +1008,7 @@ func (m *Manager) Refresh(ctx context.Context) {
 		s.version++
 	}
 	for _, s := range m.ordered() {
-		if s.inflight != nil || s.stopping != nil || (s.state != StateRunning && s.state != StatePartial) {
+		if s.inflight != nil || s.stopping != nil || (s.state != StateRunning && s.state != StatePartial && s.state != StateUnhealthy) {
 			continue
 		}
 		if err := m.validateRequirementsLocked(s); err != nil {

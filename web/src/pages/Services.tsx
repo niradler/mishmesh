@@ -118,6 +118,15 @@ export function Services() {
                         scope="service"
                         state={service.status.state}
                       />
+                      {service.status.state === "unhealthy" &&
+                        service.status.last_error && (
+                          <p
+                            className="mt-1 max-w-xs truncate text-xs text-destructive"
+                            title={service.status.last_error}
+                          >
+                            {service.status.last_error}
+                          </p>
+                        )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {service.idle_timeout_seconds === -1

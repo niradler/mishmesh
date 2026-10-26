@@ -59,6 +59,7 @@ type API struct {
 	hostCommands       bool
 	identity           *identity.Service
 	apiPublicURL       string
+	openAPISpec        []byte
 
 	defaultAuthz *authz.Authorizer
 	authzMu      sync.Mutex
@@ -246,16 +247,25 @@ func (a *API) routes() []route {
 }
 
 func (a *API) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /healthz", a.health)
-	mux.HandleFunc("GET /readyz", a.ready)
+	reg := &routeRecorder{mux: mux}
+	reg.HandleFunc("GET /healthz", a.health)
+	reg.HandleFunc("GET /readyz", a.ready)
+	reg.HandleFunc("GET "+openAPIPath, a.openAPIHandler)
 
-	a.registerAuthRoutes(mux)
-	a.registerOAuthRoutes(mux)
+	a.registerAuthRoutes(reg)
+	a.registerOAuthRoutes(reg)
 
 	for _, rt := range a.routes() {
-		mux.HandleFunc(rt.pattern, rt.handler)
+		reg.handleSecured(rt.pattern, rt.handler)
 	}
 	mux.HandleFunc("/api/", apiNotFound)
+
+	spec, err := buildOpenAPI(reg.operations)
+	if err != nil {
+		a.log.Error("build openapi spec", "err", err)
+		return
+	}
+	a.openAPISpec = spec
 }
 
 func apiNotFound(w http.ResponseWriter, _ *http.Request) {

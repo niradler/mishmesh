@@ -26,6 +26,7 @@ const SERVICE_ORDER: ServiceState[] = [
   "sleeping",
   "stopped",
   "partial",
+  "unhealthy",
   "error",
   "unknown",
 ];

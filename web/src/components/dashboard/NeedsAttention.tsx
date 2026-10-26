@@ -43,13 +43,14 @@ function collectItems(
     });
   });
   services.forEach((service) => {
-    if (service.status.state !== "error") return;
+    const state = service.status.state;
+    if (state !== "error" && state !== "unhealthy") return;
     items.push({
       key: `service-${service.id}`,
-      state: "error",
+      state,
       to: `/services/${service.id}`,
       title: service.name,
-      reason: service.status.last_error || "Service is in an error state.",
+      reason: service.status.last_error || `Service is ${state}.`,
     });
   });
   for (const connection of connections) {

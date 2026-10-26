@@ -27,7 +27,7 @@ import { formatDurationSeconds } from "@/lib/health";
 import { formatRelativeTime } from "@/lib/utils";
 import type { Endpoint, Service, ServiceDeleteConflict } from "@/api/types";
 
-const RUNNING_STATES = ["running", "starting", "partial"];
+const RUNNING_STATES = ["running", "starting", "partial", "unhealthy"];
 
 function conflictEndpointIds(err: unknown): string[] {
   if (!(err instanceof ApiError) || err.status !== 409) return [];

@@ -3,6 +3,8 @@
 Base: control listener (default `127.0.0.1:8081`). Every route is under `/api/v1` unless noted.
 Content-Type `application/json`. Errors: `{"error": "message"}` with the matching HTTP status.
 
+The OpenAPI 3.1 document is generated from the registered routes. `GET /api/v1/openapi.json` serves it without auth and lists only the routes enabled on that server. [openapi.json](openapi.json) holds every route; `make openapi` regenerates it, and `make check` fails when it is stale.
+
 - [Auth model](#auth-model)
 - [Roles and policy](#roles-and-policy)
 - [Auth & identity](#auth--identity)
@@ -172,7 +174,7 @@ All routes are organization scoped. `service:read` permits descriptor/list/detai
 
 Input: `{name,driver,config,ready?,requires?,idle_timeout_seconds?,start_timeout_seconds?}`. `driver` is a registered type; shipped types are `docker`, `compose`, `command`. No `spec` wrapper. Driver config fields come from descriptors. Readiness is empty, `{tcp:"host:port"}` or `{http:{url,status}}`. Requires contains same-org IDs and must form a DAG. Idle timeout accepts-1 (while dependents run),0 (no automatic stop), or positive seconds up to604800. Start timeout accepts0 through604800;0 defaults to120seconds.
 
-DTO: `{id,name,driver,config,ready,requires,required_by,idle_timeout_seconds,start_timeout_seconds,created_at,updated_at,status,endpoints}`. Sensitive config is redacted for every caller. Unchanged redacted placeholders preserve saved sensitive values. `required_by` and `endpoints` contain IDs for navigation/deletion guards. Status reports state, active requests, activity/error timestamps and startup origin.
+DTO: `{id,name,driver,config,ready,requires,required_by,idle_timeout_seconds,start_timeout_seconds,created_at,updated_at,status,endpoints}`. Sensitive config is redacted for every caller. Unchanged redacted placeholders preserve saved sensitive values. `required_by` and `endpoints` contain IDs for navigation/deletion guards. Status reports state, active requests, activity/error timestamps and startup origin. `unhealthy` means the driver reports the runtime running but the readiness check fails; `last_error` carries the probe failure, linked endpoints report down, and mishmesh takes no automatic action.
 
 Normal runtime-config changes on a running service return409. Explicit restart reserves lifecycle admission until stop/save/apply/start finishes. Errors include `phase` and `saved` when applicable;502 after a committed start failure leaves new config saved. Cancellation after commit gates the old runtime until a successful reload. Metadata-only updates retain an unchanged driver's state. Details: [services.md](services.md).
 
