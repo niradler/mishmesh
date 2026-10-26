@@ -101,7 +101,9 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	orgID := a.orgScope(r)
 	userID := r.PathValue("user_id")
-	defer a.memberMutations.lock(orgID)()
+	if req.Disabled != nil && *req.Disabled {
+		defer a.memberMutations.lock(orgID)()
+	}
 	target, err := a.data.GetMembership(r.Context(), orgID, userID)
 	if a.handleErr(w, err) {
 		return
@@ -123,15 +125,11 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "cannot disable your own membership")
 		return
 	}
-	guardRole := role
-	if disabling {
-		guardRole = ""
-	}
-	if !a.authorizeMemberChange(w, r, orgID, userID, guardRole) {
+	if !a.authorizeMemberChange(w, r, orgID, userID, disabling) {
 		return
 	}
 	if req.Role != nil && role != target.Role {
-		if err := a.data.UpdateMembership(r.Context(), &store.Membership{OrgID: orgID, UserID: userID, Role: role}); a.handleErr(w, err) {
+		if a.handleMemberChangeErr(w, a.data.DemoteOrRemoveMembershipKeepingOwner(r.Context(), orgID, userID, role, false)) {
 			return
 		}
 		a.flushDecisions(orgID)
@@ -165,11 +163,10 @@ func (a *API) updateMemberHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := a.orgScope(r)
 	userID := r.PathValue("user_id")
-	defer a.memberMutations.lock(orgID)()
-	if !a.authorizeMemberChange(w, r, orgID, userID, "") {
+	if !a.authorizeMemberChange(w, r, orgID, userID, false) {
 		return
 	}
-	if err := a.data.DeleteMembership(r.Context(), orgID, userID); a.handleErr(w, err) {
+	if a.handleMemberChangeErr(w, a.data.DemoteOrRemoveMembershipKeepingOwner(r.Context(), orgID, userID, "", true)) {
 		return
 	}
 	if err := a.revokeMemberAccess(r.Context(), orgID, userID); err != nil {
@@ -210,7 +207,15 @@ func (a *API) isSelf(r *http.Request, userID string) bool {
 	return err == nil && user.Email == a.actor(r)
 }
 
-func (a *API) authorizeMemberChange(w http.ResponseWriter, r *http.Request, orgID, userID, newRole string) bool {
+func (a *API) handleMemberChangeErr(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, store.ErrConflict) {
+		writeError(w, http.StatusConflict, "an organization must keep at least one owner")
+		return true
+	}
+	return a.handleErr(w, err)
+}
+
+func (a *API) authorizeMemberChange(w http.ResponseWriter, r *http.Request, orgID, userID string, disabling bool) bool {
 	target, err := a.data.GetMembership(r.Context(), orgID, userID)
 	if a.handleErr(w, err) {
 		return false
@@ -219,7 +224,7 @@ func (a *API) authorizeMemberChange(w http.ResponseWriter, r *http.Request, orgI
 		writeError(w, http.StatusForbidden, "cannot modify a member above your own role")
 		return false
 	}
-	if target.Role != store.RoleOwner || newRole == store.RoleOwner {
+	if !disabling || target.Role != store.RoleOwner {
 		return true
 	}
 	owners, err := a.countOwners(r, orgID)

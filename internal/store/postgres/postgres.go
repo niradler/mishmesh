@@ -729,6 +729,46 @@ func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) erro
 	return wrap("delete membership", tx.Commit())
 }
 
+func (s *Store) DemoteOrRemoveMembershipKeepingOwner(ctx context.Context, orgID, userID, newRole string, remove bool) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("demote membership", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM orgs WHERE id = $1 FOR UPDATE`, orgID); err != nil {
+		return wrap("lock org", err)
+	}
+	target, err := scanMembership(tx.QueryRowContext(ctx,
+		`SELECT org_id, user_id, role, created_at, disabled_at FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID).Scan)
+	if err != nil {
+		return err
+	}
+	if target.Role == store.RoleOwner && target.DisabledAt == nil && (remove || newRole != store.RoleOwner) {
+		var others int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM memberships WHERE org_id = $1 AND role = $2 AND disabled_at IS NULL AND user_id <> $3`,
+			orgID, store.RoleOwner, userID).Scan(&others); err != nil {
+			return wrap("count owners", err)
+		}
+		if others == 0 {
+			return fmt.Errorf("organization must keep an active owner: %w", store.ErrConflict)
+		}
+	}
+	if remove {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM group_members WHERE org_id = $1 AND member_type = $2 AND member_id = $3`, orgID, store.GroupMemberUser, userID); err != nil {
+			return wrap("delete membership groups", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID); err != nil {
+			return wrap("delete membership", err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `UPDATE memberships SET role = $1 WHERE org_id = $2 AND user_id = $3`, newRole, orgID, userID); err != nil {
+		return wrap("update membership", err)
+	}
+	return wrap("demote membership", tx.Commit())
+}
+
 func scanMembership(scan func(...any) error) (*store.Membership, error) {
 	var m store.Membership
 	var created int64

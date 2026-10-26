@@ -649,6 +649,41 @@ func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) erro
 	return wrap("delete membership", tx.Commit())
 }
 
+func (s *Store) DemoteOrRemoveMembershipKeepingOwner(ctx context.Context, orgID, userID, newRole string, remove bool) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("demote membership", err)
+	}
+	defer tx.Rollback()
+	target, err := scanMembership(tx.QueryRowContext(ctx,
+		`SELECT org_id, user_id, role, created_at, disabled_at FROM memberships WHERE org_id = ? AND user_id = ?`, orgID, userID).Scan)
+	if err != nil {
+		return err
+	}
+	if target.Role == store.RoleOwner && target.DisabledAt == nil && (remove || newRole != store.RoleOwner) {
+		var others int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM memberships WHERE org_id = ? AND role = ? AND disabled_at IS NULL AND user_id <> ?`,
+			orgID, store.RoleOwner, userID).Scan(&others); err != nil {
+			return wrap("count owners", err)
+		}
+		if others == 0 {
+			return fmt.Errorf("organization must keep an active owner: %w", store.ErrConflict)
+		}
+	}
+	if remove {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM group_members WHERE org_id = ? AND member_type = ? AND member_id = ?`, orgID, store.GroupMemberUser, userID); err != nil {
+			return wrap("delete membership groups", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = ? AND user_id = ?`, orgID, userID); err != nil {
+			return wrap("delete membership", err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `UPDATE memberships SET role = ? WHERE org_id = ? AND user_id = ?`, newRole, orgID, userID); err != nil {
+		return wrap("update membership", err)
+	}
+	return wrap("demote membership", tx.Commit())
+}
+
 func scanMembership(scan func(...any) error) (*store.Membership, error) {
 	var m store.Membership
 	var created int64

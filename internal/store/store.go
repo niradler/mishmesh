@@ -442,6 +442,7 @@ type MembershipStore interface {
 	ListMembershipsByOrg(ctx context.Context, orgID string) ([]*Membership, error)
 	UpdateMembership(ctx context.Context, m *Membership) error
 	DeleteMembership(ctx context.Context, orgID, userID string) error
+	DemoteOrRemoveMembershipKeepingOwner(ctx context.Context, orgID, userID, newRole string, remove bool) error
 }
 
 type GroupStore interface {
