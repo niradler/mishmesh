@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -116,14 +115,4 @@ func builtinRegistry() *Registry {
 		}
 	}
 	return registry
-}
-
-func trimAll(in []string) []string {
-	var out []string
-	for _, s := range in {
-		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
 }

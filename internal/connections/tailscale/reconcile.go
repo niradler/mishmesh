@@ -715,27 +715,3 @@ func (i *instance) protectAdvertisements(ctx context.Context, state *ownershipSt
 	}
 	return protectAdvertisements(prefs, state, desired)
 }
-
-func ReconcileServices(current, owned, desired map[string]string) (map[string]string, error) {
-	next := maps.Clone(current)
-	if next == nil {
-		next = make(map[string]string)
-	}
-	for name, target := range desired {
-		if tailcfg.ServiceName(name).Validate() != nil || target == "" {
-			return nil, errors.New("invalid desired service")
-		}
-		if _, exists := current[name]; exists && owned[name] == "" {
-			return nil, errors.New("service is owned externally")
-		}
-		next[name] = target
-	}
-	for name, endpointID := range owned {
-		if endpointID != "" {
-			if _, wanted := desired[name]; !wanted {
-				delete(next, name)
-			}
-		}
-	}
-	return next, nil
-}

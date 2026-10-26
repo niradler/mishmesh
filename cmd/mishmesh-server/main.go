@@ -455,13 +455,6 @@ func newLogger(level string) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 }
 
-func envOr(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return def
-}
-
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(1)
