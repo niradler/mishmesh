@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/connect/proxy"
+	"github.com/mishmesh/mishmesh/internal/services"
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
@@ -22,13 +23,13 @@ const (
 )
 
 const (
-	ServiceRunning  = "running"
-	ServiceStopped  = "stopped"
-	ServiceSleeping = "sleeping"
-	ServiceStarting = "starting"
-	ServicePartial  = "partial"
-	ServiceUnknown  = "unknown"
-	ServiceError    = "error"
+	ServiceRunning  = services.StateRunning
+	ServiceStopped  = services.StateStopped
+	ServiceSleeping = services.StateSleeping
+	ServiceStarting = services.StateStarting
+	ServicePartial  = services.StatePartial
+	ServiceUnknown  = services.StateUnknown
+	ServiceError    = services.StateError
 )
 
 const (
