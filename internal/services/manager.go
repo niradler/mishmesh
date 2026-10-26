@@ -36,6 +36,7 @@ const (
 	stopTimeout       = 60 * time.Second
 
 	defaultAdmissionWait = 5 * time.Second
+	refreshParallelism   = 8
 )
 
 var ErrUnknownService = errors.New("unknown service")
@@ -929,13 +930,22 @@ func (m *Manager) Refresh(ctx context.Context) {
 	}
 	unlock()
 	defer m.finishRefresh()
+	var probes sync.WaitGroup
+	slots := make(chan struct{}, refreshParallelism)
 	for i := range all {
-		callCtx, cancel := context.WithTimeout(ctx, driverCallTimeout)
-		all[i].state, all[i].err = all[i].driver.State(callCtx)
-		cancel()
-		if ctx.Err() != nil {
-			return
-		}
+		slots <- struct{}{}
+		probes.Add(1)
+		go func() {
+			defer probes.Done()
+			defer func() { <-slots }()
+			callCtx, cancel := context.WithTimeout(ctx, driverCallTimeout)
+			defer cancel()
+			all[i].state, all[i].err = all[i].driver.State(callCtx)
+		}()
+	}
+	probes.Wait()
+	if ctx.Err() != nil {
+		return
 	}
 	unlock, err = m.lockAdmission(ctx)
 	if err != nil {
