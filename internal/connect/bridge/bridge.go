@@ -9,15 +9,12 @@ import (
 	"time"
 
 	"github.com/mishmesh/mishmesh/internal/authz"
+	"github.com/mishmesh/mishmesh/internal/connect"
 	"github.com/mishmesh/mishmesh/internal/connect/flows"
 	"github.com/mishmesh/mishmesh/internal/identity"
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
 )
-
-type Meter interface {
-	AddBytes(kind string, in, out int64)
-}
 
 type Revocations = flows.Revocations
 
@@ -25,7 +22,7 @@ type Options struct {
 	Data        store.DataStore
 	Conns       store.ConnectionStore
 	Log         *slog.Logger
-	Meter       Meter
+	Meter       connect.Meter
 	Deciders    identity.Deciders
 	Revocations Revocations
 }
@@ -34,15 +31,13 @@ type Bridge struct {
 	data     store.DataStore
 	conns    store.ConnectionStore
 	log      *slog.Logger
-	meter    Meter
+	meter    connect.Meter
 	deciders identity.Deciders
 	flows    *flows.Tracker
 }
 
 const (
-	lookupTimeout   = 5 * time.Second
-	decisionTimeout = 5 * time.Second
-	agentClientIP   = "0.0.0.0"
+	lookupTimeout = 5 * time.Second
 )
 
 var (
@@ -172,24 +167,8 @@ func (b *Bridge) decide(ctx context.Context, agent *store.Agent, ref, kind strin
 	if err != nil {
 		return connectDecision{}, err
 	}
-	scope := identity.Scope{OrgID: agent.OrgID, AgentID: agent.ID}
-	principal := authz.EntityRef{Type: authz.EntityAgent, ID: agent.ID}
-	reqCtx := authz.RequestContext{ClientIP: agentClientIP, Protocol: kind, AuthMethod: authz.AuthMethodAgentToken}
-	if p, ok := identity.PrincipalFrom(ctx); ok {
-		principal = p.Ref
-		scope.TokenSessionID = p.SessionID
-		reqCtx.AuthMethod = p.AuthMethod
-		authTime := p.AuthTime.UTC()
-		reqCtx.AuthTime = &authTime
-	}
-	decideCtx, cancel := context.WithTimeout(ctx, decisionTimeout)
-	defer cancel()
-	d, err := b.deciders.Decider(scope).Decide(decideCtx, authz.DecisionRequest{
-		Principal: principal,
-		Action:    authz.ActionAgentConnect,
-		Resource:  authz.EntityRef{Type: authz.EntityEndpoint, ID: ep.ID},
-		Context:   reqCtx,
-	})
+	p, hasPrincipal := identity.PrincipalFrom(ctx)
+	d, err := connect.NewAgentDecision(agent, p, hasPrincipal, authz.RequestContext{Protocol: kind}).Decide(ctx, b.deciders, authz.ActionAgentConnect, authz.EntityRef{Type: authz.EntityEndpoint, ID: ep.ID})
 	out := connectDecision{Decision: d, endpoint: ep}
 	if err != nil || d.Reason == authz.ReasonUnavailable {
 		return out, fmt.Errorf("%w: %v", ErrUnavailable, err)
