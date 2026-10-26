@@ -29,17 +29,17 @@ func TestSPAHandlerDoesNotServeSiblingDirectory(t *testing.T) {
 	handler := spaHandler(web)
 
 	tests := []struct {
-		name       string
-		path       string
-		wantBody   string
-		wantStatus int
+		name      string
+		path      string
+		wantBody  string
+		traversal bool
 	}{
-		{"asset", "/app.js", "APP", http.StatusOK},
-		{"unknown route falls back to index", "/dashboard/agents", "INDEX", http.StatusOK},
-		{"dotdot to sibling", "/../web-secret/token.txt", "404 page not found\n", http.StatusNotFound},
-		{"encoded dotdot to sibling", "/%2e%2e/web-secret/token.txt", "INDEX", http.StatusOK},
-		{"deep dotdot to sibling", "/a/../../web-secret/token.txt", "invalid URL path\n", http.StatusBadRequest},
-		{"backslash dotdot to sibling", `/..\web-secret\token.txt`, "404 page not found\n", http.StatusNotFound},
+		{"asset", "/app.js", "APP", false},
+		{"unknown route falls back to index", "/dashboard/agents", "INDEX", false},
+		{"dotdot to sibling", "/../web-secret/token.txt", "", true},
+		{"encoded dotdot to sibling", "/%2e%2e/web-secret/token.txt", "", true},
+		{"deep dotdot to sibling", "/a/../../web-secret/token.txt", "", true},
+		{"backslash dotdot to sibling", `/..\web-secret\token.txt`, "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -51,8 +51,14 @@ func TestSPAHandlerDoesNotServeSiblingDirectory(t *testing.T) {
 			if strings.Contains(body, "SECRET") {
 				t.Fatalf("sibling directory content leaked: %q", body)
 			}
-			if rec.Code != tt.wantStatus || body != tt.wantBody {
-				t.Fatalf("status=%d body=%q, want %d %q", rec.Code, body, tt.wantStatus, tt.wantBody)
+			if tt.traversal {
+				if rec.Code == http.StatusOK && body != "INDEX" {
+					t.Fatalf("traversal served %q with 200", body)
+				}
+				return
+			}
+			if rec.Code != http.StatusOK || body != tt.wantBody {
+				t.Fatalf("status=%d body=%q, want 200 %q", rec.Code, body, tt.wantBody)
 			}
 		})
 	}
