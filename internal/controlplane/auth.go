@@ -171,7 +171,7 @@ func (a *API) lookupSession(r *http.Request) (*sessionUser, error) {
 	if err != nil {
 		return nil, sessionLookupErr(err)
 	}
-	if time.Now().After(sess.ExpiresAt) {
+	if a.now().After(sess.ExpiresAt) {
 		_ = a.data.DeleteSession(r.Context(), sess.IDHash)
 		return nil, errNoSession
 	}
@@ -206,7 +206,7 @@ func (a *API) issueSession(ctx context.Context, w http.ResponseWriter, userID, o
 	if err != nil {
 		return err
 	}
-	now := time.Now()
+	now := a.now()
 	if authTime.IsZero() || authTime.After(now) {
 		authTime = now
 	}
@@ -460,7 +460,7 @@ func (a *API) registerPasswordUser(ctx context.Context, email, name, hash, invit
 	if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
-	user := &store.User{ID: store.NewID("usr"), Email: email, Name: name, PasswordHash: hash, CreatedAt: time.Now()}
+	user := &store.User{ID: store.NewID("usr"), Email: email, Name: name, PasswordHash: hash, CreatedAt: a.now()}
 	if inviteToken == "" {
 		return a.provisionNewUser(ctx, user)
 	}
@@ -502,7 +502,7 @@ func (a *API) provisionNewUser(ctx context.Context, user *store.User) (*store.Us
 	if err != nil {
 		return nil, fmt.Errorf("create org: %w", err)
 	}
-	if err := a.data.CreateMembership(ctx, &store.Membership{OrgID: org.ID, UserID: user.ID, Role: store.RoleOwner, CreatedAt: time.Now()}); err != nil {
+	if err := a.data.CreateMembership(ctx, &store.Membership{OrgID: org.ID, UserID: user.ID, Role: store.RoleOwner, CreatedAt: a.now()}); err != nil {
 		return nil, fmt.Errorf("create membership: %w", err)
 	}
 	return user, nil
@@ -526,7 +526,7 @@ func (a *API) joinDefaultOrg(ctx context.Context, userID, role string) error {
 	if err != nil {
 		return fmt.Errorf("ensure default org: %w", err)
 	}
-	if err := a.data.CreateMembership(ctx, &store.Membership{OrgID: org.ID, UserID: userID, Role: role, CreatedAt: time.Now()}); err != nil {
+	if err := a.data.CreateMembership(ctx, &store.Membership{OrgID: org.ID, UserID: userID, Role: role, CreatedAt: a.now()}); err != nil {
 		return fmt.Errorf("create membership: %w", err)
 	}
 	return nil
@@ -676,7 +676,7 @@ func (a *API) upsertOIDCUser(ctx context.Context, p *oidcProfile) (*store.User, 
 		}
 		return u, nil
 	}
-	user := &store.User{ID: store.NewID("usr"), Email: email, Name: p.Name, GoogleSub: p.Sub, CreatedAt: time.Now()}
+	user := &store.User{ID: store.NewID("usr"), Email: email, Name: p.Name, GoogleSub: p.Sub, CreatedAt: a.now()}
 	if a.hasLiveInviteFor(ctx, email) {
 		if err := a.data.CreateUser(ctx, user); err != nil {
 			return nil, fmt.Errorf("create user: %w", err)

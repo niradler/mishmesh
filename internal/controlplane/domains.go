@@ -115,7 +115,7 @@ func (a *API) createDomainHandler(w http.ResponseWriter, r *http.Request) {
 		a.handleErr(w, err)
 		return
 	}
-	d := &store.Domain{ID: store.NewID("dom"), OrgID: orgID, Name: name, Token: token, CreatedAt: time.Now()}
+	d := &store.Domain{ID: store.NewID("dom"), OrgID: orgID, Name: name, Token: token, CreatedAt: a.now()}
 	if a.handleErr(w, a.data.CreateDomain(r.Context(), d)) {
 		return
 	}
@@ -160,7 +160,7 @@ func (a *API) verifyDomainHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "challenge TXT record not found at "+challengePrefix+d.Name)
 		return
 	}
-	now := time.Now()
+	now := a.now()
 	if a.handleErr(w, a.data.SetDomainVerified(r.Context(), d.ID, now)) {
 		return
 	}

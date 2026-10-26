@@ -47,7 +47,7 @@ func (a *API) createGroupHandler(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) || !validGroupName(w, req.Name) {
 		return
 	}
-	g := &store.Group{ID: store.NewID("grp"), OrgID: a.orgScope(r), Name: req.Name, CreatedAt: time.Now()}
+	g := &store.Group{ID: store.NewID("grp"), OrgID: a.orgScope(r), Name: req.Name, CreatedAt: a.now()}
 	if a.handleStoreErr(w, a.data.CreateGroup(r.Context(), g), "a group with that name already exists") {
 		return
 	}
@@ -126,7 +126,7 @@ func (a *API) addGroupMemberHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "member type must be user or service_account")
 		return
 	}
-	m := &store.GroupMember{OrgID: org, GroupID: groupID, MemberType: req.Type, MemberID: req.ID, CreatedAt: time.Now()}
+	m := &store.GroupMember{OrgID: org, GroupID: groupID, MemberType: req.Type, MemberID: req.ID, CreatedAt: a.now()}
 	if a.handleErr(w, a.data.AddGroupMember(r.Context(), m)) {
 		return
 	}

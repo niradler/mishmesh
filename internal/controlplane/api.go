@@ -254,18 +254,7 @@ func (a *API) actor(r *http.Request) string {
 }
 
 func (a *API) audit(r *http.Request, action, target, detail string) {
-	ev := &store.AuditEvent{
-		ID:        store.NewID("aud"),
-		OrgID:     a.orgScope(r),
-		Actor:     a.actor(r),
-		Action:    action,
-		Target:    target,
-		Detail:    detail,
-		CreatedAt: time.Now(),
-	}
-	if err := a.data.AppendAudit(r.Context(), ev); err != nil {
-		a.log.Warn("append audit failed", "action", action, "err", err)
-	}
+	a.auditAs(r, a.orgScope(r), a.actor(r), action, target, detail)
 }
 
 type route struct {
@@ -562,7 +551,7 @@ func (a *API) createOrgHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hasSession {
-		if err := a.data.CreateMembership(r.Context(), &store.Membership{OrgID: org.ID, UserID: su.user.ID, Role: store.RoleOwner, CreatedAt: time.Now()}); err != nil {
+		if err := a.data.CreateMembership(r.Context(), &store.Membership{OrgID: org.ID, UserID: su.user.ID, Role: store.RoleOwner, CreatedAt: a.now()}); err != nil {
 			a.log.Warn("create owner membership", "org", org.ID, "err", err)
 			writeError(w, http.StatusInternalServerError, "create org failed")
 			return

@@ -220,7 +220,7 @@ func (a *API) auditAs(r *http.Request, orgID, actor, action, target, detail stri
 		Detail:    detail,
 		CreatedAt: a.now(),
 	}
-	if err := a.data.AppendAudit(r.Context(), ev); err != nil {
+	if err := a.data.AppendAudit(context.WithoutCancel(r.Context()), ev); err != nil {
 		a.log.Warn("append audit failed", "action", action, "err", err)
 	}
 }

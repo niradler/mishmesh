@@ -219,7 +219,7 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	ep := &store.Endpoint{
 		ID: store.NewID("ep"), AgentID: agentID, OrgID: orgID, Kind: kind, Method: method,
 		Lifecycle: store.LifecycleReserved, Subdomain: req.Subdomain, Domain: domain,
-		Port: req.Port, Policy: pol, CreatedAt: time.Now(),
+		Port: req.Port, Policy: pol, CreatedAt: a.now(),
 		ConnectionSnapshots: connectionSnapshots,
 	}
 	if a.handleStoreErr(w, a.data.CreateEndpoint(r.Context(), ep), endpointConflictMsg) {
