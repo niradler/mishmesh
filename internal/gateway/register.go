@@ -70,6 +70,10 @@ func (g *Gateway) registerHostBased(ctx context.Context, agent *store.Agent, req
 	if sub != "" && domain != "" {
 		return tunnel.EndpointBinding{}, errors.New("subdomain and domain are mutually exclusive")
 	}
+	pol := decodePolicy(req.Policy, g.log)
+	if _, err := g.connectNameOwner(ctx, agent, connectName(pol)); err != nil {
+		return tunnel.EndpointBinding{}, err
+	}
 	if domain != "" {
 		return g.rebindDomain(ctx, agent, req, kind, domain)
 	}
@@ -94,7 +98,7 @@ func (g *Gateway) registerHostBased(ctx context.Context, agent *store.Agent, req
 			return tunnel.EndpointBinding{}, errors.New("internal error looking up subdomain")
 		}
 	}
-	ep, err := g.createEndpoint(ctx, agent, endpointSpec{kind: kind, lifecycle: lifecycle, subdomain: sub, policy: decodePolicy(req.Policy, g.log)}, nil)
+	ep, err := g.createEndpoint(ctx, agent, endpointSpec{kind: kind, lifecycle: lifecycle, subdomain: sub, policy: pol}, nil)
 	if err != nil {
 		if existing := g.ownSubdomainEndpoint(ctx, agent, sub, kind); existing != nil && !isQuotaError(err) {
 			return g.bindExisting(agent, req, existing), nil
