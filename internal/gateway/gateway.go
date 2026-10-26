@@ -102,9 +102,18 @@ type Gateway struct {
 	users              UserAuthenticator
 	certs              CertIssuer
 	unavailable        map[string]string
+	endpointsChanged   func()
 
 	liveMu sync.Mutex
 	live   map[*agentConn]struct{}
+}
+
+func (g *Gateway) SetEndpointInvalidator(invalidate func()) { g.endpointsChanged = invalidate }
+
+func (g *Gateway) notifyEndpointsChanged() {
+	if g.endpointsChanged != nil {
+		g.endpointsChanged()
+	}
 }
 
 func New(opts Options) *Gateway {
@@ -385,6 +394,7 @@ func (g *Gateway) cleanupEphemeral(ctx context.Context, agentID string) {
 		}
 		if ep.Lifecycle == store.LifecycleEphemeral {
 			_ = g.data.DeleteEndpoint(ctx, ep.ID)
+			g.notifyEndpointsChanged()
 		}
 	}
 }

@@ -145,6 +145,7 @@ func (g *Gateway) createEndpoint(ctx context.Context, agent *store.Agent, spec e
 		g.log.Warn("create endpoint failed", "agent_id", agent.ID, "kind", ep.Kind, "err", err)
 		return nil, errors.New("internal error creating endpoint")
 	}
+	g.notifyEndpointsChanged()
 	g.conns.BindEndpoint(ep.ID, agent.ID)
 	g.log.Info("endpoint registered", "agent_id", agent.ID, "endpoint_id", ep.ID, "kind", ep.Kind, "url", g.publicURL(ep))
 	return ep, nil

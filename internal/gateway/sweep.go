@@ -30,6 +30,7 @@ func (g *Gateway) SweepOrphanedEphemeral(ctx context.Context) (int, error) {
 			}
 			g.log.Info("swept orphaned ephemeral endpoint", "endpoint_id", ep.ID, "agent_id", ep.AgentID, "kind", ep.Kind)
 			swept++
+			g.notifyEndpointsChanged()
 		}
 	}
 	return swept, nil
