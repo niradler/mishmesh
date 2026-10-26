@@ -108,13 +108,13 @@ func (a *API) endpointChanged(ep *store.Endpoint) {
 	if a.endpointHealth == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), healthProbeTimeout)
+	a.spawn(func(bg context.Context) {
+		ctx, cancel := context.WithTimeout(bg, healthProbeTimeout)
 		defer cancel()
 		if _, err := a.endpointHealth.ProbeNow(ctx, ep.ID); err != nil {
 			a.log.Warn("health probe after endpoint change failed", "endpoint_id", ep.ID, "err", err)
 		}
-	}()
+	})
 }
 
 func (a *API) endpointRemoved(ep *store.Endpoint) {

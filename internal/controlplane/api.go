@@ -71,6 +71,10 @@ type API struct {
 	denyAuthz    *authz.Authorizer
 	policies     *authz.Cache
 	now          func() time.Time
+
+	background     sync.WaitGroup
+	backgroundCtx  context.Context
+	stopBackground context.CancelFunc
 }
 
 func (a *API) SetDraining(draining bool) {
@@ -94,22 +98,38 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 	if log == nil {
 		log = slog.Default()
 	}
+	backgroundCtx, stopBackground := context.WithCancel(context.Background())
 	return &API{
-		data:         data,
-		conns:        conns,
-		log:          log,
-		adminToken:   adminToken,
-		limiter:      ratelimit.NewMemory(),
-		defaultAuthz: authz.Default(),
-		denyAuthz:    authz.DenyAll(),
-		policies:     authz.NewCache(authz.DefaultCacheSize),
-		authzCache:   make(map[string]authzEntry),
-		authzLoads:   make(map[authzLoadKey]*authzLoad),
-		servicesSem:  make(chan struct{}, 1),
-		now:          time.Now,
+		backgroundCtx:  backgroundCtx,
+		stopBackground: stopBackground,
+		data:           data,
+		conns:          conns,
+		log:            log,
+		adminToken:     adminToken,
+		limiter:        ratelimit.NewMemory(),
+		defaultAuthz:   authz.Default(),
+		denyAuthz:      authz.DenyAll(),
+		policies:       authz.NewCache(authz.DefaultCacheSize),
+		authzCache:     make(map[string]authzEntry),
+		authzLoads:     make(map[authzLoadKey]*authzLoad),
+		servicesSem:    make(chan struct{}, 1),
+		now:            time.Now,
 
 		maxOrgsPerUser: DefaultMaxOrgsPerUser,
 	}
+}
+
+func (a *API) spawn(fn func(context.Context)) {
+	a.background.Add(1)
+	go func() {
+		defer a.background.Done()
+		fn(a.backgroundCtx)
+	}()
+}
+
+func (a *API) Close() {
+	a.stopBackground()
+	a.background.Wait()
 }
 
 func (a *API) authorizerFor(ctx context.Context, orgID string) *authz.Authorizer {
@@ -132,7 +152,7 @@ func (a *API) orgAuthorizer(ctx context.Context, orgID string) (*authz.Authorize
 	if !inflight {
 		call = &authzLoad{done: make(chan struct{})}
 		a.authzLoads[key] = call
-		go a.runAuthzLoad(context.WithoutCancel(ctx), key, call)
+		a.spawn(func(bg context.Context) { a.runAuthzLoad(bg, key, call) })
 	}
 	a.authzMu.Unlock()
 	select {
