@@ -10,12 +10,12 @@ import (
 	"github.com/mishmesh/mishmesh/internal/store"
 )
 
-func newStore(t *testing.T) *Store {
+func newStore(t testing.TB) *Store {
 	t.Helper()
 	return newStoreWithPool(t, PoolConfig{})
 }
 
-func newStoreWithPool(t *testing.T, pool PoolConfig) *Store {
+func newStoreWithPool(t testing.TB, pool PoolConfig) *Store {
 	t.Helper()
 	dsn := os.Getenv("MISHMESH_TEST_POSTGRES_DSN")
 	if dsn == "" {

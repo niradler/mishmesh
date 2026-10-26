@@ -40,6 +40,8 @@ CREATE INDEX IF NOT EXISTS access_log_at ON access_log (at);
 
 const accessEventCols = `id, org_id, at, source, decision, reason, principal_type, principal_id, session_id, agent_id, exit_agent_id, endpoint_id, destination, policy_ids, client_ip, method, path, status, protocol, bytes_in, bytes_out, duration_ms, latency_ms`
 
+const accessPruneBatchRows = 1000
+
 func (s *Store) AppendAccessEvents(ctx context.Context, events []*store.AccessEvent) error {
 	if len(events) == 0 {
 		return nil
@@ -107,10 +109,19 @@ func (s *Store) ListAccessEvents(ctx context.Context, orgID string, q store.Acce
 }
 
 func (s *Store) PruneAccessEvents(ctx context.Context, before time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM access_log WHERE at < ?`, ns(before))
-	if err != nil {
-		return 0, wrap("prune access events", err)
+	var total int64
+	for {
+		res, err := s.db.ExecContext(ctx, `DELETE FROM access_log WHERE id IN (SELECT id FROM access_log WHERE at < ? LIMIT ?)`, ns(before), accessPruneBatchRows)
+		if err != nil {
+			return total, wrap("prune access events", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, wrap("prune access events", err)
+		}
+		total += n
+		if n < accessPruneBatchRows {
+			return total, nil
+		}
 	}
-	n, err := res.RowsAffected()
-	return n, wrap("prune access events", err)
 }
