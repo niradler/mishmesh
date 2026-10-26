@@ -85,7 +85,11 @@ func (a *API) reachInHTTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "tunnel read failed")
+		return
+	}
 	a.audit(r, "reachin.http", agentID, req.Target)
 	writeJSON(w, http.StatusOK, reachInResponse{Status: resp.StatusCode, Headers: resp.Header, Body: string(body)})
 }
