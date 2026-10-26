@@ -28,7 +28,7 @@ Sensitive configuration is redacted for every reader, including owners. An uncha
 
 ## Readiness and Requires
 
-`ready` is empty, `{"tcp":"host:port"}` or `{"http":{"url":"http(s)://host/path","status":200}}`. TCP connections must remain usable through the readiness hold; HTTP checks require the configured status and do not follow redirects. Checks and service startup are bounded by `start_timeout_seconds` (0 defaults to120seconds, maximum604800).
+`ready` is empty, `{"tcp":"host:port"}` or `{"http":{"url":"http(s)://host/path","status":200}}`. TCP connections must remain usable through the readiness hold; HTTP checks require the configured status and do not follow redirects. Checks and service startup are bounded by `start_timeout_seconds` (0 defaults to120seconds, maximum604800). The periodic refresh also runs the readiness check on services whose runtime reports running; a failing check marks the service `unhealthy` with the probe error rather than `running`.
 
 `requires` contains same-org service IDs. Missing services, cycles and foreign-org edges are rejected atomically. A shared requirement stays up while any dependent uses it. Independent requests join a shared start. Manual stop returns409 with running dependents; the UI offers a separate, explicit action to stop dependent services in order, then the requirement. The backend checks permission for each operation and never silently cascades.
 

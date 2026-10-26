@@ -29,7 +29,7 @@ const (
 
 var unknownClientHash = store.HashToken("mishmesh-unknown-client")
 
-func (a *API) registerOAuthRoutes(mux *http.ServeMux) {
+func (a *API) registerOAuthRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /oauth2/token", a.oauthTokenHandler)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", a.oauthMetadataHandler)
 	a.registerAgentOAuthRoutes(mux)

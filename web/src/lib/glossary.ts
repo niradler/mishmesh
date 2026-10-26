@@ -136,6 +136,10 @@ export const SERVICE_STATE_HELP: Record<ServiceState, GlossaryEntry> = {
     title: "Partial",
     body: "Only some of its containers are running. Press Start to bring the rest up, or Stop to stop them all.",
   },
+  unhealthy: {
+    title: "Unhealthy",
+    body: "The runtime reports running, but its readiness check fails, so linked endpoints are down. Read the error, then check the app's port, network and logs; restarting or recreating the container usually fixes it.",
+  },
   error: {
     title: "Error",
     body: "The last start or stop failed. Read the error, fix the driver settings or the host, then press Start again.",

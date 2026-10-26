@@ -310,7 +310,10 @@ func (a *API) addService(b *topologyBuilder, id, name, epID string) {
 	if a.services != nil {
 		if st, ok := a.services.Status(id); ok {
 			state, detail = serviceNodeState(st.State), st.LastError
-			if detail != "" {
+			switch {
+			case st.State == health.ServiceUnhealthy:
+				detail = "runtime is running but the readiness probe fails"
+			case detail != "":
 				detail = "service operation failed; check the service configuration and server diagnostics"
 			}
 		}
@@ -331,7 +334,7 @@ func serviceNodeState(s string) string {
 		return health.StateWaking
 	case health.ServicePartial:
 		return health.StateDegraded
-	case health.ServiceError:
+	case health.ServiceError, health.ServiceUnhealthy:
 		return health.StateDown
 	}
 	return health.StateUnknown

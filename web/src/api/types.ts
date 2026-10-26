@@ -19,6 +19,7 @@ export type ServiceState =
   | "sleeping"
   | "starting"
   | "partial"
+  | "unhealthy"
   | "error"
   | "unknown";
 

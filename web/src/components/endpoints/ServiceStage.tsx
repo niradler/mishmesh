@@ -18,7 +18,7 @@ import { formatDurationSeconds } from "@/lib/health";
 import { isEphemeral } from "@/lib/endpoints";
 import type { Endpoint } from "@/api/types";
 
-const RUNNING_STATES = ["running", "starting", "partial"];
+const RUNNING_STATES = ["running", "starting", "partial", "unhealthy"];
 
 export function ServiceStage({
   endpoint,

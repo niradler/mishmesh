@@ -26,7 +26,7 @@ const (
 	consentPath            = "/consent"
 )
 
-func (a *API) registerAgentOAuthRoutes(mux *http.ServeMux) {
+func (a *API) registerAgentOAuthRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /oauth2/authorize", a.oauthAuthorizeHandler)
 	mux.HandleFunc("POST /oauth2/device_authorization", a.deviceAuthorizationHandler)
 	mux.HandleFunc("POST /oauth2/revoke", a.oauthRevokeHandler)

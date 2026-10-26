@@ -50,6 +50,11 @@ else
 	$(GO) test -race -count=1 $(PKG)
 endif
 
+## openapi: regenerate docs/openapi.json from the registered API routes
+.PHONY: openapi
+openapi:
+	$(GO) test ./internal/controlplane -run '^TestOpenAPISpecFileIsCurrent$$' -count=1 -update-openapi
+
 ## test-short: run fast unit tests only
 .PHONY: test-short
 test-short:

@@ -799,3 +799,31 @@ func TestOnChangeFiresOnStateTransitionsOnly(t *testing.T) {
 		t.Fatalf("running to stopped: %d changes, want 2", got)
 	}
 }
+
+func TestRefreshMarksRunningRuntimeWithFailingProbeUnhealthy(t *testing.T) {
+	driver := &fakeDriver{state: Running}
+	f := newFixture(t, Definition{Ready: Readiness{TCP: "127.0.0.1:8384"}}, driver)
+	var refuse atomic.Bool
+	refuse.Store(true)
+	f.manager.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if refuse.Load() {
+			return nil, errors.New("connection refused")
+		}
+		client, server := net.Pipe()
+		t.Cleanup(func() { _ = server.Close() })
+		return client, nil
+	}
+
+	f.manager.Refresh(context.Background())
+	status, _ := f.manager.Status("svc")
+	if status.State != StateUnhealthy || !strings.Contains(status.LastError, "readiness probe failed") {
+		t.Fatalf("status = %+v, want unhealthy with probe error", status)
+	}
+
+	refuse.Store(false)
+	f.manager.Refresh(context.Background())
+	status, _ = f.manager.Status("svc")
+	if status.State != StateRunning || status.LastError != "" {
+		t.Errorf("status = %+v, want running with no error", status)
+	}
+}

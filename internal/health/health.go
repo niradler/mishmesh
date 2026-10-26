@@ -23,13 +23,14 @@ const (
 )
 
 const (
-	ServiceRunning  = services.StateRunning
-	ServiceStopped  = services.StateStopped
-	ServiceSleeping = services.StateSleeping
-	ServiceStarting = services.StateStarting
-	ServicePartial  = services.StatePartial
-	ServiceUnknown  = services.StateUnknown
-	ServiceError    = services.StateError
+	ServiceRunning   = services.StateRunning
+	ServiceStopped   = services.StateStopped
+	ServiceSleeping  = services.StateSleeping
+	ServiceStarting  = services.StateStarting
+	ServicePartial   = services.StatePartial
+	ServiceUnhealthy = services.StateUnhealthy
+	ServiceUnknown   = services.StateUnknown
+	ServiceError     = services.StateError
 )
 
 const (
@@ -270,6 +271,11 @@ func applyServiceState(h *EndpointHealth, id string, services ServiceStates) {
 		if h.State != StateUp {
 			h.State = StateSleeping
 			h.Detail = fmt.Sprintf("service %s was stopped outside mishmesh and wakes on request", name)
+		}
+	case ServiceUnhealthy:
+		if h.State != StateUp {
+			h.State = StateDown
+			h.Detail = fmt.Sprintf("service %s runtime is running but its readiness probe fails", name)
 		}
 	case ServiceError:
 		if h.State != StateUp {

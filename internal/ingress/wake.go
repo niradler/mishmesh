@@ -33,7 +33,7 @@ func (i *Ingress) wakeService(w http.ResponseWriter, r *http.Request, ep *store.
 		i.log.Warn("endpoint references unknown service", "endpoint_id", ep.ID, "service_id", id)
 		return nil, false
 	}
-	if state != services.StateRunning {
+	if state != services.StateRunning && state != services.StateUnhealthy {
 		ready := readyAddr(ep)
 		if wantsWakingPage(r) {
 			i.services.StartAsync(id, ready)

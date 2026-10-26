@@ -104,7 +104,7 @@ export function ServiceForm({
   const input = serviceInputFromForm(form);
   const restartNeeded = Boolean(
     service &&
-      ["running", "starting", "partial"].includes(service.status.state) &&
+      ["running", "starting", "partial", "unhealthy"].includes(service.status.state) &&
       runtimeConfigChanged(service, input),
   );
   const failure =
