@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"sync"
 	"testing"
@@ -48,6 +49,36 @@ func TestShouldBoundCacheSize(t *testing.T) {
 		if c.Len() > 3 {
 			t.Fatalf("len = %d exceeds max", c.Len())
 		}
+	}
+}
+
+func TestShouldKeepMostEntriesWhenFull(t *testing.T) {
+	c := NewCache(8)
+	sources := make([][]byte, 0, 8)
+	firsts := make([]*Authorizer, 0, 8)
+	for i := range 8 {
+		src := []byte(fmt.Sprintf(`@id("p%d") permit (principal, action, resource);`, i))
+		az, err := c.Get(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources = append(sources, src)
+		firsts = append(firsts, az)
+	}
+	if _, err := c.Get([]byte(`@id("extra") permit (principal, action, resource);`)); err != nil {
+		t.Fatal(err)
+	}
+	kept := 0
+	for i, src := range sources {
+		c.mu.Lock()
+		az, ok := c.entries[sha256.Sum256(src)]
+		c.mu.Unlock()
+		if ok && az == firsts[i] {
+			kept++
+		}
+	}
+	if kept < 7 {
+		t.Fatalf("%d of 8 cached authorizers survived one extra insert", kept)
 	}
 }
 
