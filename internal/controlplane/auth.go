@@ -221,20 +221,30 @@ func (a *API) issueSession(ctx context.Context, w http.ResponseWriter, userID, o
 	if err := a.data.CreateSession(ctx, sess); err != nil {
 		return err
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
-		Value:    raw,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   a.auth.cookieSecure,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  sess.ExpiresAt,
-	})
+	cookie := a.newCookie(sessionCookie, raw)
+	cookie.Expires = sess.ExpiresAt
+	http.SetCookie(w, cookie)
 	return nil
 }
 
+func (a *API) newCookie(name, value string) *http.Cookie {
+	return &http.Cookie{Name: name, Value: value, Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode}
+}
+
+func (a *API) setShortLivedCookie(w http.ResponseWriter, name, value string) {
+	cookie := a.newCookie(name, value)
+	cookie.MaxAge = 600
+	http.SetCookie(w, cookie)
+}
+
+func (a *API) expireCookie(w http.ResponseWriter, name string) {
+	cookie := a.newCookie(name, "")
+	cookie.MaxAge = -1
+	http.SetCookie(w, cookie)
+}
+
 func (a *API) clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	a.expireCookie(w, sessionCookie)
 }
 
 func (a *API) loginHandler(w http.ResponseWriter, r *http.Request) {
@@ -562,10 +572,10 @@ func (a *API) googleStartHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "nonce failed")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: oauthStateCookie, Value: state, Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: 600})
-	http.SetCookie(w, &http.Cookie{Name: oauthNonceCookie, Value: nonce, Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: 600})
+	a.setShortLivedCookie(w, oauthStateCookie, state)
+	a.setShortLivedCookie(w, oauthNonceCookie, nonce)
 	if next := r.URL.Query().Get("next"); localNext(next) {
-		http.SetCookie(w, &http.Cookie{Name: oauthNextCookie, Value: next, Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: 600})
+		a.setShortLivedCookie(w, oauthNextCookie, next)
 	}
 	q := url.Values{}
 	q.Set("nonce", nonce)
@@ -747,7 +757,7 @@ func fetchOIDCJSON(req *http.Request, dst any) error {
 
 func (a *API) clearOAuthCookies(w http.ResponseWriter) {
 	for _, name := range []string{oauthStateCookie, oauthNonceCookie, oauthNextCookie} {
-		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: true, Secure: a.auth.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+		a.expireCookie(w, name)
 	}
 }
 
