@@ -224,11 +224,8 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		agentID = ag.ID
 	}
-	if q, err := a.data.GetQuota(r.Context(), orgID); err == nil && q.MaxEndpoints > 0 {
-		if n, _ := a.data.CountEndpoints(r.Context(), orgID); n >= q.MaxEndpoints {
-			writeError(w, http.StatusConflict, "endpoint quota exceeded")
-			return
-		}
+	if !a.checkEndpointQuota(w, r, orgID) {
+		return
 	}
 	ep := &store.Endpoint{
 		ID: store.NewID("ep"), AgentID: agentID, OrgID: orgID, Kind: kind, Method: method,

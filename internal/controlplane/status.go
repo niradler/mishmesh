@@ -31,14 +31,20 @@ func (a *API) listAuditHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) statusHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := a.orgScope(r)
-	agents, _ := a.data.ListAgents(r.Context(), orgID)
+	agents, err := a.data.ListAgents(r.Context(), orgID)
+	if a.handleErr(w, err) {
+		return
+	}
 	connected := 0
 	for _, ag := range agents {
 		if a.connected(ag.ID) {
 			connected++
 		}
 	}
-	eps, _ := a.data.ListEndpointsByOrg(r.Context(), orgID)
+	eps, err := a.data.ListEndpointsByOrg(r.Context(), orgID)
+	if a.handleErr(w, err) {
+		return
+	}
 	byKind := map[string]int{store.KindHTTP: 0, store.KindTCP: 0, store.KindTLS: 0, store.KindUDP: 0}
 	online := 0
 	for _, ep := range eps {
@@ -58,7 +64,11 @@ func (a *API) statusHandler(w http.ResponseWriter, r *http.Request) {
 		"endpoints":   map[string]any{"total": len(eps), "online": online, "by_kind": byKind},
 		"usage_bytes": usage,
 	}
-	if q, err := a.data.GetQuota(r.Context(), orgID); err == nil {
+	q, err := a.orgQuota(r.Context(), orgID)
+	if a.handleErr(w, err) {
+		return
+	}
+	if q != nil {
 		resp["quota"] = map[string]any{
 			"max_agents": q.MaxAgents, "max_endpoints": q.MaxEndpoints, "max_bandwidth_bytes": q.MaxBandwidthBytes,
 		}
