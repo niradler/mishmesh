@@ -158,6 +158,7 @@ func serve() error {
 	}
 	vault := orgsecret.New(data, box)
 	cp := controlplane.New(data, conns, cfg.APIAuthToken, log)
+	cleanup.add(cp.Close)
 	cp.SetSecretVault(vault)
 	ca := egressca.New(data, box)
 	cp.SetEgressCA(ca)
