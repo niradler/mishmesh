@@ -196,7 +196,10 @@ func (a *Agent) connectOnce(parent context.Context, fail context.CancelCauseFunc
 	if err != nil {
 		return fmt.Errorf("open control: %w", err)
 	}
-	gen := a.dec.attach(ctrl)
+	gen, err := a.dec.attach(ctrl)
+	if err != nil {
+		return fmt.Errorf("session: %w", err)
+	}
 	a.decrypt.attach(gen)
 	defer a.decrypt.detach(gen)
 	defer a.dec.detach(gen)
