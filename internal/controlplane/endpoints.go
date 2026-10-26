@@ -199,7 +199,7 @@ func (a *API) createEndpointHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	agentID := req.AgentID
+	var agentID string
 	if method == store.MethodProxy {
 		agentID = proxy.AgentID
 	} else {

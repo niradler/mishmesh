@@ -131,21 +131,10 @@ func (p *Prober) Trigger() {
 }
 
 func (p *Prober) sweep(ctx context.Context) {
-	orgs, err := p.data.ListOrgs(ctx)
+	eps, err := p.data.ListAllEndpoints(ctx)
 	if err != nil {
-		p.log.Warn("health: list orgs", "error", err)
+		p.log.Warn("health: list endpoints", "error", err)
 		return
-	}
-	var eps []*store.Endpoint
-	complete := true
-	for _, org := range orgs {
-		list, err := p.data.ListEndpointsByOrg(ctx, org.ID)
-		if err != nil {
-			p.log.Warn("health: list endpoints", "org", org.ID, "error", err)
-			complete = false
-			continue
-		}
-		eps = append(eps, list...)
 	}
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
@@ -161,7 +150,7 @@ func (p *Prober) sweep(ctx context.Context) {
 		}()
 	}
 	wg.Wait()
-	if ctx.Err() != nil || !complete {
+	if ctx.Err() != nil {
 		return
 	}
 	p.mu.Lock()

@@ -407,6 +407,7 @@ type EndpointStore interface {
 	ReplaceConnectionAliasesIfCurrent(ctx context.Context, expected *Connection, aliases []EndpointAlias) error
 	ListEndpointsByAgent(ctx context.Context, agentID string) ([]*Endpoint, error)
 	ListEndpointsByOrg(ctx context.Context, orgID string) ([]*Endpoint, error)
+	ListAllEndpoints(ctx context.Context) ([]*Endpoint, error)
 	UpdateEndpoint(ctx context.Context, e *Endpoint) error
 	DeleteEndpoint(ctx context.Context, id string) error
 	CountEndpoints(ctx context.Context, orgID string) (int, error)
@@ -429,6 +430,7 @@ type QuotaStore interface {
 type UserStore interface {
 	CreateUser(ctx context.Context, u *User) error
 	GetUserByID(ctx context.Context, id string) (*User, error)
+	GetUsersByIDs(ctx context.Context, ids []string) ([]*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserByGoogleSub(ctx context.Context, sub string) (*User, error)
 	UpdateUser(ctx context.Context, u *User) error
@@ -442,6 +444,7 @@ type MembershipStore interface {
 	ListMembershipsByOrg(ctx context.Context, orgID string) ([]*Membership, error)
 	UpdateMembership(ctx context.Context, m *Membership) error
 	DeleteMembership(ctx context.Context, orgID, userID string) error
+	DemoteOrRemoveMembershipKeepingOwner(ctx context.Context, orgID, userID, newRole string, remove bool) error
 }
 
 type GroupStore interface {
@@ -478,6 +481,7 @@ type InviteStore interface {
 	ListInvitesByOrg(ctx context.Context, orgID string) ([]*Invite, error)
 	ListInvitesByEmail(ctx context.Context, email string) ([]*Invite, error)
 	DeleteInvite(ctx context.Context, orgID, id string) error
+	CreateUserWithMembershipClaimingInvite(ctx context.Context, u *User, inv *Invite) error
 }
 
 type WebSessionStore interface {

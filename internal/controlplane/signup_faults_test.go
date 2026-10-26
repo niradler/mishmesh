@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -37,6 +38,13 @@ func (f *faultStore) CreateUser(ctx context.Context, u *store.User) error {
 		return errInjected
 	}
 	return f.DataStore.CreateUser(ctx, u)
+}
+
+func (f *faultStore) CreateUserWithMembershipClaimingInvite(ctx context.Context, u *store.User, inv *store.Invite) error {
+	if f.failCreateUser.Load() || f.failCreateMember.Load() {
+		return errInjected
+	}
+	return f.DataStore.CreateUserWithMembershipClaimingInvite(ctx, u, inv)
 }
 
 func (f *faultStore) UpdateUser(ctx context.Context, u *store.User) error {
@@ -105,6 +113,9 @@ func TestFailedSignupDoesNotBurnInvite(t *testing.T) {
 
 			if got := liveInvites(t, api, "new@example.com"); got != 1 {
 				t.Fatalf("invite count after failed signup = %d, want 1", got)
+			}
+			if u, err := api.data.GetUserByEmail(context.Background(), "new@example.com"); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("failed signup left an orphan user %+v (err %v)", u, err)
 			}
 		})
 	}

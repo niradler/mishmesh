@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -486,6 +487,12 @@ func (s *Store) ListEndpointsByOrg(ctx context.Context, orgID string) ([]*store.
 	return s.queryEndpoints(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE org_id = $1 ORDER BY created_at`, orgID)
 }
 
+func (s *Store) ListAllEndpoints(ctx context.Context) ([]*store.Endpoint, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	return s.queryEndpoints(ctx, `SELECT `+endpointCols+` FROM endpoints ORDER BY created_at`)
+}
+
 func (s *Store) queryEndpoints(ctx context.Context, query string, args ...any) ([]*store.Endpoint, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -609,6 +616,38 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (*store.User, error)
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE id = $1`, id).Scan)
 }
 
+func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) ([]*store.User, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	var out []*store.User
+	for chunk := range slices.Chunk(slices.Compact(slices.Sorted(slices.Values(ids))), 500) {
+		args := make([]any, len(chunk))
+		marks := make([]string, len(chunk))
+		for i, id := range chunk {
+			args[i], marks[i] = id, fmt.Sprintf("$%d", i+1)
+		}
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT id, email, name, password_hash, google_sub, created_at FROM users WHERE id IN (`+strings.Join(marks, ", ")+`)`, args...)
+		if err != nil {
+			return nil, wrap("get users", err)
+		}
+		for rows.Next() {
+			u, err := scanUser(rows.Scan)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, u)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, wrap("get users", err)
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*store.User, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
 	defer cancel()
@@ -729,6 +768,46 @@ func (s *Store) DeleteMembership(ctx context.Context, orgID, userID string) erro
 	return wrap("delete membership", tx.Commit())
 }
 
+func (s *Store) DemoteOrRemoveMembershipKeepingOwner(ctx context.Context, orgID, userID, newRole string, remove bool) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("demote membership", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM orgs WHERE id = $1 FOR UPDATE`, orgID); err != nil {
+		return wrap("lock org", err)
+	}
+	target, err := scanMembership(tx.QueryRowContext(ctx,
+		`SELECT org_id, user_id, role, created_at, disabled_at FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID).Scan)
+	if err != nil {
+		return err
+	}
+	if target.Role == store.RoleOwner && target.DisabledAt == nil && (remove || newRole != store.RoleOwner) {
+		var others int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM memberships WHERE org_id = $1 AND role = $2 AND disabled_at IS NULL AND user_id <> $3`,
+			orgID, store.RoleOwner, userID).Scan(&others); err != nil {
+			return wrap("count owners", err)
+		}
+		if others == 0 {
+			return fmt.Errorf("organization must keep an active owner: %w", store.ErrConflict)
+		}
+	}
+	if remove {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM group_members WHERE org_id = $1 AND member_type = $2 AND member_id = $3`, orgID, store.GroupMemberUser, userID); err != nil {
+			return wrap("delete membership groups", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, orgID, userID); err != nil {
+			return wrap("delete membership", err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `UPDATE memberships SET role = $1 WHERE org_id = $2 AND user_id = $3`, newRole, orgID, userID); err != nil {
+		return wrap("update membership", err)
+	}
+	return wrap("demote membership", tx.Commit())
+}
+
 func scanMembership(scan func(...any) error) (*store.Membership, error) {
 	var m store.Membership
 	var created int64
@@ -822,6 +901,34 @@ func (s *Store) DeleteInvite(ctx context.Context, orgID, id string) error {
 		return store.ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) CreateUserWithMembershipClaimingInvite(ctx context.Context, u *store.User, inv *store.Invite) error {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("signup with invite", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM invites WHERE id = $1 AND org_id = $2`, inv.ID, inv.OrgID)
+	if err != nil {
+		return wrap("claim invite", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("invite already claimed: %w", store.ErrConflict)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO users (id, email, name, password_hash, google_sub, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+		u.ID, strings.ToLower(u.Email), u.Name, nullStr(u.PasswordHash), nullStr(u.GoogleSub), ns(u.CreatedAt)); err != nil {
+		return wrap("create user", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO memberships (org_id, user_id, role, created_at) VALUES ($1, $2, $3, $4)`,
+		inv.OrgID, u.ID, inv.Role, ns(u.CreatedAt)); err != nil {
+		return wrap("create membership", err)
+	}
+	return wrap("signup with invite", tx.Commit())
 }
 
 func (s *Store) queryInvites(ctx context.Context, query string, args ...any) ([]*store.Invite, error) {

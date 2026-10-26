@@ -108,16 +108,11 @@ func (a *API) registerPasswordUser(ctx context.Context, email, name, hash, invit
 	if err != nil {
 		return nil, err
 	}
-	if err := a.claimInvite(ctx, inv); err != nil {
-		return nil, err
-	}
-	if err := a.data.CreateUser(ctx, user); err != nil {
-		a.releaseInvite(ctx, inv)
-		return nil, fmt.Errorf("create user: %w", err)
-	}
-	if err := a.grantInviteMembership(ctx, user.ID, inv); err != nil {
-		a.releaseInvite(ctx, inv)
-		return nil, err
+	if err := a.data.CreateUserWithMembershipClaimingInvite(ctx, user, inv); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return nil, errInvalidInvite
+		}
+		return nil, fmt.Errorf("signup with invite: %w", err)
 	}
 	return user, nil
 }

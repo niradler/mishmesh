@@ -75,11 +75,6 @@ func (b *topologyBuilder) node(n topologyNode) {
 	b.nodes = append(b.nodes, n)
 }
 
-func (b *topologyBuilder) has(id string) bool {
-	_, ok := b.index[id]
-	return ok
-}
-
 func (b *topologyBuilder) edge(from, to, kind string) {
 	e := topologyEdge{From: from, To: to, Kind: kind}
 	if b.seen[e] {
