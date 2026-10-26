@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/mishmesh/mishmesh/internal/store"
 	"github.com/mishmesh/mishmesh/internal/tunnel"
@@ -28,7 +29,14 @@ type TLSPassthrough struct {
 	apexHost string
 	meter    Meter
 	ln       net.Listener
+
+	helloTimeout time.Duration
 }
+
+const (
+	defaultClientHelloTimeout = 10 * time.Second
+	maxClientHelloRecord      = 1 << 14
+)
 
 func NewTLSPassthrough(opts TLSPassthroughOptions) *TLSPassthrough {
 	log := opts.Log
@@ -41,6 +49,8 @@ func NewTLSPassthrough(opts TLSPassthroughOptions) *TLSPassthrough {
 		log:      log,
 		apexHost: hostOnly(opts.BaseDomain),
 		meter:    opts.Meter,
+
+		helloTimeout: defaultClientHelloTimeout,
 	}
 }
 
@@ -72,7 +82,9 @@ func (t *TLSPassthrough) serve() {
 
 func (t *TLSPassthrough) handle(client net.Conn) {
 	defer client.Close()
+	_ = client.SetReadDeadline(time.Now().Add(t.helloTimeout))
 	sni, hello, err := readClientHelloSNI(client)
+	_ = client.SetReadDeadline(time.Time{})
 	if err != nil {
 		t.log.Warn("tls passthrough: read client hello failed", "err", err)
 		return
@@ -133,15 +145,15 @@ func readClientHelloSNI(r io.Reader) (sni string, raw []byte, err error) {
 		return "", nil, fmt.Errorf("tls passthrough: not a handshake record")
 	}
 	recLen := int(binary.BigEndian.Uint16(header[3:5]))
-	if recLen <= 0 || recLen > 1<<16 {
+	if recLen <= 0 || recLen > maxClientHelloRecord {
 		return "", nil, fmt.Errorf("tls passthrough: bad record length %d", recLen)
 	}
-	body := make([]byte, recLen)
-	if _, err := io.ReadFull(r, body); err != nil {
+	raw = make([]byte, len(header)+recLen)
+	copy(raw, header)
+	if _, err := io.ReadFull(r, raw[len(header):]); err != nil {
 		return "", nil, err
 	}
-	raw = append(header, body...)
-	sni = parseSNI(body)
+	sni = parseSNI(raw[len(header):])
 	return sni, raw, nil
 }
 
