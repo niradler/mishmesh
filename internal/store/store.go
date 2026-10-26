@@ -407,6 +407,7 @@ type EndpointStore interface {
 	ReplaceConnectionAliasesIfCurrent(ctx context.Context, expected *Connection, aliases []EndpointAlias) error
 	ListEndpointsByAgent(ctx context.Context, agentID string) ([]*Endpoint, error)
 	ListEndpointsByOrg(ctx context.Context, orgID string) ([]*Endpoint, error)
+	ListAllEndpoints(ctx context.Context) ([]*Endpoint, error)
 	UpdateEndpoint(ctx context.Context, e *Endpoint) error
 	DeleteEndpoint(ctx context.Context, id string) error
 	CountEndpoints(ctx context.Context, orgID string) (int, error)

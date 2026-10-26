@@ -486,6 +486,12 @@ func (s *Store) ListEndpointsByOrg(ctx context.Context, orgID string) ([]*store.
 	return s.queryEndpoints(ctx, `SELECT `+endpointCols+` FROM endpoints WHERE org_id = $1 ORDER BY created_at`, orgID)
 }
 
+func (s *Store) ListAllEndpoints(ctx context.Context) ([]*store.Endpoint, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+	return s.queryEndpoints(ctx, `SELECT `+endpointCols+` FROM endpoints ORDER BY created_at`)
+}
+
 func (s *Store) queryEndpoints(ctx context.Context, query string, args ...any) ([]*store.Endpoint, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
