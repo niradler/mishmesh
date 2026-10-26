@@ -34,6 +34,8 @@ const (
 	readyHoldWindow   = 300 * time.Millisecond
 	driverCallTimeout = 30 * time.Second
 	stopTimeout       = 60 * time.Second
+
+	defaultAdmissionWait = 5 * time.Second
 )
 
 var ErrUnknownService = errors.New("unknown service")
@@ -125,6 +127,7 @@ type Manager struct {
 	reloadDone    chan struct{}
 	refreshSlot   chan struct{}
 	refreshing    bool
+	admissionWait time.Duration
 	deferredStops map[*service]struct{}
 	mu            sync.Mutex
 	services      map[string]*service
@@ -218,6 +221,8 @@ func newManager(opts Options, factory driverFactory) *Manager {
 		readyHold:    readyHoldWindow,
 		services:     make(map[string]*service),
 		refreshSlot:  make(chan struct{}, 1),
+
+		admissionWait: defaultAdmissionWait,
 	}
 }
 
@@ -322,18 +327,21 @@ func (m *Manager) notify(changed bool) {
 }
 
 func (m *Manager) Acquire(id string) func() {
-	if err := m.lockAdmission(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), m.admissionWait)
+	defer cancel()
+	unlock, err := m.lockAdmission(ctx)
+	if err != nil {
 		return func() {}
 	}
 	s, ok := m.services[id]
 	if !ok || s.invalidated {
-		m.mu.Unlock()
+		unlock()
 		return func() {}
 	}
 	s.active++
 	s.lastActivity = m.now()
 	s.ownActivity = s.lastActivity
-	m.mu.Unlock()
+	unlock()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -363,21 +371,21 @@ func (m *Manager) ensureRunning(ctx context.Context, id, readyAddr string, recur
 	}
 }
 
-func (m *Manager) lockAdmission(ctx context.Context) error {
+func (m *Manager) lockAdmission(ctx context.Context) (unlock func(), err error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		m.mu.Lock()
 		if m.reloadDone == nil {
-			return nil
+			return m.mu.Unlock, nil
 		}
 		ready := m.reloadDone
 		m.mu.Unlock()
 		select {
 		case <-ready:
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 	}
 }
@@ -391,12 +399,16 @@ func (m *Manager) StartAsync(id, readyAddr string) {
 }
 
 func (m *Manager) beginEnsure(ctx context.Context, id, readyAddr string, recursive bool) (*ensureCall, error) {
+	unlock := m.mu.Unlock
 	if recursive {
 		m.mu.Lock()
-	} else if err := m.lockAdmission(ctx); err != nil {
-		return nil, err
+	} else {
+		var err error
+		if unlock, err = m.lockAdmission(ctx); err != nil {
+			return nil, err
+		}
 	}
-	defer m.mu.Unlock()
+	defer unlock()
 	s, ok := m.services[id]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnknownService, id)
@@ -632,36 +644,38 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 
 func (m *Manager) stopServiceIfEligible(ctx context.Context, s *service, idle bool, externalID *string) error {
 	for {
+		unlock := m.mu.Unlock
 		if externalID != nil {
-			if err := m.lockAdmission(ctx); err != nil {
+			var err error
+			if unlock, err = m.lockAdmission(ctx); err != nil {
 				return err
 			}
 			s = m.services[*externalID]
 			if s == nil {
-				m.mu.Unlock()
+				unlock()
 				return fmt.Errorf("%w: %s", ErrUnknownService, *externalID)
 			}
 		} else {
 			m.mu.Lock()
 			if idle && m.reserved {
-				m.mu.Unlock()
+				unlock()
 				return nil
 			}
 		}
 		if m.services[s.def.ID] != s {
-			m.mu.Unlock()
+			unlock()
 			return ErrUnknownService
 		}
 		if len(s.dependents) > 0 {
 			err := &RequirementInUseError{Dependents: m.runningDependentsLocked(s)}
-			m.mu.Unlock()
+			unlock()
 			if idle {
 				return nil
 			}
 			return err
 		}
 		if idle && !m.idleEligibleLocked(s) {
-			m.mu.Unlock()
+			unlock()
 			return nil
 		}
 		wait := s.stopping
@@ -669,7 +683,7 @@ func (m *Manager) stopServiceIfEligible(ctx context.Context, s *service, idle bo
 			wait = s.inflight.done
 		}
 		if wait != nil {
-			m.mu.Unlock()
+			unlock()
 			select {
 			case <-wait:
 				continue
@@ -680,7 +694,7 @@ func (m *Manager) stopServiceIfEligible(ctx context.Context, s *service, idle bo
 		s.stopping = make(chan struct{})
 		s.version++
 		def, driver := s.def, s.driver
-		m.mu.Unlock()
+		unlock()
 		err := driver.Stop(ctx)
 		stopped := err == nil
 		if err != nil {
@@ -762,6 +776,32 @@ func (m *Manager) Apply(defs []Definition) {
 	_ = m.applyReserved(context.Background(), defs, true)
 }
 
+func (m *Manager) waitIdleLocked(ctx context.Context) error {
+	for {
+		m.mu.Lock()
+		var wait <-chan struct{}
+		for _, s := range m.services {
+			if s.inflight != nil {
+				wait = s.inflight.done
+				break
+			}
+			if s.stopping != nil {
+				wait = s.stopping
+				break
+			}
+		}
+		if wait == nil {
+			return nil
+		}
+		m.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 func (m *Manager) applyReserved(ctx context.Context, defs []Definition, releaseAdmission bool) error {
 	type prepared struct {
 		def    Definition
@@ -781,28 +821,8 @@ func (m *Manager) applyReserved(ctx context.Context, defs []Definition, releaseA
 		driver, err := m.newDriver(def)
 		updates = append(updates, prepared{def: def, driver: driver, err: err})
 	}
-	for {
-		m.mu.Lock()
-		var wait <-chan struct{}
-		for _, s := range m.services {
-			if s.inflight != nil {
-				wait = s.inflight.done
-				break
-			}
-			if s.stopping != nil {
-				wait = s.stopping
-				break
-			}
-		}
-		if wait == nil {
-			break
-		}
-		m.mu.Unlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	if err := m.waitIdleLocked(ctx); err != nil {
+		return err
 	}
 	next := make(map[string]*service, len(defs))
 	changed := len(defs) != len(m.services)
@@ -897,7 +917,8 @@ func (m *Manager) Refresh(ctx context.Context) {
 		state   State
 		err     error
 	}
-	if err := m.lockAdmission(ctx); err != nil {
+	unlock, err := m.lockAdmission(ctx)
+	if err != nil {
 		return
 	}
 	m.refreshing = true
@@ -905,7 +926,7 @@ func (m *Manager) Refresh(ctx context.Context) {
 	for _, s := range m.ordered() {
 		all = append(all, observation{svc: s, driver: s.driver, version: s.version})
 	}
-	m.mu.Unlock()
+	unlock()
 	defer m.finishRefresh()
 	for i := range all {
 		callCtx, cancel := context.WithTimeout(ctx, driverCallTimeout)
@@ -915,7 +936,8 @@ func (m *Manager) Refresh(ctx context.Context) {
 			return
 		}
 	}
-	if err := m.lockAdmission(ctx); err != nil {
+	unlock, err = m.lockAdmission(ctx)
+	if err != nil {
 		return
 	}
 	var release []func()
@@ -987,7 +1009,7 @@ func (m *Manager) Refresh(ctx context.Context) {
 			go m.runEnsure(s, call, s.def, s.driver, "", nil)
 		}
 	}
-	m.mu.Unlock()
+	unlock()
 	m.notify(changed)
 	for _, done := range release {
 		done()
