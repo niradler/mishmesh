@@ -47,7 +47,7 @@ type API struct {
 	proxyGuard         *proxy.Guard
 	maxOrgsPerUser     int
 	services           ServiceControl
-	servicesMu         sync.Mutex
+	servicesSem        chan struct{}
 	memberMutations    orgLocks
 	serviceRegistry    *services.Registry
 	invalidateIngress  func()
@@ -105,6 +105,7 @@ func New(data store.DataStore, conns store.ConnectionStore, adminToken string, l
 		policies:     authz.NewCache(authz.DefaultCacheSize),
 		authzCache:   make(map[string]authzEntry),
 		authzLoads:   make(map[authzLoadKey]*authzLoad),
+		servicesSem:  make(chan struct{}, 1),
 		now:          time.Now,
 
 		maxOrgsPerUser: DefaultMaxOrgsPerUser,

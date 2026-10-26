@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/mishmesh/mishmesh/internal/services"
 	"github.com/mishmesh/mishmesh/internal/store"
@@ -22,20 +21,11 @@ func (a *API) driverRegistry() *services.Registry {
 }
 
 func (a *API) lockServiceMutation(ctx context.Context) error {
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if a.servicesMu.TryLock() {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
+	select {
+	case a.servicesSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -246,3 +236,5 @@ func (a *API) withServiceMutation(r *http.Request, expected []*store.Service, de
 	}
 	return a.services.Reserve(r.Context(), definitions, lease)
 }
+
+func (a *API) unlockServiceMutation() { <-a.servicesSem }

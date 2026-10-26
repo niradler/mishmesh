@@ -110,7 +110,7 @@ func (a *API) reloadServices(ctx context.Context) error {
 	if err := a.lockServiceMutation(ctx); err != nil {
 		return err
 	}
-	defer a.servicesMu.Unlock()
+	defer a.unlockServiceMutation()
 	return a.reloadServicesLocked(ctx)
 }
 
@@ -271,7 +271,7 @@ func (a *API) createServiceHandler(w http.ResponseWriter, r *http.Request) {
 	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
 		return
 	}
-	defer a.servicesMu.Unlock()
+	defer a.unlockServiceMutation()
 	rec, ok := a.buildService(w, r, nil)
 	if !ok {
 		return
@@ -319,7 +319,7 @@ func (a *API) updateServiceHandler(w http.ResponseWriter, r *http.Request) {
 	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
 		return
 	}
-	defer a.servicesMu.Unlock()
+	defer a.unlockServiceMutation()
 	existing, ok := a.scopedService(w, r)
 	if !ok {
 		return
@@ -427,7 +427,7 @@ func (a *API) deleteServiceHandler(w http.ResponseWriter, r *http.Request) {
 	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
 		return
 	}
-	defer a.servicesMu.Unlock()
+	defer a.unlockServiceMutation()
 	rec, ok := a.scopedService(w, r)
 	if !ok {
 		return
@@ -536,7 +536,7 @@ func (a *API) startServiceHandler(w http.ResponseWriter, r *http.Request) {
 	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
 		return
 	}
-	defer a.servicesMu.Unlock()
+	defer a.unlockServiceMutation()
 	rec, ok := a.controllableService(w, r)
 	if !ok {
 		return
@@ -573,7 +573,7 @@ func (a *API) stopServiceHandler(w http.ResponseWriter, r *http.Request) {
 	if err := a.lockServiceMutation(r.Context()); a.serviceOperationError(w, err, "admission", false) {
 		return
 	}
-	defer a.servicesMu.Unlock()
+	defer a.unlockServiceMutation()
 	rec, ok := a.controllableService(w, r)
 	if !ok {
 		return
