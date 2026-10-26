@@ -20,8 +20,20 @@ type Store struct {
 
 var _ store.DataStore = (*Store)(nil)
 
+func connectionDSN(dsn string) string {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	return dsn + separator + strings.Join([]string{
+		"_pragma=busy_timeout(5000)",
+		"_pragma=foreign_keys(1)",
+		"_pragma=synchronous(NORMAL)",
+	}, "&")
+}
+
 func Open(dsn string) (*Store, error) {
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", connectionDSN(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %q: %w", dsn, err)
 	}
@@ -35,16 +47,9 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA synchronous=NORMAL",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("apply %q: %w", pragma, err)
-		}
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable wal: %w", err)
 	}
 	s := &Store{db: db}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
