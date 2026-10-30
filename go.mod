@@ -9,7 +9,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/gofrs/flock v0.12.1
 	github.com/hashicorp/yamux v0.1.2
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/kardianos/service v1.3.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/redis/go-redis/v9 v9.20.1
