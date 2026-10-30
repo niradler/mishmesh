@@ -7,7 +7,7 @@ require (
 	github.com/cedar-policy/cedar-go v1.8.0
 	github.com/coder/websocket v1.8.15
 	github.com/go-jose/go-jose/v4 v4.1.6
-	github.com/gofrs/flock v0.12.1
+	github.com/gofrs/flock v0.13.1
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/kardianos/service v1.3.0
